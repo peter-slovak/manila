@@ -1,0 +1,22 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<Config>
+    <Storage>
+        <Product>NEXENTASTOR</Product>
+        <RestURL>http://10.141.67.225:8457/rest/nms</RestURL>
+        <LogicalPortIP>10.141.67.225</LogicalPortIP>
+    </Storage>
+    <Filesystem>
+        <StoragePool>DemoVol1</StoragePool>
+        <WaitInterval>3</WaitInterval>
+        <Timeout>60</Timeout>
+        <share_name>manila_folder</share_name>
+        <share_address>\\10.141.67.225\manila_folder</share_address>
+        <connection_url>http://admin:nexenta@10.141.67.225:8457</connection_url>
+    </Filesystem>
+</Config>
+
+
+
+
+
+
