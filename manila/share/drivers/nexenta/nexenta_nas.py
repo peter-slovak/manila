@@ -18,8 +18,8 @@ from oslo_log import log
 from manila import exception
 from manila.i18n import _, _LI
 from manila.share import driver
-from manila.share.drivers.Nexenta_Wipro import nexenta_helper
-from manila.share.drivers.Nexenta_Wipro import options
+from manila.share.drivers.nexenta import nexenta_helper
+from manila.share.drivers.nexenta import options
 
 
 VERSION = '1.0'

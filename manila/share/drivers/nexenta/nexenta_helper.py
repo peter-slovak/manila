@@ -16,7 +16,7 @@
 from oslo_log import log
 from manila import exception
 from manila.i18n import _, _LI
-from manila.share.drivers.Nexenta_Wipro import jsonrpc
+from manila.share.drivers.nexenta import jsonrpc
 import utils
 
 
@@ -50,9 +50,8 @@ class RestHelper():
         self.storage_protocol = 'NFS'
 
     def _check_service(self):
-        # NEXENTA_WIPRO: Assume that Service is running for now.
         LOG.debug('Check service is not implemented')
-        # NEXENTA_WIPRO: TODO : To be completed.
+        # TODO : To be completed.
         # running_status = self._get_cifs_service_status()
         # if running_status != constants.STATUS_SERVICE_RUNNING:
         #    self._start_cifs_service_status()
@@ -217,7 +216,7 @@ class RestHelper():
 
         if access_type != 'user' and access_type != 'group':
             err_msg = (
-                _('NEXENTA_WIPRO: access type  %s is '
+                _('Access type  %s is '
                   'not allowed in Nexenta Store appliance'), access_type)
             raise exception.InvalidInput(err_msg)
 
@@ -256,7 +255,7 @@ class RestHelper():
                               }
         else:
             raise exception.InvalidInput(_(
-                            'NEXENTA_WIPRO: access level  %s is not allowed in '
+                            'Access level  %s is not allowed in '
                             'Nexenta Store appliance'), access_level)
 
         result = self.nms.folder.set_user_acl(
