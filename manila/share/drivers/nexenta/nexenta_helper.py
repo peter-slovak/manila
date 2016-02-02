@@ -38,7 +38,6 @@ class RestHelper():
         self.dataset_compression = (
             self.configuration.nexenta_dataset_compression)
         self.dataset_deduplication = self.configuration.nexenta_dataset_dedup
-        self.sparsed_volumes = self.configuration.nexenta_sparsed_volumes
         self.nms = None
         self.nms_protocol = self.configuration.nexenta_rest_protocol
         self.nms_host = self.configuration.nexenta_host
@@ -98,8 +97,13 @@ class RestHelper():
 
     def _create_filesystem(self, share):
         """Create file system."""
+        if self.configuration.nexenta_thin_provisioning:
+            quota = 'none'
+        else:
+            quota = '%sG' % share['size']
         create_folder_props = {'recordsize': '4K',
-                               'quota': '%sG' % share['size'],
+                               'quota': quota,
+                               'reservation': quota,
                                'compression': self.dataset_compression,
                                'sharesmb': self.configuration.nexenta_smb,
                                'sharenfs': self.configuration.nexenta_nfs,
@@ -305,7 +309,7 @@ class RestHelper():
         folder_props = self.nms.folder.get_child_props(
             '%s/%s' % (self.volume, self.share), 'used|available')
         free = utils.str2gib_size(folder_props['available'])
-        allocated = utils.str2size(folder_props['used'])
+        allocated = utils.str2gib_size(folder_props['used'])
         return free + allocated, free, allocated
 
     def _update_volume_stats(self):
@@ -316,5 +320,6 @@ class RestHelper():
             total_capacity_gb=total,
             free_capacity_gb=free,
             reserved_percentage=self.configuration.reserved_share_percentage,
-            nfs_mount_point_base=self.nfs_mount_point_base
+            nfs_mount_point_base=self.nfs_mount_point_base,
+            thin_provisioning=self.configuration.nexenta_thin_provisioning
         )

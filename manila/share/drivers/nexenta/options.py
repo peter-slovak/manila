@@ -55,12 +55,6 @@ NEXENTA_NFS_OPTS = [
     cfg.StrOpt('nexenta_mount_point_base',
                default='$state_path/mnt',
                help='Base directory that contains NFS share mount points'),
-    cfg.BoolOpt('nexenta_sparsed_volumes',
-                default=True,
-                help='Enables or disables the creation of volumes as '
-                     'sparsed files that take no space. If disabled '
-                     '(False), volume is created as a regular file, '
-                     'which takes a long time.'),
     cfg.BoolOpt('nexenta_nms_cache_volroot',
                 default=True,
                 help=('If set True cache NexentaStor appliance volroot option '
@@ -81,6 +75,10 @@ NEXENTA_DATASET_OPTS = [
                default='off',
                choices=['on', 'off', 'sha256', 'verify', 'sha256, verify'],
                help='Deduplication value for new ZFS folders.'),
+    cfg.BoolOpt('nexenta_thin_provisioning',
+                default=True,
+                help=('If True shares will not be space guaranteed and '
+                      'overprovisioning will be enabled.')),
 ]
 
 CONF = cfg.CONF
