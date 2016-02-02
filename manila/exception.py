@@ -706,3 +706,6 @@ class DriverNotInitialized(ManilaException):
 class ShareResourceNotFound(StorageResourceNotFound):
     message = _("Share id %(share_id)s could not be found "
                 "in storage backend.")
+
+class NexentaException(ManilaException):
+    message = _("Exception due to Nexenta failure.")

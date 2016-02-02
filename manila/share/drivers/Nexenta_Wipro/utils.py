@@ -1,6 +1,4 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-#
-# Copyright 2013 Nexenta Systems, Inc.
+# Copyright 2016 Nexenta Systems, Inc.
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -16,6 +14,8 @@
 #    under the License.
 
 import re
+
+from oslo_utils import units
 
 
 def str2size(s, scale=1024):
@@ -34,7 +34,7 @@ def str2size(s, scale=1024):
 
     match = re.match(r'^([\.\d]+)\s*([BbKkMmGgTtPpEeZzYy]?)', s)
     if match is None:
-        raise ValueError(_('Invalid value: "%s"') % s)
+        raise ValueError('Invalid value: %s' % s)
 
     groups = match.groups()
     value = float(groups[0])
@@ -48,3 +48,8 @@ def str2size(s, scale=1024):
             p = int(value * pow(scale, i))
             print p
             return int(value * pow(scale, i))
+
+def str2gib_size(s):
+    """Covert size-string to size in gigabytes."""
+    size_in_bytes = str2size(s)
+    return size_in_bytes // units.Gi

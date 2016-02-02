@@ -1,6 +1,4 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-#
-# Copyright 2015 Wipro Technologies.
+# Copyright 2016 Nexenta Systems, Inc.
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -15,33 +13,20 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import time
-
-from oslo_config import cfg
 from oslo_log import log
-from oslo_utils import excutils
-from oslo_utils import units
 
 from manila import exception
-from manila.i18n import _, _LI, _LW
+from manila.i18n import _, _LI
 from manila.share import driver
-from manila.share.drivers.Nexenta_Wipro import constants
 from manila.share.drivers.Nexenta_Wipro import nexenta_helper
+from manila.share.drivers.Nexenta_Wipro import options
 
 
-nexenta_opts = [
-    cfg.StrOpt(
-        'manila_nexenta_conf_file',
-        default='/etc/manila/manila_nexenta_conf.xml',
-        help='This is configuration file for the Manila Nexenta driver.')]
-
-CONF = cfg.CONF
-CONF.register_opts(nexenta_opts)
+VERSION = '1.0'
 LOG = log.getLogger(__name__)
 
 
 class NexentaNasDriver(driver.ShareDriver):
-    # class NexentaNasDriver(object):
     """Nexenta Share Driver.
     Executes commands relating to Shares.
     API version history:
@@ -51,53 +36,43 @@ class NexentaNasDriver(driver.ShareDriver):
 
     def __init__(self, *args, **kwargs):
         """Do initialization."""
-        LOG.debug("Nexenta_Wipro: Entered into init function.")
+        LOG.debug('Initializing Nexenta driver.')
         super(NexentaNasDriver, self).__init__(False, *args, **kwargs)
         self.configuration = kwargs.get('configuration', None)
         if self.configuration:
-            self.configuration.append_config_values(nexenta_opts)
+            self.configuration.append_config_values(
+                options.NEXENTA_CONNECTION_OPTS)
+            self.configuration.append_config_values(
+                options.NEXENTA_NFS_OPTS)
+            self.configuration.append_config_values(
+                options.NEXENTA_DATASET_OPTS)
             self.helper = nexenta_helper.RestHelper(self.configuration)
         else:
-            raise exception.InvalidShare(_("Nexenta configuration missing."))
+            raise exception.InvalidShare(_('Nexenta configuration missing.'))
 
-        pools = self.pools
-        print"NEXENTA_WIPRO pools are", pools
-
-    def check_for_setup_error(self):
-        """Returns an error if prerequisites aren't met."""
-        self.helper._check_conf_file()
-        self.helper._check_service()
+    @property
+    def backend_name(self):
+        backend_name = None
+        if self.configuration:
+            backend_name = self.configuration.safe_get('share_backend_name')
+        if not backend_name:
+            backend_name = self.__class__.__name__
+        return backend_name
 
     def do_setup(self, context):
         """Any initialization the nexenta nas driver does while starting."""
         LOG.debug("Do setup the plugin.")
-        return self.helper.login()
+        return self.helper.do_setup()
+
+    def check_for_setup_error(self):
+        """Returns an error if prerequisites aren't met."""
+        self.helper.check_for_setup_error()
+        self.helper._check_service()
 
     def create_share(self, context, share, share_server=None):
         """Create a share."""
-
-        LOG.debug("Create a share.")
-
-        share_name = share['name']
-        share_proto = share['share_proto']
-
-        # size by default is in G - converting size in bytes.
-        size = share['size'] * units.Gi
-
-        print"NEXENTA_WIPRO units Gi is", units.Gi
-        print"NEXENTA_WIPRO share_name %s, share_proto %s, size in bytes%s",\
-            share_name, share_proto, size
-
-        # We sleep here to ensure the newly created filesystem can be read.
-        # NEXENTA_WIPRO get wait interval from xml config file-
-        # <WaitInterval>3</WaitInterval>
-
-        complete_share_name = self.helper.allocate_container(
-            share_name, size, share_proto)
-        location = self.helper._get_location_path(
-            complete_share_name, share_proto)
-        print"NEXENTA_WIPRO: location is ", location
-        return location
+        LOG.debug('Creating share: %s.' % share['name'])
+        return self.helper._create_filesystem(share)
 
     def create_share_from_snapshot(
             self,
@@ -106,62 +81,30 @@ class NexentaNasDriver(driver.ShareDriver):
             snapshot,
             share_server=None):
         """Is called to create share from snapshot."""
-        LOG.debug("Create share from snapshot.")
-        raise NotImplementedError()
+        LOG.debug('Creating share from snapshot %s', snapshot['name'])
+        return self.helper._create_share_from_snapshot(share, snapshot)
 
-    # delete a share
     def delete_share(self, context, share, share_server=None):
         """Delete a share."""
-        print"NEXENTA_WIPRO deleting a share name and protocol ",\
-            share['name'], share['share_proto']
-        LOG.debug("Delete a share.")
+        LOG.debug('Deleting share: %s.' % share['name'])
         self.helper._delete_share(share['name'], share['share_proto'])
 
     def create_snapshot(self, context, snapshot, share_server=None):
         """Create a snapshot."""
-        LOG.debug("Create a snapshot.")
-        snap_name = snapshot['id']
-        # share_proto = snapshot['share_proto']
-        # share_type = self.helper._get_share_type(share_proto.strip())
-        share_name = snapshot['share_name']
-
-        # print"NEXENTA_WIPRO snap name %s share_proto %s  share_name",\
-        #   snap_name, share_proto, share_name
-
-        # NEXENTA_WIPRO snapshot name %s
-        # share_snapshot_06b0463b-9bed-4fb6-8f49-0ddf560e08a3
-        snapshot_name = "share_snapshot_" + snap_name
-        print"NEXENTA_WIPRO snapshot name %s ", snapshot_name
+        LOG.debug('Creating a snapshot of share: %s.' % snapshot['share_name'])
 
         snap_id = self.helper._create_snapshot(
-            share_name, snapshot_name)
+            snapshot['share_name'], snapshot['name'])
         LOG.info(_LI('Created snapshot id %s.'), snap_id)
 
     def delete_snapshot(self, context, snapshot, share_server=None):
         """Delete a snapshot."""
-        LOG.debug("Delete a snapshot.")
-        snap_name = snapshot['id']
-        # share_proto = snapshot['share_proto']
-        share_name = snapshot['share_id']
+        LOG.debug('Deleting a snapshot: %s.' % '@'.join(
+            [snapshot['share_name'], snapshot['name']]))
 
-        # print"NEXENTA_WIPRO snap name %s share_proto %s share_name",\
-        #    snap_name, share_proto, share_name
-
-        snapshot_name = "share_snapshot_" + snap_name
-        print"NEXENTA_WIPRO snapshot name %s ", snapshot_name
-
-        self.helper._delete_snapshot(share_name, snapshot_name)
-        LOG.info(_LI('Deleted snapshot %s.'), snap_name)
-
-    def ensure_share(self, context, share, share_server=None):
-        """Ensure that storages are mounted and exported."""
-        LOG.debug("Ensure share.")
-
-    #  *************************************************************************
-    #  *************************************************************************
-    #  *********************ALLOW / DENY ACCESS ACL
-    #  *************************************************************************
-    #  *************************************************************************
+        self.helper._delete_snapshot(snapshot['share_name'], snapshot['name'])
+        LOG.info(_LI('Deleted snapshot %s.'), '@'.join(
+            [snapshot['share_name'], snapshot['name']]))
 
     def allow_access(self, context, share, access, share_server=None):
         """Allow access to the share."""
@@ -173,7 +116,8 @@ class NexentaNasDriver(driver.ShareDriver):
         LOG.debug("Deny access.")
         self.helper._deny_access(share['name'], access, share['share_proto'])
 
-    def get_network_allocations_number(self):
-        """Get number of network interfaces to be created."""
-        LOG.debug("Get network allocations number.")
-        return constants.IP_ALLOCATIONS
+    def _update_share_stats(self, data=None):
+        super(NexentaNasDriver, self)._update_share_stats()
+        data = self.helper._update_volume_stats()
+        data['driver_version'] = VERSION
+        self._stats.update(data)
