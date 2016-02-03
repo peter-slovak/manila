@@ -130,6 +130,13 @@ class RestHelper():
         self.nms.netstorsvc.share_folder(
             'svc:/network/nfs/server:default', path, share_opts)        
 
+    def _set_quota(self, share_name, new_size):
+        if self.configuration.nexenta_thin_provisioning:
+            return
+        quota = '%sG' % new_size
+        self.nms.folder.set_child_prop(
+            self._get_share_path(share_name), 'quota', quota)
+
     def _get_location_path(self, path, protocol):
         location = None
         if protocol == 'NFS':
