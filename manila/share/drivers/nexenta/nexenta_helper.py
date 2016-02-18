@@ -15,7 +15,7 @@
 
 from oslo_log import log
 from manila import exception
-from manila.i18n import _, _LI
+from manila.i18n import _, _LI, _LE
 from manila.share.drivers.nexenta import jsonrpc
 import utils
 
@@ -50,16 +50,6 @@ class RestHelper():
 
     def _check_service(self):
         LOG.debug('Check service is not implemented')
-        # TODO : To be completed.
-        # running_status = self._get_cifs_service_status()
-        # if running_status != constants.STATUS_SERVICE_RUNNING:
-        #    self._start_cifs_service_status()
-
-        # service = self._get_nfs_service_status()
-        # if ((service['RUNNINGSTATUS'] != constants.STATUS_SERVICE_RUNNING) or
-        #    (service['SUPPORTV3'] == 'false') or
-        #    (service['SUPPORTV4'] == 'false')):
-        #    self._start_nfs_service_status()
 
     @property
     def backend_name(self):
@@ -114,17 +104,16 @@ class RestHelper():
             parent_path, share['name'], create_folder_props)
 
         path = self._get_share_path(share['name'])
-        self._share_folder(path)
         return self._get_location_path(path, share['share_proto'])
 
     def _share_folder(self, path):
         share_opts = {
-            'Auth_Type': 'Auth_sys',
             'read_write': '*',
+            'read_only': '',
+            'root': 'nobody',
+            'extra_options': 'anon=0',
             'recursive': 'true',
             'anonymous_rw': 'true',
-            'anonymous': 'true',
-            'extra_options': 'anon=0',
         }
         LOG.debug('Sharing folder on Nexenta Store')
         self.nms.netstorsvc.share_folder(
@@ -144,24 +133,20 @@ class RestHelper():
             # 10.141.67.225:/volumes/DemoVol1/share_16a6d104_3e56_4c04_b2fc_5fa3ed3c9d5d
             # path = path.replace("-", "_")
             location = '%s:/volumes/%s' % (self.nms_host, path)
-        elif protocol == 'CIFS':
+        # elif protocol == 'CIFS':
             # CIFS location needed is
             # \\10.141.67.225\demovol1_share_712d7b3a_420a_4ebd_8e42_f97e42b712e3
             # complete share name is -
             # DemoVol1/share_712d7b3a_420a_4ebd_8e42_f97e42b712e3@ \
             # share_snapshot_f502ba94_e880_4c04_85b8_53cc5cc3e663
-            path = path.replace("-", "_")
-            path = path.replace("/", "_")
-            location = '\\\\%s\\%s' % (self.nms_host, path)
+            # path = path.replace("-", "_")
+            # path = path.replace("/", "_")
+            # location = '\\\\%s\\%s' % (self.nms_host, path)
         else:
             raise exception.InvalidShare(
                 reason=(_('Invalid NAS protocol supplied: %s.')
                         % protocol))
         return location
-
-        # fmri.append('svc:/network/smb/server:default')  # CIFS
-        # fmri.append('svc:/network/nfs/server:default')  # NFS
-        # nms.netstorsvc.get_shared_folders(f, '')
 
     def _delete_share(self, share_name, share_proto):
         """Delete share."""
@@ -222,90 +207,128 @@ class RestHelper():
 
     def _allow_access(self, share_name, access, share_proto):
         """Allow access to the share."""
-        LOG.debug('Access data obtained is %s', access)
-        access_type = access['access_type'].strip()
-
-        if access_type != 'user' and access_type != 'group':
-            err_msg = (
-                _('Access type  %s is '
-                  'not allowed in Nexenta Store appliance'), access_type)
-            raise exception.InvalidInput(err_msg)
-
         access_to = access['access_to'].strip()
         access_level = access['access_level'].strip()
-        LOG.debug('Access level %s is to be given to %s', (
-            access_level, access_to))
+        access_type = access['access_type'].strip()
 
-        if access_level == 'rw':
-            permission_arr = {'allow': ['list_directory',
-                                        'read_data',
-                                        'write_data',
-                                        'add_file',
-                                        'add_subdirectory',
-                                        'append_data',
-                                        'read_xattr',
-                                        'write_xattr',
-                                        'execute',
-                                        'delete_child',
-                                        'read_attributes',
-                                        'write_attributes',
-                                        'delete',
-                                        'read_acl',
-                                        'write_acl',
-                                        'write_owner',
-                                        'synchronize',
-                                        ]
-                              }
-        elif access_level == 'ro':
-            permission_arr = {'allow': ['list_directory',
-                                        'read_data',
-                                        'read_xattr',
-                                        'read_attributes',
-                                        'read_acl',
-                                        ]
-                              }
+        if access_type == 'ip':
+            opts = self.nms.netstorsvc.get_shareopts(
+                'svc:/network/nfs/server:default',
+                self._get_share_path(share_name))
+            rw_list = opts['read_write']
+            if rw_list and rw_list != '*':
+                rw_list += '%s:' % access_to
+            else:
+                rw_list = '%s:' % access_to
+
+            share_opts = {
+                'auth_type': 'none',
+                'read_write': rw_list,
+                'recursive': 'true',
+                'anonymous_rw': 'true',
+                'anonymous': 'true',
+                'extra_options': 'anon=0',
+            }
+            result = self.nms.netstorsvc.share_folder(
+                'svc:/network/nfs/server:default',
+                self._get_share_path(share_name), share_opts)
+        # elif access_type in ('user', 'group'):
+        #     LOG.debug('Access level %s to share %s is given to %s' % (
+        #         access_level, share_name, access_to))
+
+        #     if access_level == 'rw':
+        #         permission_arr = {'allow': ['list_directory',
+        #                                     'read_data',
+        #                                     'write_data',
+        #                                     'add_file',
+        #                                     'add_subdirectory',
+        #                                     'append_data',
+        #                                     'read_xattr',
+        #                                     'write_xattr',
+        #                                     'execute',
+        #                                     'delete_child',
+        #                                     'read_attributes',
+        #                                     'write_attributes',
+        #                                     'delete',
+        #                                     'read_acl',
+        #                                     'write_acl',
+        #                                     'write_owner',
+        #                                     'synchronize',
+        #                                     ]
+        #                           }
+        #     elif access_level == 'ro':
+        #         permission_arr = {'allow': ['list_directory',
+        #                                     'read_data',
+        #                                     'read_xattr',
+        #                                     'read_attributes',
+        #                                     'read_acl',
+        #                                     ]
+        #                           }
+        #     else:
+        #         raise exception.InvalidInput(
+        #             'Access level  %s is not allowed in '
+        #             'Nexenta Store appliance' % access_level)
+
+        #     result = self.nms.folder.set_user_acl(
+        #         self._get_share_path(share_name), access_to, permission_arr)
         else:
-            raise exception.InvalidInput(_(
-                            'Access level  %s is not allowed in '
-                            'Nexenta Store appliance'), access_level)
-
-        result = self.nms.folder.set_user_acl(
-            self._get_share_path(share_name), access_to, permission_arr)
+            raise exception.NexentaException(
+                'Unsupported access type: %s' % access_type)
         return result
 
     def _deny_access(self, share_name, access, share_proto):
         """Deny access to share."""
-        LOG.debug('DENY ACL for share ', share_name)
-        LOG.debug('Access data obtained is ', access)
         access_type = access['access_type'].strip()
-
-        if access_type != 'user' and access_type != 'group':
-            raise exception.InvalidInput(_(
-                'Access type %s is not allowed '
-                'in NexentaStore appliance'), access_type)
-
         access_to = access['access_to'].strip()
-        permission_arr = {'deny': ['list_directory',
-                                    'read_data',
-                                    'write_data',
-                                    'add_file',
-                                    'add_subdirectory',
-                                    'append_data',
-                                    'read_xattr',
-                                    'write_xattr',
-                                    'execute',
-                                    'delete_child',
-                                    'read_attributes',
-                                    'write_attributes',
-                                    'delete',
-                                    'read_acl',
-                                    'write_acl',
-                                    'write_owner',
-                                    'synchronize',
-                                    ]}
+        LOG.debug('Dany access to share %s for user %s' % (
+            share_name, access_type))
 
-        result = self.nms.folder.set_user_acl(
-            self._get_share_path(share_name), access_to, permission_arr)
+        if access_type == 'ip':
+            opts = self.nms.netstorsvc.get_shareopts(
+                'svc:/network/nfs/server:default',
+                self._get_share_path(share_name))
+            rw_list = opts['read_write']
+            if rw_list and (access_to in rw_list):
+                rw_list = rw_list.replace(('%s:' % access_to), '')
+                share_opts = {
+                    'Auth_Type': 'Auth_sys',
+                    'read_write': rw_list,
+                    'recursive': 'true',
+                    'anonymous_rw': 'true',
+                    'anonymous': 'true',
+                    'extra_options': 'anon=0',
+                }
+                result = self.nms.netstorsvc.share_folder(
+                    'svc:/network/nfs/server:default',
+                    self._get_share_path(share_name), share_opts) 
+            else:
+                return None
+        else:
+            raise exception.NexentaException(
+                'Only IP-based access is allowed')
+
+        # elif access_type in ('user', 'group'):
+        #     permission_arr = {'deny': ['list_directory',
+        #                                 'read_data',
+        #                                 'write_data',
+        #                                 'add_file',
+        #                                 'add_subdirectory',
+        #                                 'append_data',
+        #                                 'read_xattr',
+        #                                 'write_xattr',
+        #                                 'execute',
+        #                                 'delete_child',
+        #                                 'read_attributes',
+        #                                 'write_attributes',
+        #                                 'delete',
+        #                                 'read_acl',
+        #                                 'write_acl',
+        #                                 'write_owner',
+        #                                 'synchronize',
+        #                                 ]}
+
+        #     result = self.nms.folder.set_user_acl(
+        #         self._get_share_path(share_name), access_to, permission_arr)
         return result
 
     def _get_capacity_info(self, nfs_share):
