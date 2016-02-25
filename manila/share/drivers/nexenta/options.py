@@ -62,7 +62,7 @@ NEXENTA_NFS_OPTS = [
 ]
 
 NEXENTA_DATASET_OPTS = [
-    cfg.StrOpt('nexenta_share',
+    cfg.StrOpt('nexenta_nfs_share',
                default='nfs_share',
                help='NFS share on NexentaStor'),
     cfg.StrOpt('nexenta_dataset_compression',

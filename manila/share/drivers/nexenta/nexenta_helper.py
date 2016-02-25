@@ -42,7 +42,7 @@ class RestHelper():
         self.nms_protocol = self.configuration.nexenta_rest_protocol
         self.nms_host = self.configuration.nexenta_host
         self.volume = self.configuration.nexenta_volume
-        self.share = self.configuration.nexenta_share
+        self.share = self.configuration.nexenta_nfs_share
         self.nms_port = self.configuration.nexenta_rest_port
         self.nms_user = self.configuration.nexenta_user
         self.nms_password = self.configuration.nexenta_password
@@ -76,7 +76,7 @@ class RestHelper():
                                 "Stor appliance"), self.volume)
         folder = '%s/%s' % (self.volume, self.share)
         create_folder_props = {'recordsize': '4K',
-                               'quota': 0,
+                               'quota': 'none',
                                'compression': self.dataset_compression,
                                'sharesmb': self.configuration.nexenta_smb,
                                'sharenfs': self.configuration.nexenta_nfs,
@@ -84,6 +84,8 @@ class RestHelper():
         if not self.nms.folder.object_exists(folder):
             self.nms.folder.create_with_props(
                 self.volume, self.share, create_folder_props)
+            path = '%s/%s' % (self.volume, self.share)
+            self._share_folder(path)
             # raise LookupError(_("Folder %s does not exist in Nexenta"
             #                     "Stor appliance"), folder)
 
