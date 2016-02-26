@@ -1,6 +1,7 @@
 # Copyright (c) 2011 OpenStack, LLC.
 # Copyright (c) 2015 Rushil Chugh
 # Copyright (c) 2015 Clinton Knight
+# Copyright (c) 2015 EMC Corporation
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -20,7 +21,10 @@ Manage hosts in the current zone.
 """
 
 import re
-import UserDict
+try:
+    from UserDict import IterableUserDict  # noqa
+except ImportError:
+    from collections import UserDict as IterableUserDict  # noqa
 
 from oslo_config import cfg
 from oslo_log import log
@@ -30,8 +34,8 @@ import six
 from manila import db
 from manila import exception
 from manila.i18n import _LI, _LW
-from manila.openstack.common.scheduler import filters
-from manila.openstack.common.scheduler import weights
+from manila.scheduler.filters import base_host as base_host_filter
+from manila.scheduler.weighers import base_host as base_host_weigher
 from manila.share import utils as share_utils
 from manila import utils
 
@@ -40,7 +44,8 @@ host_manager_opts = [
                 default=[
                     'AvailabilityZoneFilter',
                     'CapacityFilter',
-                    'CapabilitiesFilter'
+                    'CapabilitiesFilter',
+                    'ConsistencyGroupFilter',
                 ],
                 help='Which filter class names to use for filtering hosts '
                      'when not specified in the request.'),
@@ -53,11 +58,12 @@ host_manager_opts = [
 
 CONF = cfg.CONF
 CONF.register_opts(host_manager_opts)
+CONF.import_opt('max_over_subscription_ratio', 'manila.share.driver')
 
 LOG = log.getLogger(__name__)
 
 
-class ReadOnlyDict(UserDict.IterableUserDict):
+class ReadOnlyDict(IterableUserDict):
     """A read-only dict."""
     def __init__(self, source=None):
         self.data = {}
@@ -81,7 +87,7 @@ class ReadOnlyDict(UserDict.IterableUserDict):
     def update(self, source=None):
         if source is None:
             return
-        elif isinstance(source, UserDict.UserDict):
+        elif isinstance(source, IterableUserDict):
             self.data = source.data
         elif isinstance(source, type({})):
             self.data = source
@@ -102,13 +108,25 @@ class HostState(object):
         self.vendor_name = None
         self.driver_version = 0
         self.storage_protocol = None
-        self.QoS_support = False
+        self.qos = False
         # Mutable available resources.
         # These will change as resources are virtually "consumed".
         self.total_capacity_gb = 0
         self.free_capacity_gb = None
         self.reserved_percentage = 0
+        self.allocated_capacity_gb = 0
+        # NOTE(xyang): The apparent allocated space indicating how much
+        # capacity has been provisioned. This could be the sum of sizes
+        # of all shares on a backend, which could be greater than or
+        # equal to the allocated_capacity_gb.
+        self.provisioned_capacity_gb = 0
+        self.max_over_subscription_ratio = 1.0
+        self.thin_provisioning = False
         self.driver_handles_share_servers = False
+        self.snapshot_support = True
+        self.consistency_group_support = False
+        self.dedupe = False
+        self.compression = False
 
         # PoolState for all pools
         self.pools = {}
@@ -146,7 +164,7 @@ class HostState(object):
                  'total_capacity_gb': 500,        #  mandatory stats for
                  'free_capacity_gb': 230,         #  pools
                  'allocated_capacity_gb': 270,    # |
-                 'QoS_support': 'False',          # |
+                 'qos': 'False',                  # |
                  'reserved_percentage': 0,        #/
 
                  'dying_disks': 100,              #\
@@ -158,7 +176,7 @@ class HostState(object):
                  'total_capacity_gb': 1024,
                  'free_capacity_gb': 1024,
                  'allocated_capacity_gb': 0,
-                 'QoS_support': 'False',
+                 'qos': 'False',
                  'reserved_percentage': 0,
 
                  'dying_disks': 200,
@@ -257,9 +275,22 @@ class HostState(object):
         if not pool_cap.get('storage_protocol'):
             pool_cap['storage_protocol'] = self.storage_protocol
 
-        if not pool_cap.get('driver_handles_share_servers'):
-            pool_cap['driver_handles_share_servers'] = \
-                self.driver_handles_share_servers
+        if 'driver_handles_share_servers' not in pool_cap:
+            pool_cap['driver_handles_share_servers'] = (
+                self.driver_handles_share_servers)
+
+        if 'snapshot_support' not in pool_cap:
+            pool_cap['snapshot_support'] = self.snapshot_support
+
+        if not pool_cap.get('consistency_group_support'):
+            pool_cap['consistency_group_support'] = \
+                self.consistency_group_support
+
+        if 'dedupe' not in pool_cap:
+            pool_cap['dedupe'] = self.dedupe
+
+        if 'compression' not in pool_cap:
+            pool_cap['compression'] = self.compression
 
     def update_backend(self, capability):
         self.share_backend_name = capability.get('share_backend_name')
@@ -268,19 +299,23 @@ class HostState(object):
         self.storage_protocol = capability.get('storage_protocol')
         self.driver_handles_share_servers = capability.get(
             'driver_handles_share_servers')
+        self.snapshot_support = capability.get('snapshot_support')
+        self.consistency_group_support = capability.get(
+            'consistency_group_support', False)
         self.updated = capability['timestamp']
 
     def consume_from_share(self, share):
         """Incrementally update host state from an share."""
-        share_gb = share['size']
-        if self.free_capacity_gb == 'infinite':
-            # There's virtually infinite space on back-end
-            pass
-        elif self.free_capacity_gb == 'unknown':
-            # Unable to determine the actual free space on back-end
-            pass
-        else:
-            self.free_capacity_gb -= share_gb
+
+        if (isinstance(self.free_capacity_gb, six.string_types)
+                and self.free_capacity_gb != 'unknown'):
+            raise exception.InvalidCapacity(
+                name='free_capacity_gb',
+                value=six.text_type(self.free_capacity_gb)
+            )
+
+        if self.free_capacity_gb != 'unknown':
+            self.free_capacity_gb -= share['size']
         self.updated = timeutils.utcnow()
 
     def __repr__(self):
@@ -311,8 +346,25 @@ class PoolState(HostState):
             self.free_capacity_gb = capability['free_capacity_gb']
             self.allocated_capacity_gb = capability.get(
                 'allocated_capacity_gb', 0)
-            self.QoS_support = capability.get('QoS_support', False)
+            self.qos = capability.get('qos', False)
             self.reserved_percentage = capability['reserved_percentage']
+            # NOTE(xyang): provisioned_capacity_gb is the apparent total
+            # capacity of all the shares created on a backend, which is
+            # greater than or equal to allocated_capacity_gb, which is the
+            # apparent total capacity of all the shares created on a backend
+            # in Manila. Using allocated_capacity_gb as the default of
+            # provisioned_capacity_gb if it is not set.
+            self.provisioned_capacity_gb = capability.get(
+                'provisioned_capacity_gb', self.allocated_capacity_gb)
+            self.max_over_subscription_ratio = capability.get(
+                'max_over_subscription_ratio',
+                CONF.max_over_subscription_ratio)
+            self.thin_provisioning = capability.get(
+                'thin_provisioning', False)
+            self.dedupe = capability.get(
+                'dedupe', False)
+            self.compression = capability.get(
+                'compression', False)
 
     def update_pools(self, capability):
         # Do nothing, since we don't have pools within pool, yet
@@ -327,11 +379,11 @@ class HostManager(object):
     def __init__(self):
         self.service_states = {}  # { <host>: {<service>: {cap k : v}}}
         self.host_state_map = {}
-        self.filter_handler = filters.HostFilterHandler('manila.scheduler.'
-                                                        'filters')
+        self.filter_handler = base_host_filter.HostFilterHandler(
+            'manila.scheduler.filters')
         self.filter_classes = self.filter_handler.get_all_classes()
-        self.weight_handler = weights.HostWeightHandler('manila.scheduler.'
-                                                        'weights')
+        self.weight_handler = base_host_weigher.HostWeightHandler(
+            'manila.scheduler.weighers')
         self.weight_classes = self.weight_handler.get_all_classes()
 
     def _choose_host_filters(self, filter_cls_names):
@@ -403,6 +455,10 @@ class HostManager(object):
                           weigher_class_names=None):
         """Weigh the hosts."""
         weigher_classes = self._choose_host_weighers(weigher_class_names)
+        weight_properties['server_pools_mapping'] = {}
+        for backend, info in self.service_states.items():
+            weight_properties['server_pools_mapping'].update(
+                info.get('server_pools_mapping', {}))
         return self.weight_handler.get_weighed_objects(weigher_classes,
                                                        hosts,
                                                        weight_properties)
@@ -436,7 +492,7 @@ class HostManager(object):
 
             # Warn about down services and remove them from host_state_map
             if not utils.service_is_up(service) or service['disabled']:
-                LOG.warn(_LW("Share service is down. (host: %s)") % host)
+                LOG.warning(_LW("Share service is down. (host: %s).") % host)
                 if self.host_state_map.pop(host, None):
                     LOG.info(_LI("Removing non-active host: %s from "
                                  "scheduler cache.") % host)

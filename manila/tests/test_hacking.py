@@ -12,10 +12,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import sys
 import textwrap
 
 import mock
 import pep8
+import six
+import testtools
 
 from manila.hacking import checks
 from manila import test
@@ -55,43 +58,43 @@ class HackingTestCase(test.TestCase):
     """
 
     def test_no_translate_debug_logs(self):
-        self.assertEqual(len(list(checks.no_translate_debug_logs(
-            "LOG.debug(_('foo'))", "manila/scheduler/foo.py"))), 1)
+        self.assertEqual(1, len(list(checks.no_translate_debug_logs(
+            "LOG.debug(_('foo'))", "manila/scheduler/foo.py"))))
 
-        self.assertEqual(len(list(checks.no_translate_debug_logs(
-            "LOG.debug('foo')", "manila/scheduler/foo.py"))), 0)
+        self.assertEqual(0, len(list(checks.no_translate_debug_logs(
+            "LOG.debug('foo')", "manila/scheduler/foo.py"))))
 
-        self.assertEqual(len(list(checks.no_translate_debug_logs(
-            "LOG.info(_('foo'))", "manila/scheduler/foo.py"))), 0)
+        self.assertEqual(0, len(list(checks.no_translate_debug_logs(
+            "LOG.info(_('foo'))", "manila/scheduler/foo.py"))))
 
     def test_check_explicit_underscore_import(self):
-        self.assertEqual(len(list(checks.check_explicit_underscore_import(
+        self.assertEqual(1, len(list(checks.check_explicit_underscore_import(
             "LOG.info(_('My info message'))",
-            "cinder/tests/other_files.py"))), 1)
-        self.assertEqual(len(list(checks.check_explicit_underscore_import(
+            "cinder/tests/other_files.py"))))
+        self.assertEqual(1, len(list(checks.check_explicit_underscore_import(
             "msg = _('My message')",
-            "cinder/tests/other_files.py"))), 1)
-        self.assertEqual(len(list(checks.check_explicit_underscore_import(
+            "cinder/tests/other_files.py"))))
+        self.assertEqual(0, len(list(checks.check_explicit_underscore_import(
             "from cinder.i18n import _",
-            "cinder/tests/other_files.py"))), 0)
-        self.assertEqual(len(list(checks.check_explicit_underscore_import(
+            "cinder/tests/other_files.py"))))
+        self.assertEqual(0, len(list(checks.check_explicit_underscore_import(
             "LOG.info(_('My info message'))",
-            "cinder/tests/other_files.py"))), 0)
-        self.assertEqual(len(list(checks.check_explicit_underscore_import(
+            "cinder/tests/other_files.py"))))
+        self.assertEqual(0, len(list(checks.check_explicit_underscore_import(
             "msg = _('My message')",
-            "cinder/tests/other_files.py"))), 0)
-        self.assertEqual(len(list(checks.check_explicit_underscore_import(
+            "cinder/tests/other_files.py"))))
+        self.assertEqual(0, len(list(checks.check_explicit_underscore_import(
             "from cinder.i18n import _, _LW",
-            "cinder/tests/other_files2.py"))), 0)
-        self.assertEqual(len(list(checks.check_explicit_underscore_import(
+            "cinder/tests/other_files2.py"))))
+        self.assertEqual(0, len(list(checks.check_explicit_underscore_import(
             "msg = _('My message')",
-            "cinder/tests/other_files2.py"))), 0)
-        self.assertEqual(len(list(checks.check_explicit_underscore_import(
+            "cinder/tests/other_files2.py"))))
+        self.assertEqual(0, len(list(checks.check_explicit_underscore_import(
             "_ = translations.ugettext",
-            "cinder/tests/other_files3.py"))), 0)
-        self.assertEqual(len(list(checks.check_explicit_underscore_import(
+            "cinder/tests/other_files3.py"))))
+        self.assertEqual(0, len(list(checks.check_explicit_underscore_import(
             "msg = _('My message')",
-            "cinder/tests/other_files3.py"))), 0)
+            "cinder/tests/other_files3.py"))))
 
     # We are patching pep8 so that only the check under test is actually
     # installed.
@@ -113,6 +116,7 @@ class HackingTestCase(test.TestCase):
                          self._run_check(code, checker, filename)]
         self.assertEqual(expected_errors or [], actual_errors)
 
+    @testtools.skipIf(six.PY3, "It is PY2-specific. Skip it for PY3.")
     def test_str_exception(self):
 
         checker = checks.CheckForStrExc
@@ -177,8 +181,16 @@ class HackingTestCase(test.TestCase):
                    msg = 'add to me' + _('test')
                    return msg
                """
-        errors = [(13, 10, 'M326'), (14, 10, 'M326'), (15, 10, 'M326'),
-                  (16, 10, 'M326'), (17, 10, 'M326'), (18, 24, 'M326')]
+
+        # Python 3.4.0 introduced a change to the column calculation during AST
+        # parsing. This was reversed in Python 3.4.3, hence the version-based
+        # expected value calculation. See #1499743 for more background.
+        if sys.version_info < (3, 4, 0) or sys.version_info >= (3, 4, 3):
+            errors = [(13, 10, 'M326'), (14, 10, 'M326'), (15, 10, 'M326'),
+                      (16, 10, 'M326'), (17, 10, 'M326'), (18, 24, 'M326')]
+        else:
+            errors = [(13, 11, 'M326'), (14, 13, 'M326'), (15, 13, 'M326'),
+                      (16, 13, 'M326'), (17, 13, 'M326'), (18, 25, 'M326')]
         self._assert_has_errors(code, checker, expected_errors=errors)
 
         code = """
@@ -188,3 +200,31 @@ class HackingTestCase(test.TestCase):
                """
         errors = []
         self._assert_has_errors(code, checker, expected_errors=errors)
+
+    def test_dict_constructor_with_list_copy(self):
+        self.assertEqual(1, len(list(checks.dict_constructor_with_list_copy(
+            "    dict([(i, connect_info[i])"))))
+
+        self.assertEqual(1, len(list(checks.dict_constructor_with_list_copy(
+            "    attrs = dict([(k, _from_json(v))"))))
+
+        self.assertEqual(1, len(list(checks.dict_constructor_with_list_copy(
+            "        type_names = dict((value, key) for key, value in"))))
+
+        self.assertEqual(1, len(list(checks.dict_constructor_with_list_copy(
+            "   dict((value, key) for key, value in"))))
+
+        self.assertEqual(1, len(list(checks.dict_constructor_with_list_copy(
+            "foo(param=dict((k, v) for k, v in bar.items()))"))))
+
+        self.assertEqual(1, len(list(checks.dict_constructor_with_list_copy(
+            " dict([[i,i] for i in range(3)])"))))
+
+        self.assertEqual(1, len(list(checks.dict_constructor_with_list_copy(
+            "  dd = dict([i,i] for i in range(3))"))))
+
+        self.assertEqual(0, len(list(checks.dict_constructor_with_list_copy(
+            "        create_kwargs = dict(snapshot=snapshot,"))))
+
+        self.assertEqual(0, len(list(checks.dict_constructor_with_list_copy(
+            "      self._render_dict(xml, data_el, data.__dict__)"))))

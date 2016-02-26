@@ -15,10 +15,8 @@
 
 
 from oslo_config import cfg
-from oslo_log import log
 
 CONF = cfg.CONF
-LOG = log.getLogger(__name__)
 
 
 class FakeServer(object):
@@ -88,6 +86,9 @@ class API(object):
         pass
 
     def server_get_by_name_or_id(self, *args, **kwargs):
+        pass
+
+    def server_reboot(self, *args, **kwargs):
         pass
 
     def keypair_list(self, *args, **kwargs):

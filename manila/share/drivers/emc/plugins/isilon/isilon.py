@@ -20,6 +20,7 @@ import os
 
 from oslo_config import cfg
 from oslo_log import log
+from oslo_utils import units
 import six
 
 from manila import exception
@@ -29,12 +30,6 @@ from manila.share.drivers.emc.plugins.isilon import isilon_api
 
 CONF = cfg.CONF
 VERSION = "0.1.0"
-
-ISILON_OPTS = [
-    cfg.StrOpt('isilon_share_root_dir', default='/ifs/manila-shares',
-               help='The path on Isilon where the manila shares will be '
-                    'created.')]
-CONF.register_opts(ISILON_OPTS)
 
 LOG = log.getLogger(__name__)
 
@@ -64,7 +59,7 @@ class IsilonStorageConnection(base.StorageConnection):
         """Return path to a container."""
         return os.path.join(self._root_dir, share['name'])
 
-    def create_share(self, emc_share_driver, context, share, share_server):
+    def create_share(self, context, share, share_server):
         """Is called to create share."""
         if share['share_proto'] == 'NFS':
             location = self._create_nfs_share(share)
@@ -75,15 +70,20 @@ class IsilonStorageConnection(base.StorageConnection):
                        {'proto': share['share_proto']})
             LOG.error(message)
             raise exception.InvalidShare(message=message)
+
+        # apply directory quota based on share size
+        max_share_size = share['size'] * units.Gi
+        self._isilon_api.quota_create(
+            self._get_container_path(share), 'directory', max_share_size)
+
         return location
 
-    def create_share_from_snapshot(self, emc_share_driver, context, share,
-                                   snapshot, share_server):
+    def create_share_from_snapshot(self, context, share, snapshot,
+                                   share_server):
         """Creates a share from the snapshot."""
 
         # Create share at new location
-        location = self.create_share(
-            emc_share_driver, context, share, share_server)
+        location = self.create_share(context, share, share_server)
 
         # Clone snapshot to new location
         fq_target_dir = self._get_container_path(share)
@@ -116,13 +116,12 @@ class IsilonStorageConnection(base.StorageConnection):
         share_path = '\\\\{0}\\{1}'.format(self._server, share['name'])
         return share_path
 
-    def create_snapshot(self, emc_share_driver, context,
-                        snapshot, share_server):
+    def create_snapshot(self, context, snapshot, share_server):
         """Is called to create snapshot."""
         snapshot_path = os.path.join(self._root_dir, snapshot['share_name'])
         self._isilon_api.create_snapshot(snapshot['name'], snapshot_path)
 
-    def delete_share(self, emc_share_driver, context, share, share_server):
+    def delete_share(self, context, share, share_server):
         """Is called to remove share."""
         if share['share_proto'] == 'NFS':
             self._delete_nfs_share(share)
@@ -142,7 +141,7 @@ class IsilonStorageConnection(base.StorageConnection):
         if share_id is None:
             lw = _LW('Attempted to delete NFS Share "%s", but the share does '
                      'not appear to exist.')
-            LOG.warn(lw, share['name'])
+            LOG.warning(lw, share['name'])
         else:
             # attempt to delete the share
             export_deleted = self._isilon_api.delete_nfs_share(share_id)
@@ -157,7 +156,7 @@ class IsilonStorageConnection(base.StorageConnection):
         if smb_share is None:
             lw = _LW('Attempted to delete CIFS Share "%s", but the share does '
                      'not appear to exist.')
-            LOG.warn(lw, share['name'])
+            LOG.warning(lw, share['name'])
         else:
             share_deleted = self._isilon_api.delete_smb_share(share['name'])
             if not share_deleted:
@@ -165,16 +164,20 @@ class IsilonStorageConnection(base.StorageConnection):
                 LOG.error(message)
                 raise exception.ShareBackendException(message=message)
 
-    def delete_snapshot(self, emc_share_driver, context,
-                        snapshot, share_server):
+    def delete_snapshot(self, context, snapshot, share_server):
         """Is called to remove snapshot."""
         self._isilon_api.delete_snapshot(snapshot['name'])
 
-    def ensure_share(self, emc_share_driver, context, share, share_server):
+    def ensure_share(self, context, share, share_server):
         """Invoked to ensure that share is exported."""
 
-    def allow_access(self, emc_share_driver, context, share,
-                     access, share_server):
+    def extend_share(self, share, new_size, share_server=None):
+        """Extends a share."""
+        new_quota_size = new_size * units.Gi
+        self._isilon_api.quota_set(
+            self._get_container_path(share), 'directory', new_quota_size)
+
+    def allow_access(self, context, share, access, share_server):
         """Allow access to the share."""
 
         # TODO(sedwards): Look into supporting ro/rw access to shares
@@ -231,8 +234,7 @@ class IsilonStorageConnection(base.StorageConnection):
             r = self._isilon_api.request('PUT', url, data=data)
             r.raise_for_status()
 
-    def deny_access(self, emc_share_driver, context, share,
-                    access, share_server):
+    def deny_access(self, context, share, access, share_server):
         """Deny access to the share."""
 
         if access['access_type'] != 'ip':
@@ -290,6 +292,9 @@ class IsilonStorageConnection(base.StorageConnection):
             resp = self._isilon_api.request('PUT', url, data=share_params)
             resp.raise_for_status()
 
+    def check_for_setup_error(self):
+        """Check for setup error."""
+
     def connect(self, emc_share_driver, context):
         """Connect to an Isilon cluster."""
         self._server = emc_share_driver.configuration.safe_get(
@@ -304,7 +309,7 @@ class IsilonStorageConnection(base.StorageConnection):
         self._password = emc_share_driver.configuration.safe_get(
             "emc_nas_password")
         self._root_dir = emc_share_driver.configuration.safe_get(
-            "isilon_share_root_dir")
+            "emc_nas_root_dir")
         # TODO(Shaun Edwards): make verify ssl a config variable?
         self._verify_ssl_cert = False
         self._isilon_api = self._isilon_api_class(self._server_url, auth=(
@@ -328,7 +333,6 @@ class IsilonStorageConnection(base.StorageConnection):
         """Set up and configures share server with given network parameters."""
         # TODO(Shaun Edwards): Look into supporting share servers
 
-    def teardown_server(self, server_details,
-                        security_services=None):
+    def teardown_server(self, server_details, security_services=None):
         """Teardown share server."""
         # TODO(Shaun Edwards): Look into supporting share servers

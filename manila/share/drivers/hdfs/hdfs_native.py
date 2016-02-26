@@ -32,37 +32,33 @@ import socket
 
 from oslo_concurrency import processutils
 from oslo_config import cfg
+from oslo_log import log
 from oslo_utils import units
 import six
 
 from manila import exception
 from manila.i18n import _
-from manila.openstack.common import log as logging
 from manila.share import driver
 from manila import utils
 
-LOG = logging.getLogger(__name__)
+LOG = log.getLogger(__name__)
 
 hdfs_native_share_opts = [
     cfg.StrOpt('hdfs_namenode_ip',
-               default=None,
                help='The IP of the HDFS namenode.'),
-    cfg.IntOpt('hdfs_namenode_port',
-               default=9000,
-               help='The port of HDFS namenode service.'),
-    cfg.IntOpt('hdfs_ssh_port',
-               default=22,
-               help='HDFS namenode SSH port.'),
+    cfg.PortOpt('hdfs_namenode_port',
+                default=9000,
+                help='The port of HDFS namenode service.'),
+    cfg.PortOpt('hdfs_ssh_port',
+                default=22,
+                help='HDFS namenode SSH port.'),
     cfg.StrOpt('hdfs_ssh_name',
-               default=None,
                help='HDFS namenode ssh login name.'),
     cfg.StrOpt('hdfs_ssh_pw',
-               default=None,
                help='HDFS namenode SSH login password, '
                     'This parameter is not necessary, if '
                     '\'hdfs_ssh_private_key\' is configured.'),
     cfg.StrOpt('hdfs_ssh_private_key',
-               default=None,
                help='Path to HDFS namenode SSH private '
                     'key for login.'),
 ]
@@ -80,9 +76,8 @@ class HDFSNativeShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         1.0 - Initial Version
     """
 
-    def __init__(self, db, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         super(HDFSNativeShareDriver, self).__init__(False, *args, **kwargs)
-        self.db = db
         self.configuration.append_config_values(hdfs_native_share_opts)
         self.backend_name = self.configuration.safe_get(
             'share_backend_name') or 'HDFS-Native'
@@ -101,14 +96,14 @@ class HDFSNativeShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         else:
             self._hdfs_execute = self._hdfs_remote_execute
 
-        self._hdfs_bin = self._get_hdfs_bin_path()
+        self._hdfs_bin = 'hdfs'
         self._hdfs_base_path = (
             'hdfs://' + self.configuration.hdfs_namenode_ip + ':'
             + six.text_type(self.configuration.hdfs_namenode_port))
 
     def _hdfs_local_execute(self, *cmd, **kwargs):
         if 'run_as_root' not in kwargs:
-            kwargs.update({'run_as_root': True})
+            kwargs.update({'run_as_root': False})
 
         return utils.execute(*cmd, **kwargs)
 
@@ -160,21 +155,22 @@ class HDFSNativeShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             LOG.error(msg)
             raise exception.HDFSException(msg)
 
-    def _get_hdfs_bin_path(self):
-        try:
-            (out, __) = self._hdfs_execute('locate', '/bin/hdfs')
-        except exception.ProcessExecutionError as e:
-            msg = (_('Can not get the execution path of hdfs. '
-                     'Error: %(excmsg)s.') %
-                   {'excmsg': six.text_type(e)})
-            LOG.error(msg)
-            raise exception.HDFSException(msg)
+    def _set_share_size(self, share, size=None):
+        share_dir = '/' + share['name']
 
-        lines = out.splitlines()
-        if lines and lines[0].endswith('/bin/hdfs'):
-            return lines[0]
+        if not size:
+            sizestr = six.text_type(share['size']) + 'g'
         else:
-            msg = _('Can not get the execution path of hdfs.')
+            sizestr = six.text_type(size) + 'g'
+
+        try:
+            self._hdfs_execute(self._hdfs_bin, 'dfsadmin',
+                               '-setSpaceQuota', sizestr, share_dir)
+        except exception.ProcessExecutionError as e:
+            msg = (_('Failed to set space quota for the '
+                     'share %(sharename)s. Error: %(excmsg)s.') %
+                   {'sharename': share['name'],
+                    'excmsg': six.text_type(e)})
             LOG.error(msg)
             raise exception.HDFSException(msg)
 
@@ -186,7 +182,6 @@ class HDFSNativeShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             raise exception.HDFSException(msg)
 
         share_dir = '/' + share['name']
-        sizestr = six.text_type(share['size']) + 'g'
 
         try:
             self._hdfs_execute(self._hdfs_bin, 'dfs',
@@ -199,16 +194,8 @@ class HDFSNativeShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             LOG.error(msg)
             raise exception.HDFSException(msg)
 
-        try:
-            self._hdfs_execute(self._hdfs_bin, 'dfsadmin',
-                               '-setSpaceQuota', sizestr, share_dir)
-        except exception.ProcessExecutionError as e:
-            msg = (_('Failed to set space quota for the '
-                     'share %(sharename)s. Error: %(excmsg)s.') %
-                   {'sharename': share['name'],
-                    'excmsg': six.text_type(e)})
-            LOG.error(msg)
-            raise exception.HDFSException(msg)
+        # set share size
+        self._set_share_size(share)
 
         try:
             self._hdfs_execute(self._hdfs_bin, 'dfsadmin',
@@ -246,10 +233,19 @@ class HDFSNativeShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         share_path = '/' + share['name']
         snapshot_path = self._get_snapshot_path(snapshot)
 
-        cmd = [self._hdfs_bin, 'dfs', '-cp', '-r',
-               snapshot_path, share_path]
         try:
-            self._hdfs_execute(*cmd)
+            # check if the directory is empty
+            (out, __) = self._hdfs_execute(
+                self._hdfs_bin, 'dfs', '-ls', snapshot_path)
+            # only copy files when the snapshot directory is not empty
+            if out:
+                copy_path = snapshot_path + "/*"
+
+                cmd = [self._hdfs_bin, 'dfs', '-cp',
+                       copy_path, share_path]
+
+                self._hdfs_execute(*cmd)
+
         except exception.ProcessExecutionError as e:
             msg = (_('Failed to create share %(sharename)s from '
                      'snapshot %(snapshotname)s. Error: %(excmsg)s.') %
@@ -370,24 +366,22 @@ class HDFSNativeShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             LOG.error(msg)
             raise exception.HDFSException(msg)
 
+    def extend_share(self, share, new_size, share_server=None):
+        """Extend share storage."""
+        self._set_share_size(share, new_size)
+
     def _check_hdfs_state(self):
         try:
             (out, __) = self._hdfs_execute(self._hdfs_bin, 'fsck', '/')
         except exception.ProcessExecutionError as e:
-            msg = _('Failed to check the utility of hdfs.')
-            LOG.error(msg)
-            raise exception.HDFSException(msg)
-        lines = out.splitlines()
-        try:
-            hdfs_state = lines[1].split()[1]
-        except (IndexError, ValueError) as e:
             msg = (_('Failed to check hdfs state. Error: %(excmsg)s.') %
                    {'excmsg': six.text_type(e)})
             LOG.error(msg)
             raise exception.HDFSException(msg)
-        if hdfs_state.upper() != 'HEALTHY':
+        if 'HEALTHY' in out:
+            return True
+        else:
             return False
-        return True
 
     def check_for_setup_error(self):
         """Return an error if the prerequisites are met."""

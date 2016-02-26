@@ -19,9 +19,12 @@
 
 import contextlib
 import errno
+import functools
 import inspect
 import os
 import pyclbr
+import random
+import re
 import shutil
 import socket
 import sys
@@ -36,6 +39,7 @@ from oslo_log import log
 from oslo_utils import importutils
 from oslo_utils import timeutils
 import paramiko
+import retrying
 import six
 
 from manila.db import api as db_api
@@ -146,14 +150,39 @@ class SSHPool(pools.Pool):
             self.current_size -= 1
 
 
-def maniladir():
-    import manila
-    return os.path.abspath(manila.__file__).split('manila/__init__.py')[0]
+def check_ssh_injection(cmd_list):
+    ssh_injection_pattern = ['`', '$', '|', '||', ';', '&', '&&', '>', '>>',
+                             '<']
 
+    # Check whether injection attacks exist
+    for arg in cmd_list:
+        arg = arg.strip()
 
-def debug(arg):
-    LOG.debug('debug in callback: %s', arg)
-    return arg
+        # Check for matching quotes on the ends
+        is_quoted = re.match('^(?P<quote>[\'"])(?P<quoted>.*)(?P=quote)$', arg)
+        if is_quoted:
+            # Check for unescaped quotes within the quoted argument
+            quoted = is_quoted.group('quoted')
+            if quoted:
+                if (re.match('[\'"]', quoted) or
+                        re.search('[^\\\\][\'"]', quoted)):
+                    raise exception.SSHInjectionThreat(command=cmd_list)
+        else:
+            # We only allow spaces within quoted arguments, and that
+            # is the only special character allowed within quotes
+            if len(arg.split()) > 1:
+                raise exception.SSHInjectionThreat(command=cmd_list)
+
+        # Second, check whether danger character in command. So the shell
+        # special operator must be a single argument.
+        for c in ssh_injection_pattern:
+            if c not in arg:
+                continue
+
+            result = arg.find(c)
+            if not result == -1:
+                if result == 0 or not arg[result - 1] == '\\':
+                    raise exception.SSHInjectionThreat(command=cmd_list)
 
 
 class LazyPluggable(object):
@@ -322,7 +351,14 @@ def monkey_patch():
             # set the decorator for the class methods
             if isinstance(module_data[key], pyclbr.Class):
                 clz = importutils.import_class("%s.%s" % (module, key))
-                for method, func in inspect.getmembers(clz, inspect.ismethod):
+                # NOTE(vponomaryov): we need to distinguish class methods types
+                # for py2 and py3, because the concept of 'unbound methods' has
+                # been removed from the python3.x
+                if six.PY3:
+                    member_type = inspect.isfunction
+                else:
+                    member_type = inspect.ismethod
+                for method, func in inspect.getmembers(clz, member_type):
                     setattr(
                         clz, method,
                         decorator("%s.%s.%s" % (module, key, method), func))
@@ -369,7 +405,8 @@ def service_is_up(service):
     """Check whether a service is up based on last heartbeat."""
     last_heartbeat = service['updated_at'] or service['created_at']
     # Timestamps in DB are UTC.
-    elapsed = timeutils.total_seconds(timeutils.utcnow() - last_heartbeat)
+    tdelta = timeutils.utcnow() - last_heartbeat
+    elapsed = tdelta.total_seconds()
     return abs(elapsed) <= CONF.service_down_time
 
 
@@ -476,3 +513,103 @@ class IsAMatcher(object):
 
     def __eq__(self, actual_value):
         return isinstance(actual_value, self.expected_value)
+
+
+class ComparableMixin(object):
+    def _compare(self, other, method):
+        try:
+            return method(self._cmpkey(), other._cmpkey())
+        except (AttributeError, TypeError):
+            # _cmpkey not implemented, or return different type,
+            # so I can't compare with "other".
+            return NotImplemented
+
+    def __lt__(self, other):
+        return self._compare(other, lambda s, o: s < o)
+
+    def __le__(self, other):
+        return self._compare(other, lambda s, o: s <= o)
+
+    def __eq__(self, other):
+        return self._compare(other, lambda s, o: s == o)
+
+    def __ge__(self, other):
+        return self._compare(other, lambda s, o: s >= o)
+
+    def __gt__(self, other):
+        return self._compare(other, lambda s, o: s > o)
+
+    def __ne__(self, other):
+        return self._compare(other, lambda s, o: s != o)
+
+
+def retry(exception, interval=1, retries=10, backoff_rate=2,
+          wait_random=False):
+    """A wrapper around retrying library.
+
+    This decorator allows to log and to check 'retries' input param.
+    Time interval between retries is calculated in the following way:
+    interval * backoff_rate ^ previous_attempt_number
+
+    :param exception: expected exception type. When wrapped function
+                      raises an exception of this type, the function
+                      execution is retried.
+    :param interval: param 'interval' is used to calculate time interval
+                     between retries:
+                     interval * backoff_rate ^ previous_attempt_number
+    :param retries: number of retries.
+    :param backoff_rate: param 'backoff_rate' is used to calculate time
+                         interval between retries:
+                         interval * backoff_rate ^ previous_attempt_number
+    :param wait_random: boolean value to enable retry with random wait timer.
+
+    """
+    def _retry_on_exception(e):
+        return isinstance(e, exception)
+
+    def _backoff_sleep(previous_attempt_number, delay_since_first_attempt_ms):
+        exp = backoff_rate ** previous_attempt_number
+        wait_for = max(0, interval * exp)
+
+        if wait_random:
+            wait_val = random.randrange(interval * 1000.0, wait_for * 1000.0)
+        else:
+            wait_val = wait_for * 1000.0
+
+        LOG.debug("Sleeping for %s seconds.", (wait_val / 1000.0))
+        return wait_val
+
+    def _print_stop(previous_attempt_number, delay_since_first_attempt_ms):
+        delay_since_first_attempt = delay_since_first_attempt_ms / 1000.0
+        LOG.debug("Failed attempt %s", previous_attempt_number)
+        LOG.debug("Have been at this for %s seconds",
+                  delay_since_first_attempt)
+        return previous_attempt_number == retries
+
+    if retries < 1:
+        raise ValueError(_('Retries must be greater than or '
+                           'equal to 1 (received: %s).') % retries)
+
+    def _decorator(f):
+
+        @six.wraps(f)
+        def _wrapper(*args, **kwargs):
+            r = retrying.Retrying(retry_on_exception=_retry_on_exception,
+                                  wait_func=_backoff_sleep,
+                                  stop_func=_print_stop)
+            return r.call(f, *args, **kwargs)
+
+        return _wrapper
+
+    return _decorator
+
+
+def require_driver_initialized(func):
+    @functools.wraps(func)
+    def wrapper(self, *args, **kwargs):
+        # we can't do anything if the driver didn't init
+        if not self.driver.initialized:
+            driver_name = self.driver.__class__.__name__
+            raise exception.DriverNotInitialized(driver=driver_name)
+        return func(self, *args, **kwargs)
+    return wrapper

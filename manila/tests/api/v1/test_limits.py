@@ -17,11 +17,10 @@
 Tests dealing with HTTP rate-limiting.
 """
 
-import httplib
-
 from oslo_serialization import jsonutils
 import six
 from six import moves
+from six.moves import http_client
 import webob
 
 from manila.api.v1 import limits
@@ -33,9 +32,9 @@ from manila import test
 TEST_LIMITS = [
     limits.Limit("GET", "/delayed", "^/delayed", 1, limits.PER_MINUTE),
     limits.Limit("POST", "*", ".*", 7, limits.PER_MINUTE),
-    limits.Limit("POST", "/volumes", "^/volumes", 3, limits.PER_MINUTE),
+    limits.Limit("POST", "/shares", "^/shares", 3, limits.PER_MINUTE),
     limits.Limit("PUT", "*", "", 10, limits.PER_MINUTE),
-    limits.Limit("PUT", "/volumes", "^/volumes", 5, limits.PER_MINUTE),
+    limits.Limit("PUT", "/shares", "^/shares", 5, limits.PER_MINUTE),
 ]
 NS = {
     'atom': 'http://www.w3.org/2005/Atom',
@@ -53,8 +52,13 @@ class BaseLimitTestSuite(test.TestCase):
         self.absolute_limits = {}
 
         def stub_get_project_quotas(context, project_id, usages=True):
-            return dict((k, dict(limit=v))
-                        for k, v in self.absolute_limits.items())
+            quotas = {}
+            for mapping_key in ('limit', 'in_use'):
+                for k, v in self.absolute_limits.get(mapping_key, {}).items():
+                    if k not in quotas:
+                        quotas[k] = {}
+                    quotas[k].update({mapping_key: v})
+            return quotas
 
         self.mock_object(manila.quota.QUOTAS, "get_project_quotas",
                          stub_get_project_quotas)
@@ -113,9 +117,20 @@ class LimitsControllerTest(BaseLimitTestSuite):
         request = self._get_index_request()
         request = self._populate_limits(request)
         self.absolute_limits = {
-            'gigabytes': 512,
-            'shares': 5,
-            'snapshots': 5
+            'limit': {
+                'shares': 11,
+                'gigabytes': 22,
+                'snapshots': 33,
+                'snapshot_gigabytes': 44,
+                'share_networks': 55,
+            },
+            'in_use': {
+                'shares': 3,
+                'gigabytes': 4,
+                'snapshots': 5,
+                'snapshot_gigabytes': 6,
+                'share_networks': 7,
+            },
         }
         response = request.get_response(self.controller)
         expected = {
@@ -156,10 +171,18 @@ class LimitsControllerTest(BaseLimitTestSuite):
                     },
 
                 ],
-                "absolute": {"maxTotalShareGigabytes": 512,
-                             "maxTotalShares": 5,
-                             "maxTotalShareSnapshots": 5,
-                             },
+                "absolute": {
+                    "totalSharesUsed": 3,
+                    "totalShareGigabytesUsed": 4,
+                    "totalShareSnapshotsUsed": 5,
+                    "totalSnapshotGigabytesUsed": 6,
+                    "totalShareNetworksUsed": 7,
+                    "maxTotalShares": 11,
+                    "maxTotalShareGigabytes": 22,
+                    "maxTotalShareSnapshots": 33,
+                    "maxTotalSnapshotGigabytes": 44,
+                    "maxTotalShareNetworks": 55,
+                },
             },
         }
         body = jsonutils.loads(response.body)
@@ -223,7 +246,10 @@ class LimitsControllerTest(BaseLimitTestSuite):
         self.assertEqual(expected, body['limits']['absolute'])
 
     def test_index_ignores_extra_absolute_limits_json(self):
-        self.absolute_limits = {'unknown_limit': 9001}
+        self.absolute_limits = {
+            'in_use': {'unknown_limit': 9000},
+            'limit': {'unknown_limit': 9001},
+        }
         self._test_index_absolute_limits_json({})
 
 
@@ -265,7 +291,7 @@ class LimitMiddlewareTest(BaseLimitTestSuite):
 
         request = webob.Request.blank("/")
         response = request.get_response(self.app)
-        self.assertEqual(response.status_int, 413)
+        self.assertEqual(413, response.status_int)
 
         self.assertTrue('Retry-After' in response.headers)
         retry_after = int(response.headers['Retry-After'])
@@ -274,7 +300,7 @@ class LimitMiddlewareTest(BaseLimitTestSuite):
         body = jsonutils.loads(response.body)
         expected = "Only 1 GET request(s) can be made to * every minute."
         value = body["overLimitFault"]["details"].strip()
-        self.assertEqual(value, expected)
+        self.assertEqual(expected, value)
 
 
 class LimitTest(BaseLimitTestSuite):
@@ -284,7 +310,7 @@ class LimitTest(BaseLimitTestSuite):
         """Test a limit handles 1 GET per second."""
         limit = limits.Limit("GET", "*", ".*", 1, 1)
         delay = limit("GET", "/anything")
-        self.assertEqual(None, delay)
+        self.assertIsNone(delay)
         self.assertEqual(0, limit.next_request)
         self.assertEqual(0, limit.last_request)
 
@@ -292,7 +318,7 @@ class LimitTest(BaseLimitTestSuite):
         """Test two calls to 1 GET per second limit."""
         limit = limits.Limit("GET", "*", ".*", 1, 1)
         delay = limit("GET", "/anything")
-        self.assertEqual(None, delay)
+        self.assertIsNone(delay)
 
         delay = limit("GET", "/anything")
         self.assertEqual(1, delay)
@@ -302,7 +328,7 @@ class LimitTest(BaseLimitTestSuite):
         self.time += 4
 
         delay = limit("GET", "/anything")
-        self.assertEqual(None, delay)
+        self.assertIsNone(delay)
         self.assertEqual(4, limit.next_request)
         self.assertEqual(4, limit.last_request)
 
@@ -350,28 +376,28 @@ class ParseLimitsTest(BaseLimitTestSuite):
             assert False, six.text_types(e)
 
         # Make sure the number of returned limits are correct
-        self.assertEqual(len(l), 4)
+        self.assertEqual(4, len(l))
 
         # Check all the verbs...
         expected = ['GET', 'PUT', 'POST', 'SAY']
-        self.assertEqual([t.verb for t in l], expected)
+        self.assertEqual(expected, [t.verb for t in l])
 
         # ...the URIs...
         expected = ['*', '/foo*', '/bar*', '/derp*']
-        self.assertEqual([t.uri for t in l], expected)
+        self.assertEqual(expected, [t.uri for t in l])
 
         # ...the regexes...
         expected = ['.*', '/foo.*', '/bar.*', '/derp.*']
-        self.assertEqual([t.regex for t in l], expected)
+        self.assertEqual(expected, [t.regex for t in l])
 
         # ...the values...
         expected = [20, 10, 5, 1]
-        self.assertEqual([t.value for t in l], expected)
+        self.assertEqual(expected, [t.value for t in l])
 
         # ...and the units...
         expected = [limits.PER_MINUTE, limits.PER_HOUR,
                     limits.PER_SECOND, limits.PER_DAY]
-        self.assertEqual([t.unit for t in l], expected)
+        self.assertEqual(expected, [t.unit for t in l])
 
 
 class LimiterTest(BaseLimitTestSuite):
@@ -400,7 +426,7 @@ class LimiterTest(BaseLimitTestSuite):
         didn"t set.
         """
         delay = self.limiter.check_for_delay("GET", "/anything")
-        self.assertEqual(delay, (None, None))
+        self.assertEqual((None, None), delay)
 
     def test_no_delay_PUT(self):
         """Test no delay on single call.
@@ -408,7 +434,7 @@ class LimiterTest(BaseLimitTestSuite):
         Simple test to ensure no delay on a single call for a known limit.
         """
         delay = self.limiter.check_for_delay("PUT", "/anything")
-        self.assertEqual(delay, (None, None))
+        self.assertEqual((None, None), delay)
 
     def test_delay_PUT(self):
         """Ensure 11th PUT will be delayed.
@@ -451,7 +477,7 @@ class LimiterTest(BaseLimitTestSuite):
         """
         # First 6 requests on PUT /volumes
         expected = [None] * 5 + [12.0]
-        results = list(self._check(6, "PUT", "/volumes"))
+        results = list(self._check(6, "PUT", "/shares"))
         self.assertEqual(expected, results)
 
         # Next 5 request on PUT /anything
@@ -490,7 +516,7 @@ class LimiterTest(BaseLimitTestSuite):
 
     def test_user_limit(self):
         """Test user-specific limits."""
-        self.assertEqual(self.limiter.levels['user3'], [])
+        self.assertEqual([], self.limiter.levels['user3'])
 
     def test_multiple_users(self):
         """Tests involving multiple users."""
@@ -534,7 +560,7 @@ class WsgiLimiterTest(BaseLimitTestSuite):
 
     def _request_data(self, verb, path):
         """Get data describing a limit request verb/path."""
-        return jsonutils.dumps({"verb": verb, "path": path})
+        return six.b(jsonutils.dumps({"verb": verb, "path": path}))
 
     def _request(self, verb, url, username=None):
         """Send request.
@@ -554,61 +580,61 @@ class WsgiLimiterTest(BaseLimitTestSuite):
         response = request.get_response(self.app)
 
         if "X-Wait-Seconds" in response.headers:
-            self.assertEqual(response.status_int, 403)
+            self.assertEqual(403, response.status_int)
             return response.headers["X-Wait-Seconds"]
 
-        self.assertEqual(response.status_int, 204)
+        self.assertEqual(204, response.status_int)
 
     def test_invalid_methods(self):
         """Only POSTs should work."""
         for method in ["GET", "PUT", "DELETE", "HEAD", "OPTIONS"]:
             request = webob.Request.blank("/", method=method)
             response = request.get_response(self.app)
-            self.assertEqual(response.status_int, 405)
+            self.assertEqual(405, response.status_int)
 
     def test_good_url(self):
         delay = self._request("GET", "/something")
-        self.assertEqual(delay, None)
+        self.assertIsNone(delay)
 
     def test_escaping(self):
         delay = self._request("GET", "/something/jump%20up")
-        self.assertEqual(delay, None)
+        self.assertIsNone(delay)
 
     def test_response_to_delays(self):
         delay = self._request("GET", "/delayed")
-        self.assertEqual(delay, None)
+        self.assertIsNone(delay)
 
         delay = self._request("GET", "/delayed")
-        self.assertEqual(delay, '60.00')
+        self.assertEqual('60.00', delay)
 
     def test_response_to_delays_usernames(self):
         delay = self._request("GET", "/delayed", "user1")
-        self.assertEqual(delay, None)
+        self.assertIsNone(delay)
 
         delay = self._request("GET", "/delayed", "user2")
-        self.assertEqual(delay, None)
+        self.assertIsNone(delay)
 
         delay = self._request("GET", "/delayed", "user1")
-        self.assertEqual(delay, '60.00')
+        self.assertEqual('60.00', delay)
 
         delay = self._request("GET", "/delayed", "user2")
-        self.assertEqual(delay, '60.00')
+        self.assertEqual('60.00', delay)
 
 
 class FakeHttplibSocket(object):
-    """Fake `httplib.HTTPResponse` replacement."""
+    """Fake `http_client.HTTPResponse` replacement."""
 
     def __init__(self, response_string):
         """Initialize new `FakeHttplibSocket`."""
-        self._buffer = six.StringIO(response_string)
+        self._buffer = six.BytesIO(six.b(response_string))
 
-    def makefile(self, _mode, _other):
+    def makefile(self, _mode, _other=None):
         """Returns the socket's internal buffer."""
         return self._buffer
 
 
 class FakeHttplibConnection(object):
-    """Fake `httplib.HTTPConnection`."""
+    """Fake `http_client.HTTPConnection`."""
 
     def __init__(self, app, host):
         """Initialize `FakeHttplibConnection`."""
@@ -620,7 +646,7 @@ class FakeHttplibConnection(object):
 
         Requests made via this connection actually get translated and routed
         into our WSGI app, we then wait for the response and turn it back into
-        an `httplib.HTTPResponse`.
+        an `http_client.HTTPResponse`.
         """
         if not headers:
             headers = {}
@@ -629,12 +655,12 @@ class FakeHttplibConnection(object):
         req.method = method
         req.headers = headers
         req.host = self.host
-        req.body = body
+        req.body = six.b(body)
 
         resp = str(req.get_response(self.app))
         resp = "HTTP/1.0 %s" % resp
         sock = FakeHttplibSocket(resp)
-        self.http_response = httplib.HTTPResponse(sock)
+        self.http_response = http_client.HTTPResponse(sock)
         self.http_response.begin()
 
     def getresponse(self):
@@ -650,7 +676,7 @@ def wire_HTTPConnection_to_WSGI(host, app):
 
     After calling this method, when any code calls
 
-    httplib.HTTPConnection(host)
+    http_client.HTTPConnection(host)
 
     the connection object will be a fake.  Its requests will be sent directly
     to the given WSGI app rather than through a socket.
@@ -680,8 +706,9 @@ def wire_HTTPConnection_to_WSGI(host, app):
             else:
                 return self.wrapped(connection_host, *args, **kwargs)
 
-    oldHTTPConnection = httplib.HTTPConnection
-    httplib.HTTPConnection = HTTPConnectionDecorator(httplib.HTTPConnection)
+    oldHTTPConnection = http_client.HTTPConnection
+    http_client.HTTPConnection = HTTPConnectionDecorator(
+        http_client.HTTPConnection)
     return oldHTTPConnection
 
 
@@ -692,7 +719,7 @@ class WsgiLimiterProxyTest(BaseLimitTestSuite):
         """Set up HTTP/WSGI magic.
 
         Do some nifty HTTP/WSGI magic which allows for WSGI to be called
-        directly by something like the `httplib` library.
+        directly by something like the `http_client` library.
         """
         super(WsgiLimiterProxyTest, self).setUp()
         self.app = limits.WsgiLimiter(TEST_LIMITS)
@@ -703,24 +730,23 @@ class WsgiLimiterProxyTest(BaseLimitTestSuite):
     def test_200(self):
         """Successful request test."""
         delay = self.proxy.check_for_delay("GET", "/anything")
-        self.assertEqual(delay, (None, None))
+        self.assertEqual((None, None), delay)
 
     def test_403(self):
         """Forbidden request test."""
         delay = self.proxy.check_for_delay("GET", "/delayed")
-        self.assertEqual(delay, (None, None))
-
+        self.assertEqual((None, None), delay)
         delay, error = self.proxy.check_for_delay("GET", "/delayed")
         error = error.strip()
 
-        expected = ("60.00", "403 Forbidden\n\nOnly 1 GET request(s) can be "
-                    "made to /delayed every minute.")
+        expected = ("60.00", six.b("403 Forbidden\n\nOnly 1 GET request(s) "
+                                   "can be made to /delayed every minute."))
 
-        self.assertEqual((delay, error), expected)
+        self.assertEqual(expected, (delay, error))
 
     def tearDown(self):
         # restore original HTTPConnection object
-        httplib.HTTPConnection = self.oldHTTPConnection
+        http_client.HTTPConnection = self.oldHTTPConnection
         super(WsgiLimiterProxyTest, self).tearDown()
 
 
@@ -735,47 +761,74 @@ class LimitsViewBuilderTest(test.TestCase):
                              "remaining": 2,
                              "unit": "MINUTE",
                              "resetTime": 1311272226},
-                            {"URI": "*/volumes",
-                             "regex": "^/volumes",
+                            {"URI": "*/shares",
+                             "regex": "^/shares",
                              "value": 50,
                              "verb": "POST",
                              "remaining": 10,
                              "unit": "DAY",
                              "resetTime": 1311272226}]
-        self.absolute_limits = {"shares": 1,
-                                "gigabytes": 5,
-                                "snapshots": 5}
+        self.absolute_limits = {
+            "limit": {
+                "shares": 111,
+                "gigabytes": 222,
+                "snapshots": 333,
+                "snapshot_gigabytes": 444,
+                "share_networks": 555,
+            },
+            "in_use": {
+                "shares": 65,
+                "gigabytes": 76,
+                "snapshots": 87,
+                "snapshot_gigabytes": 98,
+                "share_networks": 107,
+            },
+        }
 
     def test_build_limits(self):
         tdate = "2011-07-21T18:17:06Z"
-        expected_limits = \
-            {"limits": {"rate": [{"uri": "*",
-                                  "regex": ".*",
-                                  "limit": [{"value": 10,
-                                             "verb": "POST",
-                                             "remaining": 2,
-                                             "unit": "MINUTE",
-                                             "next-available": tdate}]},
-                                 {"uri": "*/volumes",
-                                  "regex": "^/volumes",
-                                  "limit": [{"value": 50,
-                                             "verb": "POST",
-                                             "remaining": 10,
-                                             "unit": "DAY",
-                                             "next-available": tdate}]}],
-                        "absolute": {"maxTotalShareGigabytes": 5,
-                                     "maxTotalShares": 1,
-                                     "maxTotalShareSnapshots": 5}}}
+        expected_limits = {
+            "limits": {
+                "rate": [
+                    {"uri": "*",
+                     "regex": ".*",
+                     "limit": [{"value": 10,
+                                "verb": "POST",
+                                "remaining": 2,
+                                "unit": "MINUTE",
+                                "next-available": tdate}]},
+                    {"uri": "*/shares",
+                     "regex": "^/shares",
+                     "limit": [{"value": 50,
+                                "verb": "POST",
+                                "remaining": 10,
+                                "unit": "DAY",
+                                "next-available": tdate}]}
+                ],
+                "absolute": {
+                    "totalSharesUsed": 65,
+                    "totalShareGigabytesUsed": 76,
+                    "totalShareSnapshotsUsed": 87,
+                    "totalSnapshotGigabytesUsed": 98,
+                    "totalShareNetworksUsed": 107,
+                    "maxTotalShares": 111,
+                    "maxTotalShareGigabytes": 222,
+                    "maxTotalShareSnapshots": 333,
+                    "maxTotalSnapshotGigabytes": 444,
+                    "maxTotalShareNetworks": 555,
+                }
+            }
+        }
 
         output = self.view_builder.build(self.rate_limits,
                                          self.absolute_limits)
-        self.assertDictMatch(output, expected_limits)
+        self.assertDictMatch(expected_limits, output)
 
     def test_build_limits_empty_limits(self):
-        expected_limits = {"limits": {"rate": [],
-                           "absolute": {}}}
-
+        expected_limits = {"limits": {"rate": [], "absolute": {}}}
         abs_limits = {}
         rate_limits = []
+
         output = self.view_builder.build(rate_limits, abs_limits)
-        self.assertDictMatch(output, expected_limits)
+
+        self.assertDictMatch(expected_limits, output)

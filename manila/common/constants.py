@@ -1,4 +1,4 @@
-# Copyright 2013 Openstack Foundation
+# Copyright 2013 OpenStack Foundation
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -13,27 +13,43 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-STATUS_NEW = 'NEW'
-STATUS_CREATING = 'CREATING'
-STATUS_DELETING = 'DELETING'
-STATUS_DELETED = 'DELETED'
-STATUS_ERROR = 'ERROR'
-STATUS_ERROR_DELETING = 'ERROR_DELETING'
-STATUS_AVAILABLE = 'AVAILABLE'
-STATUS_ACTIVE = 'ACTIVE'
-STATUS_INACTIVE = 'INACTIVE'
-STATUS_ACTIVATING = 'ACTIVATING'
-STATUS_DEACTIVATING = 'DEACTIVATING'
-STATUS_MANAGING = 'MANAGE_STARTING'
-STATUS_MANAGE_ERROR = 'MANAGE_ERROR'
-STATUS_UNMANAGING = 'UNMANAGE_STARTING'
-STATUS_UNMANAGE_ERROR = 'UNMANAGE_ERROR'
-STATUS_UNMANAGED = 'UNMANAGED'
+STATUS_NEW = 'new'
+STATUS_CREATING = 'creating'
+STATUS_DELETING = 'deleting'
+STATUS_DELETED = 'deleted'
+STATUS_ERROR = 'error'
+STATUS_ERROR_DELETING = 'error_deleting'
+STATUS_AVAILABLE = 'available'
+STATUS_ACTIVE = 'active'
+STATUS_INACTIVE = 'inactive'
+STATUS_MANAGING = 'manage_starting'
+STATUS_MANAGE_ERROR = 'manage_error'
+STATUS_UNMANAGING = 'unmanage_starting'
+STATUS_UNMANAGE_ERROR = 'unmanage_error'
+STATUS_UNMANAGED = 'unmanaged'
+STATUS_EXTENDING = 'extending'
+STATUS_EXTENDING_ERROR = 'extending_error'
+STATUS_SHRINKING = 'shrinking'
+STATUS_SHRINKING_ERROR = 'shrinking_error'
+STATUS_SHRINKING_POSSIBLE_DATA_LOSS_ERROR = (
+    'shrinking_possible_data_loss_error'
+)
+STATUS_TASK_STATE_MIGRATION_STARTING = 'migration_starting'
+STATUS_TASK_STATE_MIGRATION_IN_PROGRESS = 'migration_in_progress'
+STATUS_TASK_STATE_MIGRATION_ERROR = 'migration_error'
+STATUS_TASK_STATE_MIGRATION_SUCCESS = 'migration_success'
+STATUS_TASK_STATE_MIGRATION_COMPLETING = 'migration_completing'
+
+BUSY_TASK_STATES = (
+    STATUS_TASK_STATE_MIGRATION_COMPLETING,
+    STATUS_TASK_STATE_MIGRATION_STARTING,
+    STATUS_TASK_STATE_MIGRATION_IN_PROGRESS,
+)
 
 TRANSITIONAL_STATUSES = (
     STATUS_CREATING, STATUS_DELETING,
-    STATUS_ACTIVATING, STATUS_DEACTIVATING,
     STATUS_MANAGING, STATUS_UNMANAGING,
+    STATUS_EXTENDING, STATUS_SHRINKING,
 )
 
 SUPPORTED_SHARE_PROTOCOLS = (
@@ -64,9 +80,12 @@ SSH_PORTS = (
 PING_PORTS = (
     ("icmp", (-1, -1)),
 )
+WINRM_PORTS = (
+    ("tcp", (5985, 5986)),
+)
 
 SERVICE_INSTANCE_SECGROUP_DATA = (
-    CIFS_PORTS + NFS_PORTS + SSH_PORTS + PING_PORTS)
+    CIFS_PORTS + NFS_PORTS + SSH_PORTS + PING_PORTS + WINRM_PORTS)
 
 ACCESS_LEVEL_RW = 'rw'
 ACCESS_LEVEL_RO = 'ro'
@@ -76,7 +95,34 @@ ACCESS_LEVELS = (
     ACCESS_LEVEL_RO,
 )
 
+TASK_STATE_STATUSES = (
+    STATUS_TASK_STATE_MIGRATION_STARTING,
+    STATUS_TASK_STATE_MIGRATION_ERROR,
+    STATUS_TASK_STATE_MIGRATION_SUCCESS,
+    STATUS_TASK_STATE_MIGRATION_COMPLETING,
+    STATUS_TASK_STATE_MIGRATION_IN_PROGRESS,
+)
+
 
 class ExtraSpecs(object):
+
+    # Extra specs key names
     DRIVER_HANDLES_SHARE_SERVERS = "driver_handles_share_servers"
-    REQUIRED = (DRIVER_HANDLES_SHARE_SERVERS, )
+    SNAPSHOT_SUPPORT = "snapshot_support"
+
+    # Extra specs containers
+    REQUIRED = (
+        DRIVER_HANDLES_SHARE_SERVERS,
+    )
+    UNDELETABLE = (
+        DRIVER_HANDLES_SHARE_SERVERS,
+        SNAPSHOT_SUPPORT,
+    )
+    # NOTE(cknight): Some extra specs are necessary parts of the Manila API and
+    # should be visible to non-admin users.  This list matches the UNDELETABLE
+    # list today, but that may not always remain true.
+    TENANT_VISIBLE = UNDELETABLE
+    BOOLEAN = (
+        DRIVER_HANDLES_SHARE_SERVERS,
+        SNAPSHOT_SUPPORT,
+    )

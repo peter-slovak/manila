@@ -26,7 +26,6 @@ import six
 
 from manila.i18n import _
 from manila.i18n import _LW
-from manila.openstack.common import local
 from manila import policy
 
 LOG = log.getLogger(__name__)
@@ -55,12 +54,14 @@ class RequestContext(object):
         :param kwargs: Extra arguments that might be present, but we ignore
             because they possibly came in from older rpc messages.
         """
+        user = kwargs.pop('user', None)
+        tenant = kwargs.pop('tenant', None)
         if kwargs:
-            LOG.warn(_LW('Arguments dropped when creating context: %s'),
-                     str(kwargs))
+            LOG.warning(_LW('Arguments dropped when creating context: %s.'),
+                        str(kwargs))
 
-        self.user_id = user_id
-        self.project_id = project_id
+        self.user_id = user_id or user
+        self.project_id = project_id or tenant
         self.roles = roles or []
         self.is_admin = is_admin
         if self.is_admin is None:
@@ -85,7 +86,7 @@ class RequestContext(object):
         self.request_id = request_id
         self.auth_token = auth_token
         self.quota_class = quota_class
-        if overwrite or not hasattr(local.store, 'context'):
+        if overwrite or not common_context.get_current():
             self.update_store()
 
     def _get_read_deleted(self):
@@ -104,7 +105,7 @@ class RequestContext(object):
                             _del_read_deleted)
 
     def update_store(self):
-        local.store.context = self
+        common_context._request_store.context = self
 
     def to_dict(self):
         return {'user_id': self.user_id,
@@ -113,7 +114,7 @@ class RequestContext(object):
                 'read_deleted': self.read_deleted,
                 'roles': self.roles,
                 'remote_address': self.remote_address,
-                'timestamp': timeutils.strtime(self.timestamp),
+                'timestamp': self.timestamp.isoformat(),
                 'request_id': self.request_id,
                 'auth_token': self.auth_token,
                 'quota_class': self.quota_class,

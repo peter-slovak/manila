@@ -21,6 +21,7 @@
 Unit Tests for remote procedure calls using queue
 """
 
+import ddt
 import mock
 from oslo_config import cfg
 
@@ -30,6 +31,7 @@ from manila import exception
 from manila import manager
 from manila import service
 from manila import test
+from manila import utils
 from manila import wsgi
 
 test_service_opts = [
@@ -37,7 +39,6 @@ test_service_opts = [
                default="manila.tests.test_service.FakeManager",
                help="Manager for testing"),
     cfg.StrOpt("test_service_listen",
-               default=None,
                help="Host to bind test service to"),
     cfg.IntOpt("test_service_listen_port",
                default=0,
@@ -71,12 +72,12 @@ class ServiceManagerTestCase(test.TestCase):
     def test_message_gets_to_manager(self):
         serv = service.Service('test', 'test', 'test', CONF.fake_manager)
         serv.start()
-        self.assertEqual(serv.test_method(), 'manager')
+        self.assertEqual('manager', serv.test_method())
 
     def test_override_manager_method(self):
         serv = ExtendedService('test', 'test', 'test', CONF.fake_manager)
         serv.start()
-        self.assertEqual(serv.test_method(), 'service')
+        self.assertEqual('service', serv.test_method())
 
 
 class ServiceFlagsTestCase(test.TestCase):
@@ -126,11 +127,12 @@ service_ref = {
     'binary': binary,
     'topic': topic,
     'report_count': 0,
-    'availability_zone': 'nova',
+    'availability_zone': {'name': 'nova'},
     'id': 1,
 }
 
 
+@ddt.ddt
 class ServiceTestCase(test.TestCase):
     """Test cases for Services."""
 
@@ -139,6 +141,22 @@ class ServiceTestCase(test.TestCase):
                                      binary='manila-fake',
                                      topic='fake')
         self.assertTrue(app)
+
+    @ddt.data(True, False)
+    def test_periodic_tasks(self, raise_on_error):
+        serv = service.Service(host, binary, topic, CONF.fake_manager)
+        self.mock_object(
+            context,
+            'get_admin_context',
+            mock.Mock(side_effect=context.get_admin_context))
+        self.mock_object(serv.manager, 'periodic_tasks')
+
+        serv.periodic_tasks(raise_on_error=raise_on_error)
+
+        context.get_admin_context.assert_called_once_with()
+        serv.manager.periodic_tasks.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext),
+            raise_on_error=raise_on_error)
 
     @mock.patch.object(service.db, 'service_get_by_args',
                        mock.Mock(side_effect=fake_service_get_by_args))
@@ -184,24 +202,27 @@ class ServiceTestCase(test.TestCase):
 
 class TestWSGIService(test.TestCase):
 
-    @mock.patch.object(wsgi.Loader, 'load_app', mock.Mock())
+    def setUp(self):
+        super(self.__class__, self).setUp()
+        self.mock_object(wsgi.Loader, 'load_app')
+        self.test_service = service.WSGIService("test_service")
+
     def test_service_random_port(self):
-        test_service = service.WSGIService("test_service")
-        self.assertEqual(0, test_service.port)
-        test_service.start()
-        self.assertNotEqual(0, test_service.port)
-        test_service.stop()
+        self.assertEqual(0, self.test_service.port)
+        self.test_service.start()
+        self.assertNotEqual(0, self.test_service.port)
+        self.test_service.stop()
         wsgi.Loader.load_app.assert_called_once_with("test_service")
 
+    def test_reset_pool_size_to_default(self):
+        self.test_service.start()
 
-class TestLauncher(test.TestCase):
+        # Stopping the service, which in turn sets pool size to 0
+        self.test_service.stop()
+        self.assertEqual(0, self.test_service.server._pool.size)
 
-    @mock.patch.object(wsgi.Loader, 'load_app', mock.Mock())
-    def test_launch_app(self):
-        self.service = service.WSGIService("test_service")
-        self.assertEqual(0, self.service.port)
-        launcher = service.Launcher()
-        launcher.launch_server(self.service)
-        self.assertEqual(0, self.service.port)
-        launcher.stop()
+        # Resetting pool size to default
+        self.test_service.reset()
+        self.test_service.start()
+        self.assertEqual(1000, self.test_service.server._pool.size)
         wsgi.Loader.load_app.assert_called_once_with("test_service")

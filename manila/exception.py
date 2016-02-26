@@ -21,6 +21,7 @@ Includes decorator for re-raising Manila-type exceptions.
 SHOULD include dedicated exception logging.
 
 """
+import re
 
 from oslo_concurrency import processutils
 from oslo_config import cfg
@@ -47,7 +48,7 @@ ProcessExecutionError = processutils.ProcessExecutionError
 
 
 class ConvertedException(webob.exc.WSGIHTTPException):
-    def __init__(self, code=0, title="", explanation=""):
+    def __init__(self, code=400, title="", explanation=""):
         self.code = code
         self.title = title
         self.explanation = explanation
@@ -103,6 +104,8 @@ class ManilaException(Exception):
         elif isinstance(message, Exception):
             message = six.text_type(message)
 
+        if re.match('.*[^\.]\.\.$', message):
+            message = message[:-1]
         self.msg = message
         super(ManilaException, self).__init__(message)
 
@@ -126,6 +129,11 @@ class AdminRequired(NotAuthorized):
 
 class PolicyNotAuthorized(NotAuthorized):
     message = _("Policy doesn't allow %(action)s to be performed.")
+
+
+class Conflict(ManilaException):
+    message = _("%(err)s")
+    code = 409
 
 
 class Invalid(ManilaException):
@@ -167,6 +175,24 @@ class InvalidDriverMode(Invalid):
     message = _("Invalid driver mode: %(driver_mode)s.")
 
 
+class InvalidAPIVersionString(Invalid):
+    message = _("API Version String %(version)s is of invalid format. Must "
+                "be of format MajorNum.MinorNum.")
+
+
+class VersionNotFoundForAPIMethod(Invalid):
+    message = _("API version %(version)s is not supported on this method.")
+
+
+class InvalidGlobalAPIVersion(Invalid):
+    message = _("Version %(req_ver)s is not supported by the API. Minimum "
+                "is %(min_ver)s and maximum is %(max_ver)s.")
+
+
+class InvalidCapacity(Invalid):
+    message = _("Invalid capacity: %(name)s = %(value)s.")
+
+
 class NotFound(ManilaException):
     message = _("Resource could not be found.")
     code = 404
@@ -175,6 +201,10 @@ class NotFound(ManilaException):
 
 class InUse(ManilaException):
     message = _("Resource is in use.")
+
+
+class AvailabilityZoneNotFound(NotFound):
+    message = _("Availability zone %(id)s could not be found.")
 
 
 class ShareNetworkNotFound(NotFound):
@@ -192,6 +222,18 @@ class ShareServerNotFoundByFilters(ShareServerNotFound):
 
 class ShareServerInUse(InUse):
     message = _("Share server %(share_server_id)s is in use.")
+
+
+class InvalidShareServer(Invalid):
+    message = _("Share server %(share_server_id)s is not valid.")
+
+
+class ShareMigrationFailed(ManilaException):
+    message = _("Share migration failed: %(reason)s")
+
+
+class ServiceIPNotFound(ManilaException):
+    message = _("Share migration failed: %(reason)s")
 
 
 class ShareServerNotCreated(ManilaException):
@@ -227,46 +269,46 @@ class InvalidReservationExpiration(Invalid):
 
 
 class InvalidQuotaValue(Invalid):
-    msg_fmt = _("Change would make usage less than 0 for the following "
+    message = _("Change would make usage less than 0 for the following "
                 "resources: %(unders)s.")
 
 
 class QuotaNotFound(NotFound):
-    msg_fmt = _("Quota could not be found.")
+    message = _("Quota could not be found.")
 
 
 class QuotaExists(ManilaException):
-    msg_fmt = _("Quota exists for project %(project_id)s, "
+    message = _("Quota exists for project %(project_id)s, "
                 "resource %(resource)s.")
 
 
 class QuotaResourceUnknown(QuotaNotFound):
-    msg_fmt = _("Unknown quota resources %(unknown)s.")
+    message = _("Unknown quota resources %(unknown)s.")
 
 
 class ProjectUserQuotaNotFound(QuotaNotFound):
-    msg_fmt = _("Quota for user %(user_id)s in project %(project_id)s "
+    message = _("Quota for user %(user_id)s in project %(project_id)s "
                 "could not be found.")
 
 
 class ProjectQuotaNotFound(QuotaNotFound):
-    msg_fmt = _("Quota for project %(project_id)s could not be found.")
+    message = _("Quota for project %(project_id)s could not be found.")
 
 
 class QuotaClassNotFound(QuotaNotFound):
-    msg_fmt = _("Quota class %(class_name)s could not be found.")
+    message = _("Quota class %(class_name)s could not be found.")
 
 
 class QuotaUsageNotFound(QuotaNotFound):
-    msg_fmt = _("Quota usage for project %(project_id)s could not be found.")
+    message = _("Quota usage for project %(project_id)s could not be found.")
 
 
 class ReservationNotFound(QuotaNotFound):
-    msg_fmt = _("Quota reservation %(uuid)s could not be found.")
+    message = _("Quota reservation %(uuid)s could not be found.")
 
 
 class OverQuota(ManilaException):
-    msg_fmt = _("Quota exceeded for resources: %(overs)s.")
+    message = _("Quota exceeded for resources: %(overs)s.")
 
 
 class MigrationNotFound(NotFound):
@@ -342,6 +384,14 @@ class InvalidShare(Invalid):
     message = _("Invalid share: %(reason)s.")
 
 
+class ShareBusyException(Invalid):
+    message = _("Share is busy with an active task: %(reason)s.")
+
+
+class InvalidShareInstance(Invalid):
+    message = _("Invalid share instance: %(reason)s.")
+
+
 class ManageInvalidShare(InvalidShare):
     message = _("Manage existing share failed due to "
                 "invalid share: %(reason)s")
@@ -368,12 +418,12 @@ class InvalidShareAccessLevel(Invalid):
     message = _("Invalid or unsupported share access level: %(level)s.")
 
 
-class ShareIsBusy(ManilaException):
-    message = _("Deleting $(share_name) share that used.")
-
-
 class ShareBackendException(ManilaException):
     message = _("Share backend error: %(msg)s.")
+
+
+class ExportLocationNotFound(NotFound):
+    message = _("Export location %(uuid)s could not be found.")
 
 
 class ShareSnapshotNotFound(NotFound):
@@ -482,6 +532,21 @@ class ManageExistingShareTypeMismatch(ManilaException):
                 "%(reason)s")
 
 
+class ShareExtendingError(ManilaException):
+    message = _("Share %(share_id)s could not be extended due to error "
+                "in the driver: %(reason)s")
+
+
+class ShareShrinkingError(ManilaException):
+    message = _("Share %(share_id)s could not be shrunk due to error "
+                "in the driver: %(reason)s")
+
+
+class ShareShrinkingPossibleDataLoss(ManilaException):
+    message = _("Share %(share_id)s could not be shrunk due to "
+                "possible data loss")
+
+
 class InstanceNotFound(NotFound):
     message = _("Instance %(instance_id)s could not be found.")
 
@@ -504,6 +569,7 @@ class StorageResourceException(ManilaException):
 
 class StorageResourceNotFound(StorageResourceException):
     message = _("Storage resource %(name)s not found.")
+    code = 404
 
 
 class SnapshotNotFound(StorageResourceNotFound):
@@ -530,15 +596,23 @@ class EMCVnxXMLAPIError(Invalid):
     message = _("%(err)s")
 
 
-class HP3ParInvalidClient(Invalid):
+class EMCVnxLockRequiredException(ManilaException):
+    message = _("Unable to acquire lock(s).")
+
+
+class EMCVnxInvalidMoverID(ManilaException):
+    message = _("Invalid mover or vdm %(id)s.")
+
+
+class HPE3ParInvalidClient(Invalid):
     message = _("%(err)s")
 
 
-class HP3ParInvalid(Invalid):
+class HPE3ParInvalid(Invalid):
     message = _("%(err)s")
 
 
-class HP3ParUnexpectedError(ManilaException):
+class HPE3ParUnexpectedError(ManilaException):
     message = _("%(err)s")
 
 
@@ -567,10 +641,6 @@ class SSHException(ManilaException):
     message = _("Exception in SSH protocol negotiation or logic.")
 
 
-class SopAPIError(Invalid):
-    message = _("%(err)s")
-
-
 class HDFSException(ManilaException):
     message = _("HDFS exception occurred!")
 
@@ -584,3 +654,58 @@ class QBRpcException(ManilaException):
     message = _("Quobyte JsonRpc call to backend raised "
                 "an exception: %(result)s, Quobyte error"
                 " code %(qbcode)s")
+
+
+class SSHInjectionThreat(ManilaException):
+    message = _("SSH command injection detected: %(command)s")
+
+
+class HNASBackendException(ManilaException):
+    message = _("HNAS Backend Exception: %(msg)s")
+
+
+class HNASConnException(ManilaException):
+    message = _("HNAS Connection Exception: %(msg)s")
+
+
+class HNASItemNotFoundException(StorageResourceNotFound):
+    message = _("HNAS Item Not Found Exception: %(msg)s")
+
+
+class HNASNothingToCloneException(ManilaException):
+    message = _("HNAS Nothing To Clone Exception: %(msg)s")
+
+
+# ConsistencyGroup
+class ConsistencyGroupNotFound(NotFound):
+    message = _("ConsistencyGroup %(consistency_group_id)s could not be "
+                "found.")
+
+
+class CGSnapshotNotFound(NotFound):
+    message = _("Consistency group snapshot %(cgsnapshot_id)s could not be "
+                "found.")
+
+
+class CGSnapshotMemberNotFound(NotFound):
+    message = _("CG snapshot %(member_id)s could not be found.")
+
+
+class InvalidConsistencyGroup(Invalid):
+    message = _("Invalid ConsistencyGroup: %(reason)s")
+
+
+class InvalidCGSnapshot(Invalid):
+    message = _("Invalid CGSnapshot: %(reason)s")
+
+
+class DriverNotInitialized(ManilaException):
+    message = _("Share driver '%(driver)s' not initialized.")
+
+
+class ShareResourceNotFound(StorageResourceNotFound):
+    message = _("Share id %(share_id)s could not be found "
+                "in storage backend.")
+
+class NexentaException(ManilaException):
+    message = _("Exception due to Nexenta failure.")

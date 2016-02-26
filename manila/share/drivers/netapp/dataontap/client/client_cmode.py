@@ -17,9 +17,11 @@
 
 import copy
 import hashlib
+import time
 
 from oslo_log import log
 from oslo_utils import strutils
+from oslo_utils import units
 import six
 
 from manila import exception
@@ -31,6 +33,8 @@ from manila.share.drivers.netapp import utils as na_utils
 
 LOG = log.getLogger(__name__)
 DELETED_PREFIX = 'deleted_manila_'
+DEFAULT_IPSPACE = 'Default'
+DEFAULT_BROADCAST_DOMAIN = 'OpenStack'
 
 
 class NetAppCmodeClient(client_base.NetAppBaseClient):
@@ -44,6 +48,19 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         self.connection.set_api_version(1, 15)
         (major, minor) = self.get_ontapi_version(cached=False)
         self.connection.set_api_version(major, minor)
+
+        self._init_features()
+
+    def _init_features(self):
+        """Initialize cDOT feature support map."""
+        super(NetAppCmodeClient, self)._init_features()
+
+        ontapi_version = self.get_ontapi_version(cached=True)
+        ontapi_1_30 = ontapi_version >= (1, 30)
+
+        self.features.add_feature('BROADCAST_DOMAINS', supported=ontapi_1_30)
+        self.features.add_feature('IPSPACES', supported=ontapi_1_30)
+        self.features.add_feature('SUBNETS', supported=ontapi_1_30)
 
     def _invoke_vserver_api(self, na_element, vserver):
         server = copy.copy(self.connection)
@@ -64,7 +81,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
 
     @na_utils.trace
     def create_vserver(self, vserver_name, root_volume_aggregate_name,
-                       root_volume_name, aggregate_names):
+                       root_volume_name, aggregate_names, ipspace_name):
         """Creates new vserver and assigns aggregates."""
         create_args = {
             'vserver-name': vserver_name,
@@ -75,6 +92,14 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 'nsswitch': 'file',
             },
         }
+
+        if ipspace_name:
+            if not self.features.IPSPACES:
+                msg = 'IPSpaces are not supported on this backend.'
+                raise exception.NetAppException(msg)
+            else:
+                create_args['ipspace'] = ipspace_name
+
         self.send_request('vserver-create', create_args)
 
         aggr_list = [{'aggr-name': aggr_name} for aggr_name in aggregate_names]
@@ -130,6 +155,57 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                     'for Vserver %s.') % vserver_name
             raise exception.NetAppException(msg)
         return root_volume_name
+
+    @na_utils.trace
+    def get_vserver_ipspace(self, vserver_name):
+        """Get the IPspace of the vserver, or None if not supported."""
+        if not self.features.IPSPACES:
+            return None
+
+        api_args = {
+            'query': {
+                'vserver-info': {
+                    'vserver-name': vserver_name,
+                },
+            },
+            'desired-attributes': {
+                'vserver-info': {
+                    'ipspace': None,
+                },
+            },
+        }
+        vserver_info = self.send_request('vserver-get-iter', api_args)
+
+        try:
+            ipspace = vserver_info.get_child_by_name(
+                'attributes-list').get_child_by_name(
+                    'vserver-info').get_child_content('ipspace')
+        except AttributeError:
+            msg = _('Could not determine IPspace for Vserver %s.')
+            raise exception.NetAppException(msg % vserver_name)
+        return ipspace
+
+    @na_utils.trace
+    def ipspace_has_data_vservers(self, ipspace_name):
+        """Check whether an IPspace has any data Vservers assigned to it."""
+        if not self.features.IPSPACES:
+            return False
+
+        api_args = {
+            'query': {
+                'vserver-info': {
+                    'ipspace': ipspace_name,
+                    'vserver-type': 'data'
+                },
+            },
+            'desired-attributes': {
+                'vserver-info': {
+                    'vserver-name': None,
+                },
+            },
+        }
+        result = self.send_request('vserver-get-iter', api_args)
+        return self._has_records(result)
 
     @na_utils.trace
     def list_vservers(self, vserver_type='data'):
@@ -264,7 +340,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 },
             },
             'desired-attributes': {
-                'node-details-info': {
+                'net-port-info': {
                     'port': None,
                     'node': None,
                     'operational-speed': None,
@@ -336,18 +412,22 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
 
         This must be called against a Vserver LIF.
         """
-        return self.get_vserver_aggregate_capacities().keys()
+        return list(self.get_vserver_aggregate_capacities().keys())
 
     @na_utils.trace
     def create_network_interface(self, ip, netmask, vlan, node, port,
                                  vserver_name, allocation_id,
-                                 lif_name_template):
+                                 lif_name_template, ipspace_name):
         """Creates LIF on VLAN port."""
 
         home_port_name = port
         if vlan:
             self._create_vlan(node, port, vlan)
             home_port_name = '%(port)s-%(tag)s' % {'port': port, 'tag': vlan}
+
+        if self.features.BROADCAST_DOMAINS:
+            self._ensure_broadcast_domain_for_port(node, home_port_name,
+                                                   ipspace=ipspace_name)
 
         interface_name = (lif_name_template %
                           {'node': node, 'net_allocation_id': allocation_id})
@@ -391,6 +471,162 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                         'port %(port)s. %(err_msg)s')
                 msg_args = {'vlan': vlan, 'port': port, 'err_msg': e.message}
                 raise exception.NetAppException(msg % msg_args)
+
+    @na_utils.trace
+    def _ensure_broadcast_domain_for_port(self, node, port,
+                                          domain=DEFAULT_BROADCAST_DOMAIN,
+                                          ipspace=DEFAULT_IPSPACE):
+        """Ensure a port is in a broadcast domain.  Create one if necessary.
+
+        If the IPspace:domain pair match for the given port, which commonly
+        happens in multi-node clusters, then there isn't anything to do.
+        Otherwise, we can assume the IPspace is correct and extant by this
+        point, so the remaining task is to remove the port from any domain it
+        is already in, create the desired domain if it doesn't exist, and add
+        the port to the desired domain.
+        """
+
+        port_info = self._get_broadcast_domain_for_port(node, port)
+
+        # Port already in desired ipspace and broadcast domain.
+        if (port_info['ipspace'] == ipspace
+                and port_info['broadcast-domain'] == domain):
+            return
+
+        # If in another broadcast domain, remove port from it.
+        if port_info['broadcast-domain']:
+            self._remove_port_from_broadcast_domain(
+                node, port, port_info['broadcast-domain'],
+                port_info['ipspace'])
+
+        # If desired broadcast domain doesn't exist, create it.
+        if not self._broadcast_domain_exists(domain, ipspace):
+            self._create_broadcast_domain(domain, ipspace)
+
+        # Move the port into the broadcast domain where it is needed.
+        self._add_port_to_broadcast_domain(node, port, domain, ipspace)
+
+    @na_utils.trace
+    def _get_broadcast_domain_for_port(self, node, port):
+        """Get broadcast domain for a specific port."""
+        api_args = {
+            'query': {
+                'net-port-info': {
+                    'node': node,
+                    'port': port,
+                },
+            },
+            'desired-attributes': {
+                'net-port-info': {
+                    'broadcast-domain': None,
+                    'ipspace': None,
+                },
+            },
+        }
+        result = self.send_request('net-port-get-iter', api_args)
+
+        net_port_info_list = result.get_child_by_name(
+            'attributes-list') or netapp_api.NaElement('none')
+        port_info = net_port_info_list.get_children()
+        if not port_info:
+            msg = _('Could not find port %(port)s on node %(node)s.')
+            msg_args = {'port': port, 'node': node}
+            raise exception.NetAppException(msg % msg_args)
+
+        port = {
+            'broadcast-domain':
+            port_info[0].get_child_content('broadcast-domain'),
+            'ipspace': port_info[0].get_child_content('ipspace')
+        }
+        return port
+
+    @na_utils.trace
+    def _broadcast_domain_exists(self, domain, ipspace):
+        """Check if a broadcast domain exists."""
+        api_args = {
+            'query': {
+                'net-port-broadcast-domain-info': {
+                    'ipspace': ipspace,
+                    'broadcast-domain': domain,
+                },
+            },
+            'desired-attributes': {
+                'net-port-broadcast-domain-info': None,
+            },
+        }
+        result = self.send_request('net-port-broadcast-domain-get-iter',
+                                   api_args)
+        return self._has_records(result)
+
+    @na_utils.trace
+    def _create_broadcast_domain(self, domain, ipspace, mtu=1500):
+        """Create a broadcast domain."""
+        api_args = {
+            'ipspace': ipspace,
+            'broadcast-domain': domain,
+            'mtu': mtu,
+        }
+        self.send_request('net-port-broadcast-domain-create', api_args)
+
+    @na_utils.trace
+    def _delete_broadcast_domain(self, domain, ipspace):
+        """Delete a broadcast domain."""
+        api_args = {
+            'ipspace': ipspace,
+            'broadcast-domain': domain,
+        }
+        self.send_request('net-port-broadcast-domain-destroy', api_args)
+
+    def _delete_broadcast_domains_for_ipspace(self, ipspace_name):
+        """Deletes all broadcast domains in an IPspace."""
+        ipspaces = self.get_ipspaces(ipspace_name=ipspace_name)
+        if not ipspaces:
+            return
+
+        ipspace = ipspaces[0]
+        for broadcast_domain_name in ipspace['broadcast-domains']:
+            self._delete_broadcast_domain(broadcast_domain_name, ipspace_name)
+
+    @na_utils.trace
+    def _add_port_to_broadcast_domain(self, node, port, domain, ipspace):
+
+        qualified_port_name = ':'.join([node, port])
+        try:
+            api_args = {
+                'ipspace': ipspace,
+                'broadcast-domain': domain,
+                'ports': {
+                    'net-qualified-port-name': qualified_port_name,
+                }
+            }
+            self.send_request('net-port-broadcast-domain-add-ports', api_args)
+        except netapp_api.NaApiError as e:
+            if e.code == (netapp_api.
+                          E_VIFMGR_PORT_ALREADY_ASSIGNED_TO_BROADCAST_DOMAIN):
+                LOG.debug('Port %(port)s already exists in broadcast domain '
+                          '%(domain)s', {'port': port, 'domain': domain})
+            else:
+                msg = _('Failed to add port %(port)s to broadcast domain '
+                        '%(domain)s. %(err_msg)s')
+                msg_args = {
+                    'port': qualified_port_name,
+                    'domain': domain,
+                    'err_msg': e.message,
+                }
+                raise exception.NetAppException(msg % msg_args)
+
+    @na_utils.trace
+    def _remove_port_from_broadcast_domain(self, node, port, domain, ipspace):
+
+        qualified_port_name = ':'.join([node, port])
+        api_args = {
+            'ipspace': ipspace,
+            'broadcast-domain': domain,
+            'ports': {
+                'net-qualified-port-name': qualified_port_name,
+            }
+        }
+        self.send_request('net-port-broadcast-domain-remove-ports', api_args)
 
     @na_utils.trace
     def network_interface_exists(self, vserver_name, node, port, ip, netmask,
@@ -475,6 +711,139 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         """Deletes LIF."""
         api_args = {'vserver': None, 'interface-name': interface_name}
         self.send_request('net-interface-delete', api_args)
+
+    @na_utils.trace
+    def get_ipspaces(self, ipspace_name=None, max_records=1000):
+        """Gets one or more IPSpaces."""
+
+        if not self.features.IPSPACES:
+            return []
+
+        api_args = {'max-records': max_records}
+        if ipspace_name:
+            api_args['query'] = {
+                'net-ipspaces-info': {
+                    'ipspace': ipspace_name,
+                }
+            }
+
+        result = self.send_request('net-ipspaces-get-iter', api_args)
+        if not self._has_records(result):
+            return []
+
+        ipspaces = []
+
+        for net_ipspaces_info in result.get_child_by_name(
+                'attributes-list').get_children():
+
+            ipspace = {
+                'ports': [],
+                'vservers': [],
+                'broadcast-domains': [],
+            }
+
+            ports = net_ipspaces_info.get_child_by_name(
+                'ports') or netapp_api.NaElement('none')
+            for port in ports.get_children():
+                ipspace['ports'].append(port.get_content())
+
+            vservers = net_ipspaces_info.get_child_by_name(
+                'vservers') or netapp_api.NaElement('none')
+            for vserver in vservers.get_children():
+                ipspace['vservers'].append(vserver.get_content())
+
+            broadcast_domains = net_ipspaces_info.get_child_by_name(
+                'broadcast-domains') or netapp_api.NaElement('none')
+            for broadcast_domain in broadcast_domains.get_children():
+                ipspace['broadcast-domains'].append(
+                    broadcast_domain.get_content())
+
+            ipspace['ipspace'] = net_ipspaces_info.get_child_content('ipspace')
+            ipspace['id'] = net_ipspaces_info.get_child_content('id')
+            ipspace['uuid'] = net_ipspaces_info.get_child_content('uuid')
+
+            ipspaces.append(ipspace)
+
+        return ipspaces
+
+    @na_utils.trace
+    def ipspace_exists(self, ipspace_name):
+        """Checks if IPspace exists."""
+
+        if not self.features.IPSPACES:
+            return False
+
+        api_args = {
+            'query': {
+                'net-ipspaces-info': {
+                    'ipspace': ipspace_name,
+                },
+            },
+            'desired-attributes': {
+                'net-ipspaces-info': {
+                    'ipspace': None,
+                },
+            },
+        }
+        result = self.send_request('net-ipspaces-get-iter', api_args)
+        return self._has_records(result)
+
+    @na_utils.trace
+    def create_ipspace(self, ipspace_name):
+        """Creates an IPspace."""
+        api_args = {'ipspace': ipspace_name}
+        self.send_request('net-ipspaces-create', api_args)
+
+    @na_utils.trace
+    def delete_ipspace(self, ipspace_name):
+        """Deletes an IPspace."""
+
+        self._delete_broadcast_domains_for_ipspace(ipspace_name)
+
+        api_args = {'ipspace': ipspace_name}
+        self.send_request('net-ipspaces-destroy', api_args)
+
+    @na_utils.trace
+    def add_vserver_to_ipspace(self, ipspace_name, vserver_name):
+        """Assigns a vserver to an IPspace."""
+        api_args = {'ipspace': ipspace_name, 'vserver': vserver_name}
+        self.send_request('net-ipspaces-assign-vserver', api_args)
+
+    @na_utils.trace
+    def get_node_for_aggregate(self, aggregate_name):
+        """Get home node for the specified aggregate.
+
+        This API could return None, most notably if it was sent
+        to a Vserver LIF, so the caller must be able to handle that case.
+        """
+
+        if not aggregate_name:
+            return None
+
+        desired_attributes = {
+            'aggr-attributes': {
+                'aggregate-name': None,
+                'aggr-ownership-attributes': {
+                    'home-name': None,
+                },
+            },
+        }
+
+        try:
+            aggrs = self._get_aggregates(aggregate_names=[aggregate_name],
+                                         desired_attributes=desired_attributes)
+        except netapp_api.NaApiError as e:
+            if e.code == netapp_api.EAPINOTFOUND:
+                return None
+            else:
+                raise e
+
+        if len(aggrs) < 1:
+            return None
+
+        aggr_ownership_attrs = aggrs[0].get_child_by_name(
+            'aggr-ownership-attributes') or netapp_api.NaElement('none')
+        return aggr_ownership_attrs.get_child_content('home-name')
 
     @na_utils.trace
     def get_cluster_aggregate_capacities(self, aggregate_names):
@@ -594,12 +963,14 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
     def setup_security_services(self, security_services, vserver_client,
                                 vserver_name):
         api_args = {
-            'name-mapping-switch': {
-                'nmswitch': 'ldap,file',
-            },
-            'name-server-switch': {
-                'nsswitch': 'ldap,file',
-            },
+            'name-mapping-switch': [
+                {'nmswitch': 'ldap'},
+                {'nmswitch': 'file'}
+            ],
+            'name-server-switch': [
+                {'nsswitch': 'ldap'},
+                {'nsswitch': 'file'}
+            ],
             'vserver-name': vserver_name,
         }
         self.send_request('vserver-modify', api_args)
@@ -643,7 +1014,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
     @na_utils.trace
     def configure_ldap(self, security_service):
         """Configures LDAP on Vserver."""
-        config_name = hashlib.md5(security_service['id']).hexdigest()
+        config_name = hashlib.md5(six.b(security_service['id'])).hexdigest()
         api_args = {
             'ldap-client-config': config_name,
             'servers': {
@@ -759,7 +1130,10 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
     @na_utils.trace
     def create_volume(self, aggregate_name, volume_name, size_gb,
                       thin_provisioned=False, snapshot_policy=None,
-                      language=None, max_files=None):
+                      language=None, dedup_enabled=False,
+                      compression_enabled=False, max_files=None,
+                      snapshot_reserve=None):
+
         """Creates a volume."""
         api_args = {
             'containing-aggr-name': aggregate_name,
@@ -773,10 +1147,78 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
             api_args['snapshot-policy'] = snapshot_policy
         if language is not None:
             api_args['language-code'] = language
+        if snapshot_reserve is not None:
+            api_args['percentage-snapshot-reserve'] = six.text_type(
+                snapshot_reserve)
         self.send_request('volume-create', api_args)
 
+        # cDOT compression requires that deduplication be enabled.
+        if dedup_enabled or compression_enabled:
+            self.enable_dedup(volume_name)
+        if compression_enabled:
+            self.enable_compression(volume_name)
         if max_files is not None:
             self.set_volume_max_files(volume_name, max_files)
+
+    @na_utils.trace
+    def enable_dedup(self, volume_name):
+        """Enable deduplication on volume."""
+        api_args = {'path': '/vol/%s' % volume_name}
+        self.send_request('sis-enable', api_args)
+
+    @na_utils.trace
+    def disable_dedup(self, volume_name):
+        """Disable deduplication on volume."""
+        api_args = {'path': '/vol/%s' % volume_name}
+        self.send_request('sis-disable', api_args)
+
+    @na_utils.trace
+    def enable_compression(self, volume_name):
+        """Enable compression on volume."""
+        api_args = {
+            'path': '/vol/%s' % volume_name,
+            'enable-compression': 'true'
+        }
+        self.send_request('sis-set-config', api_args)
+
+    @na_utils.trace
+    def disable_compression(self, volume_name):
+        """Disable compression on volume."""
+        api_args = {
+            'path': '/vol/%s' % volume_name,
+            'enable-compression': 'false'
+        }
+        self.send_request('sis-set-config', api_args)
+
+    @na_utils.trace
+    def get_volume_efficiency_status(self, volume_name):
+        """Get dedupe & compression status for a volume."""
+        api_args = {
+            'query': {
+                'sis-status-info': {
+                    'path': '/vol/%s' % volume_name,
+                },
+            },
+            'desired-attributes': {
+                'sis-status-info': {
+                    'state': None,
+                    'is-compression-enabled': None,
+                },
+            },
+        }
+        result = self.send_request('sis-get-iter', api_args)
+
+        attributes_list = result.get_child_by_name(
+            'attributes-list') or netapp_api.NaElement('none')
+        sis_status_info = attributes_list.get_child_by_name(
+            'sis-status-info') or netapp_api.NaElement('none')
+
+        return {
+            'dedupe': True if 'enabled' == sis_status_info.get_child_content(
+                'state') else False,
+            'compression': True if 'true' == sis_status_info.get_child_content(
+                'is-compression-enabled') else False,
+        }
 
     @na_utils.trace
     def set_volume_max_files(self, volume_name, max_files):
@@ -798,6 +1240,108 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
             },
         }
         self.send_request('volume-modify-iter', api_args)
+
+    @na_utils.trace
+    def set_volume_size(self, volume_name, size_gb):
+        """Set volume size."""
+        api_args = {
+            'query': {
+                'volume-attributes': {
+                    'volume-id-attributes': {
+                        'name': volume_name,
+                    },
+                },
+            },
+            'attributes': {
+                'volume-attributes': {
+                    'volume-space-attributes': {
+                        'size': int(size_gb) * units.Gi,
+                    },
+                },
+            },
+        }
+        result = self.send_request('volume-modify-iter', api_args)
+        failures = result.get_child_content('num-failed')
+        if failures and int(failures) > 0:
+            failure_list = result.get_child_by_name(
+                'failure-list') or netapp_api.NaElement('none')
+            errors = failure_list.get_children()
+            if errors:
+                raise netapp_api.NaApiError(
+                    errors[0].get_child_content('error-code'),
+                    errors[0].get_child_content('error-message'))
+
+    @na_utils.trace
+    def set_volume_name(self, volume_name, new_volume_name):
+        """Set flexvol name."""
+        api_args = {
+            'volume': volume_name,
+            'new-volume-name': new_volume_name,
+        }
+        self.send_request('volume-rename', api_args)
+
+    @na_utils.trace
+    def manage_volume(self, aggregate_name, volume_name,
+                      thin_provisioned=False, snapshot_policy=None,
+                      language=None, dedup_enabled=False,
+                      compression_enabled=False, max_files=None):
+        """Update volume as needed to bring under management as a share."""
+        api_args = {
+            'query': {
+                'volume-attributes': {
+                    'volume-id-attributes': {
+                        'containing-aggregate-name': aggregate_name,
+                        'name': volume_name,
+                    },
+                },
+            },
+            'attributes': {
+                'volume-attributes': {
+                    'volume-inode-attributes': {},
+                    'volume-language-attributes': {},
+                    'volume-snapshot-attributes': {},
+                    'volume-space-attributes': {
+                        'space-guarantee': ('none' if thin_provisioned else
+                                            'volume')
+                    },
+                },
+            },
+        }
+        if language:
+            api_args['attributes']['volume-attributes'][
+                'volume-language-attributes']['language'] = language
+        if max_files:
+            api_args['attributes']['volume-attributes'][
+                'volume-inode-attributes']['files-total'] = max_files
+        if snapshot_policy:
+            api_args['attributes']['volume-attributes'][
+                'volume-snapshot-attributes'][
+                    'snapshot-policy'] = snapshot_policy
+
+        self.send_request('volume-modify-iter', api_args)
+
+        # Efficiency options must be handled separately
+        self.update_volume_efficiency_attributes(volume_name,
+                                                 dedup_enabled,
+                                                 compression_enabled)
+
+    @na_utils.trace
+    def update_volume_efficiency_attributes(self, volume_name, dedup_enabled,
+                                            compression_enabled):
+        """Update dedupe & compression attributes to match desired values."""
+        efficiency_status = self.get_volume_efficiency_status(volume_name)
+
+        if efficiency_status['compression'] != compression_enabled:
+            if compression_enabled:
+                self.enable_compression(volume_name)
+            else:
+                self.disable_compression(volume_name)
+
+        if efficiency_status['dedupe'] != dedup_enabled:
+            if dedup_enabled:
+                self.enable_dedup(volume_name)
+            else:
+                self.disable_dedup(volume_name)
 
     @na_utils.trace
     def volume_exists(self, volume_name):
@@ -863,6 +1407,159 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         return aggregate
 
     @na_utils.trace
+    def volume_has_luns(self, volume_name):
+        """Checks if volume has LUNs."""
+        LOG.debug('Checking if volume %s has LUNs', volume_name)
+
+        api_args = {
+            'query': {
+                'lun-info': {
+                    'volume': volume_name,
+                },
+            },
+            'desired-attributes': {
+                'lun-info': {
+                    'path': None,
+                },
+            },
+        }
+        result = self.send_request('lun-get-iter', api_args)
+        return self._has_records(result)
+
+    @na_utils.trace
+    def volume_has_junctioned_volumes(self, volume_name):
+        """Checks if volume has volumes mounted beneath its junction path."""
+        junction_path = self.get_volume_junction_path(volume_name)
+        if not junction_path:
+            return False
+
+        api_args = {
+            'query': {
+                'volume-attributes': {
+                    'volume-id-attributes': {
+                        'junction-path': junction_path + '/*',
+                    },
+                },
+            },
+            'desired-attributes': {
+                'volume-attributes': {
+                    'volume-id-attributes': {
+                        'name': None,
+                    },
+                },
+            },
+        }
+        result = self.send_request('volume-get-iter', api_args)
+        return self._has_records(result)
+
+    @na_utils.trace
+    def get_volume_at_junction_path(self, junction_path):
+        """Returns the volume with the specified junction path, if present."""
+        if not junction_path:
+            return None
+
+        api_args = {
+            'query': {
+                'volume-attributes': {
+                    'volume-id-attributes': {
+                        'junction-path': junction_path,
+                    },
+                },
+            },
+            'desired-attributes': {
+                'volume-attributes': {
+                    'volume-id-attributes': {
+                        'containing-aggregate-name': None,
+                        'junction-path': None,
+                        'name': None,
+                        'type': None,
+                        'style': None,
+                    },
+                    'volume-space-attributes': {
+                        'size': None,
+                    }
+                },
+            },
+        }
+        result = self.send_request('volume-get-iter', api_args)
+        if not self._has_records(result):
+            return None
+
+        attributes_list = result.get_child_by_name(
+            'attributes-list') or netapp_api.NaElement('none')
+        volume_attributes = attributes_list.get_child_by_name(
+            'volume-attributes') or netapp_api.NaElement('none')
+        volume_id_attributes = volume_attributes.get_child_by_name(
+            'volume-id-attributes') or netapp_api.NaElement('none')
+        volume_space_attributes = volume_attributes.get_child_by_name(
+            'volume-space-attributes') or netapp_api.NaElement('none')
+
+        volume = {
+            'aggregate': volume_id_attributes.get_child_content(
+                'containing-aggregate-name'),
+            'junction-path': volume_id_attributes.get_child_content(
+                'junction-path'),
+            'name': volume_id_attributes.get_child_content('name'),
+            'type': volume_id_attributes.get_child_content('type'),
+            'style': volume_id_attributes.get_child_content('style'),
+            'size': volume_space_attributes.get_child_content('size'),
+        }
+        return volume
+
+    @na_utils.trace
+    def get_volume_to_manage(self, aggregate_name, volume_name):
+        """Get flexvol to be managed by Manila."""
+
+        api_args = {
+            'query': {
+                'volume-attributes': {
+                    'volume-id-attributes': {
+                        'containing-aggregate-name': aggregate_name,
+                        'name': volume_name,
+                    },
+                },
+            },
+            'desired-attributes': {
+                'volume-attributes': {
+                    'volume-id-attributes': {
+                        'containing-aggregate-name': None,
+                        'junction-path': None,
+                        'name': None,
+                        'type': None,
+                        'style': None,
+                    },
+                    'volume-space-attributes': {
+                        'size': None,
+                    }
+                },
+            },
+        }
+        result = self.send_request('volume-get-iter', api_args)
+        if not self._has_records(result):
+            return None
+
+        attributes_list = result.get_child_by_name(
+            'attributes-list') or netapp_api.NaElement('none')
+        volume_attributes = attributes_list.get_child_by_name(
+            'volume-attributes') or netapp_api.NaElement('none')
+        volume_id_attributes = volume_attributes.get_child_by_name(
+            'volume-id-attributes') or netapp_api.NaElement('none')
+        volume_space_attributes = volume_attributes.get_child_by_name(
+            'volume-space-attributes') or netapp_api.NaElement('none')
+
+        volume = {
+            'aggregate': volume_id_attributes.get_child_content(
+                'containing-aggregate-name'),
+            'junction-path': volume_id_attributes.get_child_content(
+                'junction-path'),
+            'name': volume_id_attributes.get_child_content('name'),
+            'type': volume_id_attributes.get_child_content('type'),
+            'style': volume_id_attributes.get_child_content('style'),
+            'size': volume_space_attributes.get_child_content('size'),
+        }
+        return volume
+
+    @na_utils.trace
     def create_volume_clone(self, volume_name, parent_volume_name,
                             parent_snapshot_name=None):
         """Clones a volume."""
@@ -891,6 +1588,16 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         return result.get_child_content('junction')
 
     @na_utils.trace
+    def mount_volume(self, volume_name, junction_path=None):
+        """Mounts a volume on a junction path."""
+        api_args = {
+            'volume-name': volume_name,
+            'junction-path': (junction_path if junction_path
+                              else '/%s' % volume_name)
+        }
+        self.send_request('volume-mount', api_args)
+
+    @na_utils.trace
     def offline_volume(self, volume_name):
         """Offlines a volume."""
         try:
@@ -901,7 +1608,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
             raise
 
     @na_utils.trace
-    def unmount_volume(self, volume_name, force=False):
+    def _unmount_volume(self, volume_name, force=False):
         """Unmounts a volume."""
         api_args = {
             'volume-name': volume_name,
@@ -913,6 +1620,44 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
             if e.code == netapp_api.EVOL_NOT_MOUNTED:
                 return
             raise
+
+    @na_utils.trace
+    def unmount_volume(self, volume_name, force=False, wait_seconds=30):
+        """Unmounts a volume, retrying if a clone split is ongoing.
+
+        NOTE(cknight): While unlikely to happen in normal operation, any client
+        that tries to delete volumes immediately after creating volume clones
+        is likely to experience failures if cDOT isn't quite ready for the
+        delete.  The volume unmount is the first operation in the delete
+        path that fails in this case, and there is no proactive check we can
+        use to reliably predict the failure.  And there isn't a specific error
+        code from volume-unmount, so we have to check for a generic error code
+        plus certain language in the error code.  It's ugly, but it works, and
+        it's better than hard-coding a fixed delay.
+        """
+
+        # Do the unmount, handling split-related errors with retries.
+        retry_interval = 3  # seconds
+        for retry in range(int(wait_seconds / retry_interval)):
+            try:
+                self._unmount_volume(volume_name, force=force)
+                LOG.debug('Volume %s unmounted.', volume_name)
+                return
+            except netapp_api.NaApiError as e:
+                if e.code == netapp_api.EAPIERROR and 'job ID' in e.message:
+                    msg = _LW('Could not unmount volume %(volume)s due to '
+                              'ongoing volume operation: %(exception)s')
+                    msg_args = {'volume': volume_name, 'exception': e}
+                    LOG.warning(msg, msg_args)
+                    time.sleep(retry_interval)
+                    continue
+                raise
+
+        msg = _('Failed to unmount volume %(volume)s after '
+                'waiting for %(wait_seconds)s seconds.')
+        msg_args = {'volume': volume_name, 'wait_seconds': wait_seconds}
+        LOG.error(msg, msg_args)
+        raise exception.NetAppException(msg % msg_args)
 
     @na_utils.trace
     def delete_volume(self, volume_name):
@@ -1004,15 +1749,41 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         self.send_request('snapshot-delete', api_args)
 
     @na_utils.trace
+    def create_cg_snapshot(self, volume_names, snapshot_name):
+        """Creates a consistency group snapshot of one or more flexvols."""
+        cg_id = self._start_cg_snapshot(volume_names, snapshot_name)
+        if not cg_id:
+            msg = _('Could not start consistency group snapshot %s.')
+            raise exception.NetAppException(msg % snapshot_name)
+        self._commit_cg_snapshot(cg_id)
+
+    @na_utils.trace
+    def _start_cg_snapshot(self, volume_names, snapshot_name):
+        api_args = {
+            'snapshot': snapshot_name,
+            'timeout': 'relaxed',
+            'volumes': [
+                {'volume-name': volume_name} for volume_name in volume_names
+            ],
+        }
+        result = self.send_request('cg-start', api_args)
+        return result.get_child_content('cg-id')
+
+    @na_utils.trace
+    def _commit_cg_snapshot(self, cg_id):
+        api_args = {'cg-id': cg_id}
+        self.send_request('cg-commit', api_args)
+
+    @na_utils.trace
     def create_cifs_share(self, share_name):
         share_path = '/%s' % share_name
         api_args = {'path': share_path, 'share-name': share_name}
         self.send_request('cifs-share-create', api_args)
 
     @na_utils.trace
-    def add_cifs_share_access(self, share_name, user_name):
+    def add_cifs_share_access(self, share_name, user_name, readonly):
         api_args = {
-            'permission': 'full_control',
+            'permission': 'read' if readonly else 'full_control',
             'share': share_name,
             'user-or-group': user_name,
         }

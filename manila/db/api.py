@@ -68,6 +68,16 @@ IMPL = db_api.DBAPI.from_config(cfg.CONF, backend_mapping=_BACKEND_MAPPING,
                                 lazy=True)
 
 
+def authorize_project_context(context, project_id):
+    """Ensures a request has permission to access the given project."""
+    return IMPL.authorize_project_context(context, project_id)
+
+
+def authorize_quota_class_context(context, class_name):
+    """Ensures a request has permission to access the given quota class."""
+    return IMPL.authorize_quota_class_context(context, class_name)
+
+
 ###################
 def service_destroy(context, service_id):
     """Destroy the service or raise if it does not exist."""
@@ -281,9 +291,66 @@ def reservation_expire(context):
 ###################
 
 
-def share_create(context, values):
+def share_instance_get(context, instance_id, with_share_data=False):
+    """Get share instance by id."""
+    return IMPL.share_instance_get(context, instance_id,
+                                   with_share_data=with_share_data)
+
+
+def share_instance_create(context, share_id, values):
+    """Create new share instance."""
+    return IMPL.share_instance_create(context, share_id, values)
+
+
+def share_instance_delete(context, instance_id):
+    """Delete share instance."""
+    return IMPL.share_instance_delete(context, instance_id)
+
+
+def share_instance_update(context, instance_id, values, with_share_data=False):
+    """Update share instance fields."""
+    return IMPL.share_instance_update(context, instance_id, values,
+                                      with_share_data=with_share_data)
+
+
+def share_instances_get_all(context):
+    """Returns all share instances."""
+    return IMPL.share_instances_get_all(context)
+
+
+def share_instances_get_all_by_share_server(context, share_server_id):
+    """Returns all share instances with given share_server_id."""
+    return IMPL.share_instances_get_all_by_share_server(context,
+                                                        share_server_id)
+
+
+def share_instances_get_all_by_host(context, host):
+    """Returns all share instances with given host."""
+    return IMPL.share_instances_get_all_by_host(context, host)
+
+
+def share_instances_get_all_by_share_network(context, share_network_id):
+    """Returns list of shares that belong to given share network."""
+    return IMPL.share_instances_get_all_by_share_network(context,
+                                                         share_network_id)
+
+
+def share_instances_get_all_by_share(context, share_id):
+    """Returns list of shares that belong to given share."""
+    return IMPL.share_instances_get_all_by_share_network(context, share_id)
+
+
+def share_instances_get_all_by_consistency_group_id(context, cg_id):
+    """Returns list of share instances that belong to given cg."""
+    return IMPL.share_instances_get_all_by_consistency_group_id(context, cg_id)
+
+###################
+
+
+def share_create(context, values, create_share_instance=True):
     """Create new share."""
-    return IMPL.share_create(context, values)
+    return IMPL.share_create(context, values,
+                             create_share_instance=create_share_instance)
 
 
 def share_data_get_for_project(context, project_id, session=None):
@@ -308,14 +375,6 @@ def share_get_all(context, filters=None, sort_key=None, sort_dir=None):
     )
 
 
-def share_get_all_by_host(context, host, filters=None, sort_key=None,
-                          sort_dir=None):
-    """Returns all shares with given host."""
-    return IMPL.share_get_all_by_host(
-        context, host, filters=filters, sort_key=sort_key, sort_dir=sort_dir,
-    )
-
-
 def share_get_all_by_project(context, project_id, filters=None,
                              is_public=False, sort_key=None, sort_dir=None):
     """Returns all shares with given project ID."""
@@ -323,6 +382,15 @@ def share_get_all_by_project(context, project_id, filters=None,
         context, project_id, filters=filters, is_public=is_public,
         sort_key=sort_key, sort_dir=sort_dir,
     )
+
+
+def share_get_all_by_consistency_group_id(context, cg_id,
+                                          filters=None, sort_key=None,
+                                          sort_dir=None):
+    """Returns all shares with given project ID and CG id."""
+    return IMPL.share_get_all_by_consistency_group_id(
+        context, cg_id, filters=filters,
+        sort_key=sort_key, sort_dir=sort_dir)
 
 
 def share_get_all_by_share_network(context, share_network_id, filters=None,
@@ -356,13 +424,23 @@ def share_access_create(context, values):
 
 
 def share_access_get(context, access_id):
-    """Allow access to share."""
+    """Get share access rule."""
     return IMPL.share_access_get(context, access_id)
 
 
+def share_instance_access_get(context, access_id, instance_id):
+    """Get access rule mapping for share instance."""
+    return IMPL.share_instance_access_get(context, access_id, instance_id)
+
+
 def share_access_get_all_for_share(context, share_id):
-    """Allow access to share."""
+    """Get all access rules for given share."""
     return IMPL.share_access_get_all_for_share(context, share_id)
+
+
+def share_instance_access_get_all(context, access_id, session=None):
+    """Get access rules to all share instances."""
+    return IMPL.share_instance_access_get_all(context, access_id, session=None)
 
 
 def share_access_get_all_by_type_and_access(context, share_id, access_type,
@@ -377,9 +455,31 @@ def share_access_delete(context, access_id):
     return IMPL.share_access_delete(context, access_id)
 
 
-def share_access_update(context, access_id, values):
-    """Update access record."""
-    return IMPL.share_access_update(context, access_id, values)
+def share_instance_access_delete(context, mapping_id):
+    """Deny access to share instance."""
+    return IMPL.share_instance_access_delete(context, mapping_id)
+
+
+def share_instance_access_update_state(context, mapping_id, state):
+    """Update state of access rule mapping."""
+    return IMPL.share_instance_access_update_state(context, mapping_id, state)
+
+
+####################
+
+
+def share_snapshot_instance_update(context, instance_id, values):
+    """Set the given properties on an snapshot instance and update it.
+
+    Raises NotFound if snapshot instance does not exist.
+    """
+    return IMPL.share_snapshot_instance_update(context, instance_id, values)
+
+
+def share_snapshot_instance_get(context, instance_id, with_share_data=False):
+    """Get a snapshot or raise if it does not exist."""
+    return IMPL.share_snapshot_instance_get(
+        context, instance_id, with_share_data=with_share_data)
 
 
 ####################
@@ -497,17 +597,58 @@ def share_metadata_update(context, share, metadata, delete):
 
 ###################
 
+def share_export_location_get_by_uuid(context, export_location_uuid):
+    """Get specific export location of a share."""
+    return IMPL.share_export_location_get_by_uuid(
+        context, export_location_uuid)
+
+
 def share_export_locations_get(context, share_id):
-    """Get all exports_locations of share."""
+    """Get all export locations of a share."""
     return IMPL.share_export_locations_get(context, share_id)
 
 
-def share_export_locations_update(context, share_id, export_locations,
-                                  delete=True):
-    """Update export locations of share."""
-    return IMPL.share_export_locations_update(context, share_id,
-                                              export_locations, delete)
+def share_export_locations_get_by_share_id(context, share_id,
+                                           include_admin_only=True):
+    """Get all export locations of a share by its ID."""
+    return IMPL.share_export_locations_get_by_share_id(
+        context, share_id, include_admin_only=include_admin_only)
 
+
+def share_export_locations_get_by_share_instance_id(context,
+                                                    share_instance_id):
+    """Get all export locations of a share instance by its ID."""
+    return IMPL.share_export_locations_get_by_share_instance_id(
+        context, share_instance_id)
+
+
+def share_export_locations_update(context, share_instance_id, export_locations,
+                                  delete=True):
+    """Update export locations of a share instance."""
+    return IMPL.share_export_locations_update(
+        context, share_instance_id, export_locations, delete)
+
+
+####################
+
+def export_location_metadata_get(context, export_location_uuid, session=None):
+    """Get all metadata of an export location."""
+    return IMPL.export_location_metadata_get(
+        context, export_location_uuid, session=session)
+
+
+def export_location_metadata_delete(context, export_location_uuid, keys,
+                                    session=None):
+    """Delete metadata of an export location."""
+    return IMPL.export_location_metadata_delete(
+        context, export_location_uuid, keys, session=session)
+
+
+def export_location_metadata_update(context, export_location_uuid, metadata,
+                                    delete, session=None):
+    """Update metadata of an export location."""
+    return IMPL.export_location_metadata_update(
+        context, export_location_uuid, metadata, delete, session=session)
 
 ####################
 
@@ -625,19 +766,22 @@ def share_server_get_by_host_and_share_net(context, host, share_net_id,
                                                        session=session)
 
 
-def share_server_get_by_host_and_share_net_valid(context, host,
-                                                 share_net_id,
-                                                 session=None):
+def share_server_get_all_by_host_and_share_net_valid(context, host,
+                                                     share_net_id,
+                                                     session=None):
     """Get share server DB records by host and share net not error."""
-    return IMPL.share_server_get_by_host_and_share_net_valid(context,
-                                                             host,
-                                                             share_net_id,
-                                                             session=session)
+    return IMPL.share_server_get_all_by_host_and_share_net_valid(
+        context, host, share_net_id, session=session)
 
 
 def share_server_get_all(context):
     """Get all share server DB records."""
     return IMPL.share_server_get_all(context)
+
+
+def share_server_get_all_by_host(context, host):
+    """Get all share servers related to particular host."""
+    return IMPL.share_server_get_all_by_host(context, host)
 
 
 def share_server_get_all_unused_deletable(context, host, updated_before):
@@ -650,11 +794,6 @@ def share_server_backend_details_set(context, share_server_id, server_details):
     """Create DB record with backend details."""
     return IMPL.share_server_backend_details_set(context, share_server_id,
                                                  server_details)
-
-
-def share_server_backend_details_get(context, share_server_id):
-    """Get all backend details records for share server."""
-    return IMPL.share_server_backend_details_get(context, share_server_id)
 
 
 ##################
@@ -756,3 +895,156 @@ def share_type_extra_specs_update_or_create(context, share_type_id,
     return IMPL.share_type_extra_specs_update_or_create(context,
                                                         share_type_id,
                                                         extra_specs)
+
+
+def driver_private_data_get(context, host, entity_id, key=None, default=None):
+    """Get one, list or all key-value pairs for given host and entity_id."""
+    return IMPL.driver_private_data_get(context, host, entity_id, key, default)
+
+
+def driver_private_data_update(context, host, entity_id, details,
+                               delete_existing=False):
+    """Update key-value pairs for given host and entity_id."""
+    return IMPL.driver_private_data_update(context, host, entity_id, details,
+                                           delete_existing)
+
+
+def driver_private_data_delete(context, host, entity_id, key=None):
+    """Remove one, list or all key-value pairs for given host and entity_id."""
+    return IMPL.driver_private_data_delete(context, host, entity_id, key)
+
+
+####################
+
+def availability_zone_get(context, id_or_name):
+    """Get availability zone by name or id."""
+    return IMPL.availability_zone_get(context, id_or_name)
+
+
+def availability_zone_get_all(context):
+    """Get all active availability zones."""
+    return IMPL.availability_zone_get_all(context)
+
+
+####################
+
+def consistency_group_get(context, consistency_group_id):
+    """Get a consistency group or raise if it does not exist."""
+    return IMPL.consistency_group_get(context, consistency_group_id)
+
+
+def consistency_group_get_all(context, detailed=True):
+    """Get all consistency groups."""
+    return IMPL.consistency_group_get_all(context, detailed=detailed)
+
+
+def consistency_group_get_all_by_host(context, host, detailed=True):
+    """Get all consistency groups belonging to a host."""
+    return IMPL.consistency_group_get_all_by_host(context, host,
+                                                  detailed=detailed)
+
+
+def consistency_group_create(context, values):
+    """Create a consistency group from the values dictionary."""
+    return IMPL.consistency_group_create(context, values)
+
+
+def consistency_group_get_all_by_share_server(context, share_server_id):
+    """Get all consistency groups associated with a share server."""
+    return IMPL.consistency_group_get_all_by_share_server(context,
+                                                          share_server_id)
+
+
+def consistency_group_get_all_by_project(context, project_id, detailed=True):
+    """Get all consistency groups belonging to a project."""
+    return IMPL.consistency_group_get_all_by_project(context, project_id,
+                                                     detailed=detailed)
+
+
+def consistency_group_update(context, consistency_group_id, values):
+    """Set the given properties on a consistency group and update it.
+
+    Raises NotFound if consistency group does not exist.
+    """
+    return IMPL.consistency_group_update(context, consistency_group_id, values)
+
+
+def consistency_group_destroy(context, consistency_group_id):
+    """Destroy the consistency group or raise if it does not exist."""
+    return IMPL.consistency_group_destroy(context, consistency_group_id)
+
+
+def count_shares_in_consistency_group(context, consistency_group_id):
+    """Returns the number of undeleted shares with the specified cg."""
+    return IMPL.count_shares_in_consistency_group(context,
+                                                  consistency_group_id)
+
+
+def count_cgsnapshots_in_consistency_group(context, consistency_group_id):
+    """Returns the number of undeleted cgsnapshots with the specified cg."""
+    return IMPL.count_cgsnapshots_in_consistency_group(context,
+                                                       consistency_group_id)
+
+
+def count_consistency_groups_in_share_network(context, share_network_id,
+                                              session=None):
+    """Returns the number of undeleted cgs with the specified share network."""
+    return IMPL.count_consistency_groups_in_share_network(context,
+                                                          share_network_id)
+
+
+def count_cgsnapshot_members_in_share(context, share_id, session=None):
+    """Returns the number of cgsnapshot members linked to the share."""
+    return IMPL.count_cgsnapshot_members_in_share(context, share_id)
+
+
+def cgsnapshot_get(context, cgsnapshot_id):
+    """Get a cgsnapshot."""
+    return IMPL.cgsnapshot_get(context, cgsnapshot_id)
+
+
+def cgsnapshot_get_all(context, detailed=True):
+    """Get all cgsnapshots."""
+    return IMPL.cgsnapshot_get_all(context, detailed=detailed)
+
+
+def cgsnapshot_get_all_by_project(context, project_id, detailed=True):
+    """Get all cgsnapshots belonging to a project."""
+    return IMPL.cgsnapshot_get_all_by_project(context, project_id,
+                                              detailed=detailed)
+
+
+def cgsnapshot_create(context, values):
+    """Create a cgsnapshot from the values dictionary."""
+    return IMPL.cgsnapshot_create(context, values)
+
+
+def cgsnapshot_update(context, cgsnapshot_id, values):
+    """Set the given properties on a cgsnapshot and update it.
+
+    Raises NotFound if cgsnapshot does not exist.
+    """
+    return IMPL.cgsnapshot_update(context, cgsnapshot_id, values)
+
+
+def cgsnapshot_destroy(context, cgsnapshot_id):
+    """Destroy the cgsnapshot or raise if it does not exist."""
+    return IMPL.cgsnapshot_destroy(context, cgsnapshot_id)
+
+
+def cgsnapshot_members_get_all(context, cgsnapshot_id):
+    """Return the members of a cgsnapshot."""
+    return IMPL.cgsnapshot_members_get_all(context, cgsnapshot_id)
+
+
+def cgsnapshot_member_create(context, values):
+    """Create a cgsnapshot member from the values dictionary."""
+    return IMPL.cgsnapshot_member_create(context, values)
+
+
+def cgsnapshot_member_update(context, member_id, values):
+    """Set the given properties on a cgsnapshot member and update it.
+
+    Raises NotFound if cgsnapshot member does not exist.
+    """
+    return IMPL.cgsnapshot_member_update(context, member_id, values)

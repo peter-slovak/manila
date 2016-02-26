@@ -51,8 +51,9 @@ class NetAppCmodeNFSHelper(base.NetAppBaseHelper):
     def allow_access(self, context, share, share_name, access):
         """Allows access to a given NFS share."""
         if access['access_type'] != 'ip':
-            reason = _('Only ip access type allowed.')
-            raise exception.InvalidShareAccess(reason)
+            msg = _("Cluster Mode supports only 'ip' type for share access"
+                    " rules with NFS protocol.")
+            raise exception.InvalidShareAccess(reason=msg)
 
         self._ensure_export_policy(share, share_name)
         export_policy_name = self._get_export_policy_name(share)
@@ -84,11 +85,18 @@ class NetAppCmodeNFSHelper(base.NetAppBaseHelper):
         """Returns ID of target OnTap device based on export location."""
         return self._get_export_location(share)[0]
 
+    @na_utils.trace
+    def get_share_name_for_share(self, share):
+        """Returns the flexvol name that hosts a share."""
+        _, volume_junction_path = self._get_export_location(share)
+        volume = self._client.get_volume_at_junction_path(volume_junction_path)
+        return volume.get('name') if volume else None
+
     @staticmethod
     def _get_export_location(share):
         """Returns IP address and export location of an NFS share."""
         export_location = share['export_location'] or ':'
-        return export_location.split(':')
+        return export_location.rsplit(':', 1)
 
     @staticmethod
     def _get_export_policy_name(share):

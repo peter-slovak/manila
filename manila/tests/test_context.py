@@ -32,22 +32,22 @@ class ContextTestCase(test.TestCase):
         ctxt = context.RequestContext('111',
                                       '222',
                                       roles=['admin', 'weasel'])
-        self.assertEqual(ctxt.is_admin, True)
+        self.assertTrue(ctxt.is_admin)
 
     def test_request_context_sets_is_admin_upcase(self):
         ctxt = context.RequestContext('111',
                                       '222',
                                       roles=['Admin', 'weasel'])
-        self.assertEqual(ctxt.is_admin, True)
+        self.assertTrue(ctxt.is_admin)
 
     def test_request_context_read_deleted(self):
         ctxt = context.RequestContext('111',
                                       '222',
                                       read_deleted='yes')
-        self.assertEqual(ctxt.read_deleted, 'yes')
+        self.assertEqual('yes', ctxt.read_deleted)
 
         ctxt.read_deleted = 'no'
-        self.assertEqual(ctxt.read_deleted, 'no')
+        self.assertEqual('no', ctxt.read_deleted)
 
     def test_request_context_read_deleted_invalid(self):
         self.assertRaises(ValueError,
@@ -69,12 +69,17 @@ class ContextTestCase(test.TestCase):
         def fake_warn(log_msg, other_args):
             info['log_msg'] = log_msg % other_args
 
-        self.mock_object(context.LOG, 'warn', fake_warn)
+        self.mock_object(context.LOG, 'warning', fake_warn)
 
         c = context.RequestContext('user',
                                    'project',
                                    extra_arg1='meow',
-                                   extra_arg2='wuff')
+                                   extra_arg2='wuff',
+                                   user='user',
+                                   tenant='project')
         self.assertTrue(c)
         self.assertIn("'extra_arg1': 'meow'", info['log_msg'])
         self.assertIn("'extra_arg2': 'wuff'", info['log_msg'])
+        # user and tenant kwargs get popped off before we log anything
+        self.assertNotIn("'user': 'user'", info['log_msg'])
+        self.assertNotIn("'tenant': 'project'", info['log_msg'])

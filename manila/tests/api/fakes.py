@@ -24,12 +24,16 @@ import webob.request
 
 from manila.api.middleware import auth
 from manila.api.middleware import fault
+from manila.api.openstack import api_version_request as api_version
 from manila.api.openstack import wsgi as os_wsgi
 from manila.api import urlmap
 from manila.api.v1 import limits
-from manila.api.v1 import router
+from manila.api.v1 import router as router_v1
+from manila.api.v2 import router as router_v2
 from manila.api import versions
+from manila.common import constants
 from manila import context
+from manila import exception
 from manila import wsgi
 
 
@@ -61,7 +65,7 @@ def fake_wsgi(self, req):
 def wsgi_app(inner_app_v2=None, fake_auth=True, fake_auth_context=None,
              use_no_auth=False, ext_mgr=None):
     if not inner_app_v2:
-        inner_app_v2 = router.APIRouter(ext_mgr)
+        inner_app_v2 = router_v2.APIRouter(ext_mgr)
 
     if fake_auth:
         if fake_auth_context is not None:
@@ -99,20 +103,25 @@ class FakeToken(object):
 class FakeRequestContext(context.RequestContext):
     def __init__(self, *args, **kwargs):
         kwargs['auth_token'] = kwargs.get('auth_token', 'fake_auth_token')
-        return super(FakeRequestContext, self).__init__(*args, **kwargs)
+        super(FakeRequestContext, self).__init__(*args, **kwargs)
 
 
 class HTTPRequest(os_wsgi.Request):
 
     @classmethod
     def blank(cls, *args, **kwargs):
-        kwargs['base_url'] = 'http://localhost/v1'
+        if not kwargs.get('base_url'):
+            kwargs['base_url'] = 'http://localhost/v1'
         use_admin_context = kwargs.pop('use_admin_context', False)
+        version = kwargs.pop('version', api_version.DEFAULT_API_VERSION)
+        experimental = kwargs.pop('experimental', False)
         out = os_wsgi.Request.blank(*args, **kwargs)
         out.environ['manila.context'] = FakeRequestContext(
             'fake_user',
             'fake',
             is_admin=use_admin_context)
+        out.api_version_request = api_version.APIVersionRequest(
+            version, experimental=experimental)
         return out
 
 
@@ -159,3 +168,63 @@ def get_fake_uuid(token=0):
     if token not in FAKE_UUIDS:
         FAKE_UUIDS[token] = str(uuid.uuid4())
     return FAKE_UUIDS[token]
+
+
+def app():
+    """API application.
+
+    No auth, just let environ['manila.context'] pass through.
+    """
+    mapper = urlmap.URLMap()
+    mapper['/v1'] = router_v1.APIRouter()
+    mapper['/v2'] = router_v2.APIRouter()
+    return mapper
+
+
+fixture_reset_status_with_different_roles = (
+    {
+        'role': 'admin',
+        'valid_code': 202,
+        'valid_status': constants.STATUS_ERROR,
+        'version': '2.6',
+    },
+    {
+        'role': 'admin',
+        'valid_code': 202,
+        'valid_status': constants.STATUS_ERROR,
+        'version': '2.7',
+    },
+    {
+        'role': 'member',
+        'valid_code': 403,
+        'valid_status': constants.STATUS_AVAILABLE,
+        'version': '2.6',
+    },
+    {
+        'role': 'member',
+        'valid_code': 403,
+        'valid_status': constants.STATUS_AVAILABLE,
+        'version': '2.7',
+    },
+)
+
+
+fixture_force_delete_with_different_roles = (
+    {'role': 'admin', 'resp_code': 202, 'version': '2.6'},
+    {'role': 'admin', 'resp_code': 202, 'version': '2.7'},
+    {'role': 'member', 'resp_code': 403, 'version': '2.6'},
+    {'role': 'member', 'resp_code': 403, 'version': '2.7'},
+)
+
+
+fixture_invalid_reset_status_body = (
+    {'os-reset_status': {'x-status': 'bad'}},
+    {'os-reset_status': {'status': 'invalid'}}
+)
+
+
+def mock_fake_admin_check(context, resource_name, action, *args, **kwargs):
+    if context.is_admin:
+        return
+    else:
+        raise exception.PolicyNotAuthorized(action=action)

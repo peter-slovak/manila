@@ -46,9 +46,7 @@ class GPFSShareDriverTestCase(test.TestCase):
         self._helper_fake = mock.Mock()
         CONF.set_default('driver_handles_share_servers', False)
         self.fake_conf = config.Configuration(None)
-        self._db = mock.Mock()
-        self._driver = gpfs.GPFSShareDriver(self._db,
-                                            execute=self._gpfs_execute,
+        self._driver = gpfs.GPFSShareDriver(execute=self._gpfs_execute,
                                             configuration=self.fake_conf)
         self._knfs_helper = gpfs.KNFSHelper(self._gpfs_execute,
                                             self.fake_conf)
@@ -94,6 +92,69 @@ class GPFSShareDriverTestCase(test.TestCase):
                           ['127.0.0.1', self.local_ip])
         ))
 
+    def test__run_ssh(self):
+        cmd_list = ['fake', 'cmd']
+        expected_cmd = 'fake cmd'
+        ssh_pool = mock.Mock()
+        ssh = mock.Mock()
+        self.mock_object(utils, 'SSHPool', mock.Mock(return_value=ssh_pool))
+        ssh_pool.item = mock.Mock(return_value=ssh)
+        setattr(ssh, '__enter__', mock.Mock())
+        setattr(ssh, '__exit__', mock.Mock())
+        self.mock_object(self._driver, '_gpfs_ssh_execute')
+        self._driver._run_ssh(self.local_ip, cmd_list)
+
+        self._driver._gpfs_ssh_execute.assert_called_once_with(
+            mock.ANY, expected_cmd, check_exit_code=True)
+
+    def test__run_ssh_exception(self):
+        cmd_list = ['fake', 'cmd']
+        ssh_pool = mock.Mock()
+        ssh = mock.Mock()
+        self.mock_object(utils, 'SSHPool', mock.Mock(return_value=ssh_pool))
+        ssh_pool.item = mock.Mock(return_value=ssh)
+        self.mock_object(self._driver, '_gpfs_ssh_execute')
+        self.assertRaises(exception.GPFSException,
+                          self._driver._run_ssh,
+                          self.local_ip, cmd_list)
+
+    def test__gpfs_ssh_execute(self):
+        cmd = 'fake cmd'
+        expected_out = 'cmd successful'
+        expected_err = 'cmd error'
+        ssh = mock.Mock()
+        stdin_stream = mock.Mock()
+        stdout_stream = mock.Mock()
+        stderr_stream = mock.Mock()
+        ssh.exec_command = mock.Mock(return_value=(stdin_stream,
+                                                   stdout_stream,
+                                                   stderr_stream))
+        stdout_stream.channel.recv_exit_status = mock.Mock(return_value=-1)
+        stdout_stream.read = mock.Mock(return_value=expected_out)
+        stderr_stream.read = mock.Mock(return_value=expected_err)
+        stdin_stream.close = mock.Mock()
+        actual_out, actual_err = self._driver._gpfs_ssh_execute(ssh, cmd)
+
+        self.assertEqual(actual_out, expected_out)
+        self.assertEqual(actual_err, expected_err)
+
+    def test__gpfs_ssh_execute_exception(self):
+        cmd = 'fake cmd'
+        ssh = mock.Mock()
+        stdin_stream = mock.Mock()
+        stdout_stream = mock.Mock()
+        stderr_stream = mock.Mock()
+        ssh.exec_command = mock.Mock(return_value=(stdin_stream,
+                                                   stdout_stream,
+                                                   stderr_stream))
+        stdout_stream.channel.recv_exit_status = mock.Mock(return_value=1)
+        stdout_stream.read = mock.Mock()
+        stderr_stream.read = mock.Mock()
+        stdin_stream.close = mock.Mock()
+        self.assertRaises(exception.ProcessExecutionError,
+                          self._driver._gpfs_ssh_execute,
+                          ssh, cmd)
+
     def test_get_share_stats_refresh_false(self):
         self._driver._stats = {'fake_key': 'fake_value'}
         result = self._driver.get_share_stats(False)
@@ -105,14 +166,14 @@ class GPFSShareDriverTestCase(test.TestCase):
             mock.Mock(return_value=(11111.0, 12345.0)))
         result = self._driver.get_share_stats(True)
         expected_keys = [
-            'QoS_support', 'driver_version', 'share_backend_name',
+            'qos', 'driver_version', 'share_backend_name',
             'free_capacity_gb', 'total_capacity_gb',
             'driver_handles_share_servers',
             'reserved_percentage', 'vendor_name', 'storage_protocol',
         ]
         for key in expected_keys:
             self.assertIn(key, result)
-        self.assertEqual(False, result['driver_handles_share_servers'])
+        self.assertFalse(result['driver_handles_share_servers'])
         self.assertEqual('IBM', result['vendor_name'])
         self._driver._get_available_capacity.assert_called_once_with(
             self._driver.configuration.gpfs_mount_point_base)
@@ -120,7 +181,7 @@ class GPFSShareDriverTestCase(test.TestCase):
     def test_do_setup(self):
         self.mock_object(self._driver, '_setup_helpers')
         self._driver.do_setup(self._context)
-        self._driver._setup_helpers.assert_called_any()
+        self._driver._setup_helpers.assert_called_once_with()
 
     def test_setup_helpers(self):
         self._driver._helpers = {}
@@ -138,6 +199,110 @@ class GPFSShareDriverTestCase(test.TestCase):
     def test__get_helper_with_wrong_proto(self, share):
         self.assertRaises(exception.InvalidShare,
                           self._driver._get_helper, share)
+
+    def test__local_path(self):
+        sharename = 'fakesharename'
+        self._driver.configuration.gpfs_mount_point_base =\
+            self.fakefspath
+        local_path = self._driver._local_path(sharename)
+        self.assertEqual(self.fakefspath + '/' + sharename,
+                         local_path)
+
+    def test__get_share_path(self):
+        self._driver.configuration.gpfs_mount_point_base =\
+            self.fakefspath
+        share_path = self._driver._get_share_path(self.share)
+        self.assertEqual(self.fakefspath + '/' + self.share['name'],
+                         share_path)
+
+    def test__get_snapshot_path(self):
+        self._driver.configuration.gpfs_mount_point_base =\
+            self.fakefspath
+        snapshot_path = self._driver._get_snapshot_path(self.snapshot)
+        self.assertEqual(self.fakefspath + '/' + self.snapshot['share_name'] +
+                         '/.snapshots/' + self.snapshot['name'],
+                         snapshot_path)
+
+    def test_check_for_setup_error_for_gpfs_state(self):
+        self.mock_object(self._driver, '_check_gpfs_state',
+                         mock.Mock(return_value=False))
+        self.assertRaises(exception.GPFSException,
+                          self._driver.check_for_setup_error)
+
+    def test_check_for_setup_error_for_export_ip(self):
+        self.mock_object(self._driver, '_check_gpfs_state',
+                         mock.Mock(return_value=True))
+
+        self._driver.configuration.gpfs_share_export_ip = None
+        self.assertRaises(exception.InvalidParameterValue,
+                          self._driver.check_for_setup_error)
+
+    def test_check_for_setup_error_for_gpfs_mount_point_base(self):
+        self.mock_object(self._driver, '_check_gpfs_state',
+                         mock.Mock(return_value=True))
+        self._driver.configuration.gpfs_share_export_ip = self.local_ip
+        self._driver.configuration.gpfs_mount_point_base = 'test'
+        self.assertRaises(exception.GPFSException,
+                          self._driver.check_for_setup_error)
+
+    def test_check_for_setup_error_for_directory_check(self):
+        self.mock_object(self._driver, '_check_gpfs_state',
+                         mock.Mock(return_value=True))
+        self._driver.configuration.gpfs_share_export_ip = self.local_ip
+        self._driver.configuration.gpfs_mount_point_base = self.fakefspath
+        self.mock_object(self._driver, '_is_dir',
+                         mock.Mock(return_value=False))
+        self.assertRaises(exception.GPFSException,
+                          self._driver.check_for_setup_error)
+
+    def test_check_for_setup_error_for_gpfs_path_check(self):
+        self.mock_object(self._driver, '_check_gpfs_state',
+                         mock.Mock(return_value=True))
+        self._driver.configuration.gpfs_share_export_ip = self.local_ip
+        self._driver.configuration.gpfs_mount_point_base = self.fakefspath
+        self.mock_object(self._driver, '_is_dir',
+                         mock.Mock(return_value=True))
+        self.mock_object(self._driver, '_is_gpfs_path',
+                         mock.Mock(return_value=False))
+        self.assertRaises(exception.GPFSException,
+                          self._driver.check_for_setup_error)
+
+    def test_check_for_setup_error_for_nfs_server_type(self):
+        self.mock_object(self._driver, '_check_gpfs_state',
+                         mock.Mock(return_value=True))
+        self._driver.configuration.gpfs_share_export_ip = self.local_ip
+        self._driver.configuration.gpfs_mount_point_base = self.fakefspath
+        self.mock_object(self._driver, '_is_dir',
+                         mock.Mock(return_value=True))
+        self.mock_object(self._driver, '_is_gpfs_path',
+                         mock.Mock(return_value=True))
+        self._driver.configuration.gpfs_nfs_server_type = 'test'
+        self.assertRaises(exception.InvalidParameterValue,
+                          self._driver.check_for_setup_error)
+
+    def test_check_for_setup_error_for_nfs_server_list(self):
+        self.mock_object(self._driver, '_check_gpfs_state',
+                         mock.Mock(return_value=True))
+        self._driver.configuration.gpfs_share_export_ip = self.local_ip
+        self._driver.configuration.gpfs_mount_point_base = self.fakefspath
+        self.mock_object(self._driver, '_is_dir',
+                         mock.Mock(return_value=True))
+        self.mock_object(self._driver, '_is_gpfs_path',
+                         mock.Mock(return_value=True))
+        self._driver.configuration.gpfs_nfs_server_type = 'KNFS'
+        self._driver.configuration.gpfs_nfs_server_list = None
+        self.assertRaises(exception.InvalidParameterValue,
+                          self._driver.check_for_setup_error)
+
+    def test__get_available_capacity(self):
+        path = self.fakefspath
+        mock_out = "Filesystem 1-blocks Used Available Capacity Mounted on\n\
+                    /dev/gpfs0 100 30 70 30% /gpfs0"
+        self.mock_object(self._driver, '_gpfs_execute',
+                         mock.Mock(return_value=(mock_out, '')))
+        available, size = self._driver._get_available_capacity(path)
+        self.assertEqual(70, available)
+        self.assertEqual(100, size)
 
     def test_create_share(self):
         self._helper_fake.create_export.return_value = 'fakelocation'
@@ -221,6 +386,34 @@ class GPFSShareDriverTestCase(test.TestCase):
             '-j', self.snapshot['share_name']
         )
 
+    def test_extend_share(self):
+        self._driver._extend_share = mock.Mock()
+        self._driver.extend_share(self.share, 10)
+        self._driver._extend_share.assert_called_once_with(self.share, 10)
+
+    def test__extend_share(self):
+        self._driver._get_gpfs_device = mock.Mock(return_value=self.fakedev)
+        self._driver._gpfs_execute = mock.Mock(return_value=True)
+        self._driver._extend_share(self.share, 10)
+        self._driver._gpfs_execute.assert_called_once_with('mmsetquota', '-j',
+                                                           self.share['name'],
+                                                           '-h', '10G',
+                                                           self.fakedev)
+        self._driver._get_gpfs_device.assert_called_once_with()
+
+    def test__extend_share_exception(self):
+        self._driver._get_gpfs_device = mock.Mock(return_value=self.fakedev)
+        self._driver._gpfs_execute = mock.Mock(
+            side_effect=exception.ProcessExecutionError
+        )
+        self.assertRaises(exception.GPFSException,
+                          self._driver._extend_share, self.share, 10)
+        self._driver._gpfs_execute.assert_called_once_with('mmsetquota', '-j',
+                                                           self.share['name'],
+                                                           '-h', '10G',
+                                                           self.fakedev)
+        self._driver._get_gpfs_device.assert_called_once_with()
+
     def test_allow_access(self):
         self._driver._get_share_path = mock.Mock(
             return_value=self.fakesharepath
@@ -261,6 +454,13 @@ class GPFSShareDriverTestCase(test.TestCase):
         result = self._driver._check_gpfs_state()
         self._driver._gpfs_execute.assert_called_once_with('mmgetstate', '-Y')
         self.assertEqual(result, False)
+
+    def test__check_gpfs_state_wrong_output_exception(self):
+        fakeout = "mmgetstate fake out"
+        self._driver._gpfs_execute = mock.Mock(return_value=(fakeout, ''))
+        self.assertRaises(exception.GPFSException,
+                          self._driver._check_gpfs_state)
+        self._driver._gpfs_execute.assert_called_once_with('mmgetstate', '-Y')
 
     def test__check_gpfs_state_exception(self):
         self._driver._gpfs_execute = mock.Mock(
@@ -326,6 +526,12 @@ class GPFSShareDriverTestCase(test.TestCase):
         self.assertEqual(result, self.fakedev)
         self._driver.configuration.gpfs_mount_point_base = orig_val
 
+    def test__get_gpfs_device_exception(self):
+        self._driver._gpfs_execute = mock.Mock(
+            side_effect=exception.ProcessExecutionError)
+        self.assertRaises(exception.GPFSException,
+                          self._driver._get_gpfs_device)
+
     def test__create_share(self):
         sizestr = '%sG' % self.share['size']
         self._driver._gpfs_execute = mock.Mock(return_value=True)
@@ -370,21 +576,17 @@ class GPFSShareDriverTestCase(test.TestCase):
     def test__delete_share(self):
         self._driver._gpfs_execute = mock.Mock(return_value=True)
         self._driver._get_gpfs_device = mock.Mock(return_value=self.fakedev)
-        ignore_exit_codes = [gpfs.ERR_FILE_NOT_FOUND]
         self._driver._delete_share(self.share)
         self._driver._gpfs_execute.assert_any_call(
             'mmunlinkfileset', self.fakedev, self.share['name'],
-            '-f', ignore_exit_codes=ignore_exit_codes
-        )
+            '-f')
         self._driver._gpfs_execute.assert_any_call(
             'mmdelfileset', self.fakedev, self.share['name'],
-            '-f', ignore_exit_codes=ignore_exit_codes
-        )
+            '-f')
         self._driver._get_gpfs_device.assert_called_once_with()
 
     def test__delete_share_exception(self):
         self._driver._get_gpfs_device = mock.Mock(return_value=self.fakedev)
-        ignore_exit_codes = [gpfs.ERR_FILE_NOT_FOUND]
         self._driver._gpfs_execute = mock.Mock(
             side_effect=exception.ProcessExecutionError
         )
@@ -393,8 +595,7 @@ class GPFSShareDriverTestCase(test.TestCase):
         self._driver._get_gpfs_device.assert_called_once_with()
         self._driver._gpfs_execute.assert_called_once_with(
             'mmunlinkfileset', self.fakedev, self.share['name'],
-            '-f', ignore_exit_codes=ignore_exit_codes
-        )
+            '-f')
 
     def test__create_share_snapshot(self):
         self._driver._gpfs_execute = mock.Mock(return_value=True)
@@ -461,7 +662,7 @@ class GPFSShareDriverTestCase(test.TestCase):
         self._driver.configuration.gpfs_share_export_ip = self.local_ip
         self._driver._gpfs_remote_execute(cmd, check_exit_code=True)
         self._driver._run_ssh.assert_called_once_with(
-            self.local_ip, tuple([cmd]), None, True
+            self.local_ip, tuple([cmd]), True
         )
         self._driver.configuration.gpfs_share_export_ip = orig_value
 
@@ -482,7 +683,7 @@ class GPFSShareDriverTestCase(test.TestCase):
                                        access_type, access)
         self._knfs_helper._execute.assert_called_once_with('exportfs',
                                                            run_as_root=True)
-        re.search.assert_called_any()
+        self.assertTrue(re.search.called)
         self._knfs_helper._get_export_options.assert_any_call(self.share)
         cmd = ['exportfs', '-o', export_opts, ':'.join([access, local_path])]
         self._knfs_helper._publish_access.assert_called_once_with(*cmd)

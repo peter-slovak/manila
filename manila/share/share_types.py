@@ -1,4 +1,4 @@
-# Copyright (c) 2014 Openstack Foundation.
+# Copyright (c) 2014 OpenStack Foundation.
 # Copyright (c) 2015 Tom Barron.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -15,6 +15,7 @@
 
 """Built-in share type properties."""
 
+import re
 
 from oslo_config import cfg
 from oslo_db import exception as db_exception
@@ -38,6 +39,9 @@ def create(context, name, extra_specs=None, is_public=True, projects=None):
     """Creates share types."""
     extra_specs = extra_specs or {}
     projects = projects or []
+
+    if constants.ExtraSpecs.SNAPSHOT_SUPPORT not in list(extra_specs):
+        extra_specs[constants.ExtraSpecs.SNAPSHOT_SUPPORT] = 'True'
 
     try:
         get_valid_required_extra_specs(extra_specs)
@@ -196,6 +200,18 @@ def get_required_extra_specs():
     return constants.ExtraSpecs.REQUIRED
 
 
+def get_undeletable_extra_specs():
+    return constants.ExtraSpecs.UNDELETABLE
+
+
+def get_tenant_visible_extra_specs():
+    return constants.ExtraSpecs.TENANT_VISIBLE
+
+
+def get_boolean_extra_specs():
+    return constants.ExtraSpecs.BOOLEAN
+
+
 def is_valid_required_extra_spec(key, value):
     """Validates required extra_spec value.
 
@@ -303,3 +319,28 @@ def share_types_diff(context, share_type_id1, share_type_id2):
 def get_extra_specs_from_share(share):
     type_id = share.get('share_type_id', None)
     return get_share_type_extra_specs(type_id)
+
+
+def parse_boolean_extra_spec(extra_spec_key, extra_spec_value):
+    """Parse extra spec values of the form '<is> True' or '<is> False'
+
+    This method returns the boolean value of an extra spec value.  If
+    the value does not conform to the standard boolean pattern, it raises
+    an InvalidExtraSpec exception.
+    """
+
+    try:
+        if not isinstance(extra_spec_value, six.string_types):
+            raise ValueError
+
+        match = re.match(r'^<is>\s*(?P<value>True|False)$',
+                         extra_spec_value.strip(),
+                         re.IGNORECASE)
+        if not match:
+            raise ValueError
+        else:
+            return strutils.bool_from_string(match.group('value'), strict=True)
+    except ValueError:
+        msg = (_('Invalid boolean extra spec %(key)s : %(value)s') %
+               {'key': extra_spec_key, 'value': extra_spec_value})
+        raise exception.InvalidExtraSpec(reason=msg)

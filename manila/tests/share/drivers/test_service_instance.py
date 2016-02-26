@@ -17,6 +17,7 @@
 """Unit tests for the instance module."""
 
 import os
+import time
 
 import ddt
 import mock
@@ -78,11 +79,11 @@ def fake_get_config_option(key):
 
 class FakeServiceInstance(object):
 
-    def __init__(self, db=None, driver_config=None):
+    def __init__(self, driver_config=None):
         super(FakeServiceInstance, self).__init__()
-        self.db = db or mock.Mock()
         self.compute_api = service_instance.compute.API()
         self.admin_context = service_instance.context.get_admin_context()
+        self.driver_config = driver_config
 
     def get_config_option(self, key):
         return fake_get_config_option(key)
@@ -121,7 +122,6 @@ class ServiceInstanceManagerTestCase(test.TestCase):
         self.instance_id = 'fake_instance_id'
         self.config = configuration.Configuration(None)
         self.config.safe_get = mock.Mock(side_effect=fake_get_config_option)
-        self._db = mock.Mock()
         self.mock_object(service_instance.compute, 'API', fake_compute.API)
         self.mock_object(
             service_instance.os.path, 'exists', mock.Mock(return_value=True))
@@ -129,9 +129,9 @@ class ServiceInstanceManagerTestCase(test.TestCase):
                          mock.Mock(side_effect=FakeNetworkHelper))
         self.mock_object(service_instance, 'NovaNetworkHelper',
                          mock.Mock(side_effect=FakeNetworkHelper))
-        self._manager = service_instance.ServiceInstanceManager(
-            self._db, self.config)
+        self._manager = service_instance.ServiceInstanceManager(self.config)
         self._manager._execute = mock.Mock(return_value=('', ''))
+        self.mock_object(time, 'sleep')
 
     def test_get_config_option_from_driver_config(self):
         username1 = 'fake_username_1_%s' % self.id()
@@ -143,7 +143,7 @@ class ServiceInstanceManagerTestCase(test.TestCase):
             self.config = configuration.Configuration(
                 service_instance.common_opts, config_group='CUSTOM')
             self._manager = service_instance.ServiceInstanceManager(
-                self._db, self.config)
+                self.config)
         result = self._manager.get_config_option('service_instance_user')
         self.assertEqual(username2, result)
 
@@ -151,7 +151,7 @@ class ServiceInstanceManagerTestCase(test.TestCase):
         username = 'fake_username_%s' % self.id()
         config_data = dict(DEFAULT=dict(service_instance_user=username))
         with test_utils.create_temp_config_with_opts(config_data):
-            self._manager = service_instance.ServiceInstanceManager(self._db)
+            self._manager = service_instance.ServiceInstanceManager()
         result = self._manager.get_config_option('service_instance_user')
         self.assertEqual(username, result)
 
@@ -164,7 +164,8 @@ class ServiceInstanceManagerTestCase(test.TestCase):
             driver_handles_share_servers=True,
             service_instance_network_helper_type=service_instance.NOVA_NAME))
         with test_utils.create_temp_config_with_opts(config_data):
-            self._manager = service_instance.ServiceInstanceManager(self._db)
+            self._manager = service_instance.ServiceInstanceManager()
+            self._manager.network_helper
         service_instance.NovaNetworkHelper.assert_called_once_with(
             self._manager)
         self.assertFalse(service_instance.NeutronNetworkHelper.called)
@@ -179,7 +180,8 @@ class ServiceInstanceManagerTestCase(test.TestCase):
             service_instance_network_helper_type=service_instance.NEUTRON_NAME)
         )
         with test_utils.create_temp_config_with_opts(config_data):
-            self._manager = service_instance.ServiceInstanceManager(self._db)
+            self._manager = service_instance.ServiceInstanceManager()
+            self._manager.network_helper
         service_instance.NeutronNetworkHelper.assert_called_once_with(
             self._manager)
         self.assertFalse(service_instance.NovaNetworkHelper.called)
@@ -198,9 +200,9 @@ class ServiceInstanceManagerTestCase(test.TestCase):
             driver_handles_share_servers=True,
             service_instance_network_helper_type=value))
         with test_utils.create_temp_config_with_opts(config_data):
-            self.assertRaises(
-                exception.ManilaException,
-                service_instance.ServiceInstanceManager, self._db)
+            manager = service_instance.ServiceInstanceManager()
+            self.assertRaises(exception.ManilaException,
+                              lambda: manager.network_helper)
         self.assertFalse(service_instance.NeutronNetworkHelper.called)
         self.assertFalse(service_instance.NovaNetworkHelper.called)
 
@@ -215,7 +217,7 @@ class ServiceInstanceManagerTestCase(test.TestCase):
         with test_utils.create_temp_config_with_opts(config_data):
             self.config = configuration.Configuration(opts, 'CUSTOM')
             self._manager = service_instance.ServiceInstanceManager(
-                self._db, self.config)
+                self.config)
         self.assertEqual(
             True,
             self._manager.get_config_option("driver_handles_share_servers"))
@@ -234,7 +236,7 @@ class ServiceInstanceManagerTestCase(test.TestCase):
         with test_utils.create_temp_config_with_opts(config_data):
             self.config = configuration.Configuration(opts, 'CUSTOM')
             self._manager = service_instance.ServiceInstanceManager(
-                self._db, self.config)
+                self.config)
         self.assertNotEqual(None, self._manager.driver_config)
         self.assertFalse(hasattr(self._manager, 'network_helper'))
         self.assertFalse(service_instance.NovaNetworkHelper.called)
@@ -248,11 +250,11 @@ class ServiceInstanceManagerTestCase(test.TestCase):
             driver_handles_share_servers=True,
             service_instance_network_helper_type=service_instance.NOVA_NAME))
         with test_utils.create_temp_config_with_opts(config_data):
-            self._manager = service_instance.ServiceInstanceManager(self._db)
+            self._manager = service_instance.ServiceInstanceManager()
         self.assertEqual(
             True,
             self._manager.get_config_option("driver_handles_share_servers"))
-        self.assertEqual(None, self._manager.driver_config)
+        self.assertIsNone(self._manager.driver_config)
         self.assertTrue(hasattr(self._manager, 'network_helper'))
         self.assertTrue(service_instance.NovaNetworkHelper.called)
         self.assertFalse(service_instance.NeutronNetworkHelper.called)
@@ -264,11 +266,11 @@ class ServiceInstanceManagerTestCase(test.TestCase):
             service_instance_user='fake_username',
             driver_handles_share_servers=False))
         with test_utils.create_temp_config_with_opts(config_data):
-            self._manager = service_instance.ServiceInstanceManager(self._db)
+            self._manager = service_instance.ServiceInstanceManager()
         self.assertEqual(
             False,
             self._manager.get_config_option("driver_handles_share_servers"))
-        self.assertEqual(None, self._manager.driver_config)
+        self.assertIsNone(self._manager.driver_config)
         self.assertFalse(hasattr(self._manager, 'network_helper'))
         self.assertFalse(service_instance.NovaNetworkHelper.called)
         self.assertFalse(service_instance.NeutronNetworkHelper.called)
@@ -281,7 +283,7 @@ class ServiceInstanceManagerTestCase(test.TestCase):
                 service_instance.common_opts, config_group=group_name)
         self.assertRaises(
             exception.ServiceInstanceException,
-            service_instance.ServiceInstanceManager, self._db, config)
+            service_instance.ServiceInstanceManager, config)
 
     def test_get_service_instance_name_using_driver_config(self):
         fake_server_id = 'fake_share_server_id_%s' % self.id()
@@ -295,7 +297,7 @@ class ServiceInstanceManagerTestCase(test.TestCase):
         with test_utils.create_temp_config_with_opts(config_data):
             self.config = configuration.Configuration(opts, 'CUSTOM')
             self._manager = service_instance.ServiceInstanceManager(
-                self._db, self.config)
+                self.config)
         result = self._manager._get_service_instance_name(fake_server_id)
         self.assertNotEqual(None, self._manager.driver_config)
         self.assertEqual(
@@ -316,9 +318,9 @@ class ServiceInstanceManagerTestCase(test.TestCase):
             service_instance_user='fake_user',
             service_instance_network_helper_type=service_instance.NOVA_NAME))
         with test_utils.create_temp_config_with_opts(config_data):
-            self._manager = service_instance.ServiceInstanceManager(self._db)
+            self._manager = service_instance.ServiceInstanceManager()
         result = self._manager._get_service_instance_name(fake_server_id)
-        self.assertEqual(None, self._manager.driver_config)
+        self.assertIsNone(self._manager.driver_config)
         self.assertEqual(
             self._manager.get_config_option(
                 "service_instance_name_template") % fake_server_id, result)
@@ -381,14 +383,14 @@ class ServiceInstanceManagerTestCase(test.TestCase):
         net_name = self._manager.get_config_option('service_network_name')
         fake_server = dict(networks={net_name: [ip]})
         result = self._manager._get_server_ip(fake_server, net_name)
-        self.assertEqual(result, ip)
+        self.assertEqual(ip, result)
 
     def test_get_server_ip_found_in_addresses_section(self):
         ip = '10.0.0.1'
         net_name = self._manager.get_config_option('service_network_name')
         fake_server = dict(addresses={net_name: [dict(addr=ip, version=4)]})
         result = self._manager._get_server_ip(fake_server, net_name)
-        self.assertEqual(result, ip)
+        self.assertEqual(ip, result)
 
     @ddt.data(
         {},
@@ -405,7 +407,7 @@ class ServiceInstanceManagerTestCase(test.TestCase):
                          mock.Mock(return_value=None))
         result = self._manager._get_or_create_security_group(
             self._manager.admin_context)
-        self.assertEqual(None, result)
+        self.assertIsNone(result)
         self._manager.get_config_option.assert_called_once_with(
             'service_instance_security_group')
 
@@ -417,7 +419,7 @@ class ServiceInstanceManagerTestCase(test.TestCase):
                          mock.Mock(return_value=[fake_secgroup, ]))
         result = self._manager._get_or_create_security_group(
             self._manager.admin_context)
-        self.assertEqual(result, fake_secgroup)
+        self.assertEqual(fake_secgroup, result)
         self._manager.get_config_option.assert_has_calls([
             mock.call('service_instance_security_group'),
         ])
@@ -442,7 +444,7 @@ class ServiceInstanceManagerTestCase(test.TestCase):
             name=None,
             description=desc,
         )
-        self.assertEqual(result, fake_secgroup)
+        self.assertEqual(fake_secgroup, result)
         self._manager.compute_api.security_group_list.assert_called_once_with(
             self._manager.admin_context)
         self._manager.compute_api.security_group_create.\
@@ -467,7 +469,7 @@ class ServiceInstanceManagerTestCase(test.TestCase):
         self._manager.compute_api.security_group_create.\
             assert_called_once_with(
                 self._manager.admin_context, name, mock.ANY)
-        self.assertEqual(result, fake_secgroup)
+        self.assertEqual(fake_secgroup, result)
 
     def test_security_group_two_sg_in_list(self):
         name = "fake_name"
@@ -491,11 +493,13 @@ class ServiceInstanceManagerTestCase(test.TestCase):
              public_port_id='fake_public_port_id'),
     )
     def test_set_up_service_instance(self, update_data):
-        fake_network_info = dict(foo='bar', server_id='fake_server_id')
+        fake_network_info = dict(foo='bar', server_id='fake_server_id',
+                                 service_ip='fake_ip')
         fake_server = dict(
             id='fake', ip='1.2.3.4', public_address='1.2.3.4', pk_path=None,
             subnet_id='fake-subnet-id', router_id='fake-router-id',
-            username=self._manager.get_config_option('service_instance_user'))
+            username=self._manager.get_config_option('service_instance_user'),
+            service_ip='fake_ip')
         fake_server.update(update_data)
         expected_details = fake_server.copy()
         expected_details.pop('pk_path')
@@ -511,15 +515,20 @@ class ServiceInstanceManagerTestCase(test.TestCase):
             self._manager.admin_context,
             fake_network_info['server_id'], fake_network_info)
         self._manager._check_server_availability.assert_called_once_with(
-            fake_server)
+            expected_details)
         self.assertEqual(expected_details, result)
 
     def test_set_up_service_instance_not_available(self):
-        fake_network_info = dict(foo='bar', server_id='fake_server_id')
+        fake_network_info = dict(foo='bar', server_id='fake_server_id',
+                                 service_ip='fake_ip')
         fake_server = dict(
             id='fake', ip='1.2.3.4', public_address='1.2.3.4', pk_path=None,
             subnet_id='fake-subnet-id', router_id='fake-router-id',
-            username=self._manager.get_config_option('service_instance_user'))
+            username=self._manager.get_config_option('service_instance_user'),
+            service_ip='fake_ip')
+        expected_details = fake_server.copy()
+        expected_details.pop('pk_path')
+        expected_details['instance_id'] = expected_details.pop('id')
         self.mock_object(self._manager, '_create_service_instance',
                          mock.Mock(return_value=fake_server))
         self.mock_object(self._manager, '_check_server_availability',
@@ -534,7 +543,7 @@ class ServiceInstanceManagerTestCase(test.TestCase):
             self._manager.admin_context,
             fake_network_info['server_id'], fake_network_info)
         self._manager._check_server_availability.assert_called_once_with(
-            fake_server)
+            expected_details)
 
     def test_ensure_server(self):
         server_details = {'instance_id': 'fake_inst_id', 'ip': '1.2.3.4'}
@@ -679,12 +688,12 @@ class ServiceInstanceManagerTestCase(test.TestCase):
     def test_get_key_keypath_to_public_not_set(self):
         self._manager.path_to_public_key = None
         result = self._manager._get_key(self._manager.admin_context)
-        self.assertEqual(result, (None, None))
+        self.assertEqual((None, None), result)
 
     def test_get_key_keypath_to_private_not_set(self):
         self._manager.path_to_private_key = None
         result = self._manager._get_key(self._manager.admin_context)
-        self.assertEqual(result, (None, None))
+        self.assertEqual((None, None), result)
 
     def test_get_key_incorrect_keypath_to_public(self):
         def exists_side_effect(path):
@@ -696,7 +705,7 @@ class ServiceInstanceManagerTestCase(test.TestCase):
             with mock.patch.object(os.path, 'expanduser',
                                    mock.Mock(side_effect=lambda value: value)):
                 result = self._manager._get_key(self._manager.admin_context)
-                self.assertEqual(result, (None, None))
+                self.assertEqual((None, None), result)
 
     def test_get_key_incorrect_keypath_to_private(self):
         def exists_side_effect(path):
@@ -708,7 +717,7 @@ class ServiceInstanceManagerTestCase(test.TestCase):
             with mock.patch.object(os.path, 'expanduser',
                                    mock.Mock(side_effect=lambda value: value)):
                 result = self._manager._get_key(self._manager.admin_context)
-                self.assertEqual(result, (None, None))
+                self.assertEqual((None, None), result)
 
     def test_get_service_image(self):
         fake_image1 = fake_compute.FakeImage(
@@ -799,12 +808,12 @@ class ServiceInstanceManagerTestCase(test.TestCase):
         self._manager.compute_api.server_delete.assert_called_once_with(
             self._manager.admin_context, self.instance_id)
         service_instance.time.sleep.assert_has_calls(
-            [mock.call(mock.ANY) for i in 1, 2])
+            [mock.call(mock.ANY) for i in range(2)])
         service_instance.time.time.assert_has_calls(
-            [mock.call() for i in 1, 2, 3, 4])
+            [mock.call() for i in range(4)])
         self._manager.compute_api.server_get.assert_has_calls(
             [mock.call(self._manager.admin_context,
-                       self.instance_id) for i in 1, 2, 3])
+                       self.instance_id) for i in range(3)])
 
     def test_delete_service_instance(self):
         fake_server_details = dict(
@@ -821,39 +830,65 @@ class ServiceInstanceManagerTestCase(test.TestCase):
             fake_server_details)
 
     @ddt.data(
-        {'s': 'fake_net_s', 't': 'fake_net_t'},
-        {'s': 'fake_net_s', 't': '12.34.56.78'},
-        {'s': '98.76.54.123', 't': 'fake_net_t'},
-        {'s': '98.76.54.123', 't': '12.34.56.78'})
+        *[{'s': s, 't': t, 'server': server}
+            for s, t in (
+                ('fake_net_s', 'fake_net_t'),
+                ('fake_net_s', '12.34.56.78'),
+                ('98.76.54.123', 'fake_net_t'),
+                ('98.76.54.123', '12.34.56.78'))
+            for server in (
+                {'networks': {
+                    'fake_net_s': ['foo', '98.76.54.123', 'bar'],
+                    'fake_net_t': ['baar', '12.34.56.78', 'quuz']}},
+                {'addresses': {
+                    'fake_net_s': [
+                        {'addr': 'fake1'},
+                        {'addr': '98.76.54.123'},
+                        {'addr': 'fake2'}],
+                    'fake_net_t': [
+                        {'addr': 'fake3'},
+                        {'addr': '12.34.56.78'},
+                        {'addr': 'fake4'}],
+                }})])
     @ddt.unpack
-    def test_get_common_server_valid_cases(self, s, t):
-        self._get_common_server(s, t, True)
+    def test_get_common_server_valid_cases(self, s, t, server):
+        self._get_common_server(s, t, server, True)
 
     @ddt.data(
-        {'s': 'fake_net_s', 't': 'fake'},
-        {'s': 'fake', 't': 'fake_net_t'},
-        {'s': 'fake', 't': 'fake'},
-        {'s': '98.76.54.123', 't': '12.12.12.1212'},
-        {'s': '12.12.12.1212', 't': '12.34.56.78'},
-        {'s': '12.12.12.1212', 't': '12.12.12.1212'})
+        *[{'s': s, 't': t, 'server': server}
+            for s, t in (
+                ('fake_net_s', 'fake'),
+                ('fake', 'fake_net_t'),
+                ('fake', 'fake'),
+                ('98.76.54.123', '12.12.12.1212'),
+                ('12.12.12.1212', '12.34.56.78'),
+                ('12.12.12.1212', '12.12.12.1212'))
+            for server in (
+                {'networks': {
+                    'fake_net_s': ['foo', '98.76.54.123', 'bar'],
+                    'fake_net_t': ['baar', '12.34.56.78', 'quuz']}},
+                {'addresses': {
+                    'fake_net_s': [
+                        {'addr': 'fake1'},
+                        {'addr': '98.76.54.123'},
+                        {'addr': 'fake2'}],
+                    'fake_net_t': [
+                        {'addr': 'fake3'},
+                        {'addr': '12.34.56.78'},
+                        {'addr': 'fake4'}],
+                }})])
     @ddt.unpack
-    def test_get_common_server_invalid_cases(self, s, t):
-        self._get_common_server(s, t, False)
+    def test_get_common_server_invalid_cases(self, s, t, server):
+        self._get_common_server(s, t, server, False)
 
-    def _get_common_server(self, s, t, is_valid=True):
+    def _get_common_server(self, s, t, server, is_valid=True):
         fake_instance_id = 'fake_instance_id'
         fake_user = 'fake_user'
         fake_pass = 'fake_pass'
-        fake_net_s = 'fake_net_s'
         fake_addr_s = '98.76.54.123'
-        fake_net_t = 'fake_net_t'
         fake_addr_t = '12.34.56.78'
-        fake_server = {
-            'id': fake_instance_id,
-            'networks': {fake_net_s: [fake_addr_s], fake_net_t: [fake_addr_t]},
-            'addresses': {fake_net_s: {'addr': fake_addr_s},
-                          fake_net_t: {'addr': fake_addr_t}},
-        }
+        fake_server = {'id': fake_instance_id}
+        fake_server.update(server)
         expected = {
             'backend_details': {
                 'username': fake_user,
@@ -907,7 +942,7 @@ class ServiceInstanceManagerTestCase(test.TestCase):
             service_instance_user='fake_user',
             service_instance_network_helper_type=helper_type))
         with test_utils.create_temp_config_with_opts(config_data):
-            self._manager = service_instance.ServiceInstanceManager(self._db)
+            self._manager = service_instance.ServiceInstanceManager()
 
         server_create = dict(id='fakeid', status='CREATING', networks=dict())
         net_name = self._manager.get_config_option("service_network_name")
@@ -917,7 +952,8 @@ class ServiceInstanceManagerTestCase(test.TestCase):
         key_data = 'fake_key_name', 'fake_key_path'
         instance_name = 'fake_instance_name'
         network_info = dict()
-        network_data = dict(nics=['fake_nic1', 'fake_nic2'])
+        network_data = dict(nics=['fake_nic1', 'fake_nic2'],
+                            service_ip='fake_ip')
         if helper_type == service_instance.NEUTRON_NAME:
             network_data['router'] = dict(id='fake_router_id')
         server_get = dict(
@@ -956,7 +992,8 @@ class ServiceInstanceManagerTestCase(test.TestCase):
             subnet_id=network_data.get('subnet_id'),
             instance_id=server_get['id'],
             ip=ip_address,
-            networks=server_get['networks'])
+            networks=server_get['networks'],
+            service_ip='fake_ip')
         if helper_type == service_instance.NEUTRON_NAME:
             expected['router_id'] = network_data['router']['id']
             expected['public_port_id'] = 'fake_public_port'
@@ -978,7 +1015,8 @@ class ServiceInstanceManagerTestCase(test.TestCase):
         self._manager.compute_api.server_create.assert_called_once_with(
             self._manager.admin_context, name=instance_name,
             image=service_image_id, flavor=100,
-            key_name=key_data[0], nics=network_data['nics'])
+            key_name=key_data[0], nics=network_data['nics'],
+            availability_zone=service_instance.CONF.storage_availability_zone)
         self._manager.compute_api.server_get.assert_called_once_with(
             self._manager.admin_context, server_create['id'])
         if helper_type == service_instance.NEUTRON_NAME:
@@ -992,62 +1030,6 @@ class ServiceInstanceManagerTestCase(test.TestCase):
                     self._manager.admin_context, server_get['id'], sg.name)
             self._manager.network_helper.get_network_name.\
                 assert_called_once_with(network_info)
-
-    def test___create_service_instance_not_found_after_creation(self):
-        def fake_sleep(time):
-            self.fake_time += time
-
-        def fake_time():
-            if not self.fake_time:
-                return 0
-            return self.fake_time
-
-        self.fake_time, self._manager.max_time_to_build_instance = 0, 1
-        server_create = dict(id='fakeid', status='CREATING', networks=dict())
-        net_name = self._manager.get_config_option("service_network_name")
-        server_get = dict(
-            id='fakeid', status='ACTIVE', networks={net_name: 'bar'})
-        service_image_id = 'fake_service_image_id'
-        key_data = 'fake_key_name', None
-        instance_name = 'fake_instance_name'
-        network_info = dict()
-        network_data = dict(nics=['fake_nic1', 'fake_nic2'])
-        self.mock_object(self._manager.network_helper, 'setup_network',
-                         mock.Mock(return_value=network_data))
-        self.mock_object(self._manager, '_get_service_image',
-                         mock.Mock(return_value=service_image_id))
-        self.mock_object(self._manager, '_get_key',
-                         mock.Mock(return_value=key_data))
-        self.mock_object(self._manager.compute_api, 'server_create',
-                         mock.Mock(return_value=server_create))
-        self.mock_object(self._manager.compute_api, 'server_get',
-                         mock.Mock(side_effect=exception.InstanceNotFound(
-                             instance_id=server_get['id'])))
-        self.mock_object(service_instance.time, 'sleep',
-                         mock.Mock(side_effect=fake_sleep))
-        self.mock_object(service_instance.time, 'time',
-                         mock.Mock(side_effect=fake_time))
-
-        self.assertRaises(
-            exception.ServiceInstanceException,
-            self._manager._create_service_instance,
-            self._manager.admin_context, instance_name, network_info)
-
-        self.assertTrue(service_instance.time.time.called)
-        self._manager.network_helper.setup_network.assert_called_once_with(
-            network_info)
-        self._manager._get_service_image.assert_called_once_with(
-            self._manager.admin_context)
-        self._manager._get_key.assert_called_once_with(
-            self._manager.admin_context)
-        self._manager.compute_api.server_create.assert_called_once_with(
-            self._manager.admin_context, name=instance_name,
-            image=service_image_id, flavor=100,
-            key_name=key_data[0], nics=network_data['nics'])
-        self._manager.compute_api.server_get.assert_called_once_with(
-            self._manager.admin_context, server_create['id'])
-        self.assertTrue(service_instance.time.sleep.called)
-        self.assertTrue(service_instance.time.sleep.called)
 
     @ddt.data(
         dict(
@@ -1074,6 +1056,9 @@ class ServiceInstanceManagerTestCase(test.TestCase):
                          mock.Mock(return_value=key_data))
         self.mock_object(
             self._manager.compute_api, 'server_create', mockobj)
+        self.mock_object(
+            self._manager, 'wait_for_instance_to_be_active',
+            mock.Mock(side_effect=exception.ServiceInstanceException))
 
         try:
             self._manager._create_service_instance(
@@ -1097,21 +1082,10 @@ class ServiceInstanceManagerTestCase(test.TestCase):
         self._manager.compute_api.server_create.assert_called_once_with(
             self._manager.admin_context, name=instance_name,
             image=service_image_id, flavor=100,
-            key_name=key_data[0], nics=network_data['nics'])
+            key_name=key_data[0], nics=network_data['nics'],
+            availability_zone=service_instance.CONF.storage_availability_zone)
 
-    @ddt.data(
-        mock.Mock(return_value=dict(id='fakeid', status='ERROR')),
-        mock.Mock(side_effect=exception.ServiceInstanceException))
-    def test___create_service_instance_failed_to_build(self, mock_for_get):
-        def fake_sleep(time):
-            self.fake_time += time
-
-        def fake_time():
-            if not self.fake_time:
-                return 0
-            return self.fake_time
-
-        self.fake_time, self._manager.max_time_to_build_instance = 0, 2
+    def test___create_service_instance_failed_to_build(self):
         server_create = dict(id='fakeid', status='CREATING', networks=dict())
         service_image_id = 'fake_service_image_id'
         key_data = 'fake_key_name', 'fake_key_path'
@@ -1129,11 +1103,8 @@ class ServiceInstanceManagerTestCase(test.TestCase):
         self.mock_object(self._manager.compute_api, 'server_create',
                          mock.Mock(return_value=server_create))
         self.mock_object(
-            self._manager.compute_api, 'server_get', mock_for_get)
-        self.mock_object(service_instance.time, 'sleep',
-                         mock.Mock(side_effect=fake_sleep))
-        self.mock_object(service_instance.time, 'time',
-                         mock.Mock(side_effect=fake_time))
+            self._manager, 'wait_for_instance_to_be_active',
+            mock.Mock(side_effect=exception.ServiceInstanceException))
 
         try:
             self._manager._create_service_instance(
@@ -1156,11 +1127,8 @@ class ServiceInstanceManagerTestCase(test.TestCase):
         self._manager.compute_api.server_create.assert_called_once_with(
             self._manager.admin_context, name=instance_name,
             image=service_image_id, flavor=100,
-            key_name=key_data[0], nics=network_data['nics'])
-        self._manager.compute_api.server_get.assert_called_once_with(
-            self._manager.admin_context, server_create['id'])
-        self.assertTrue(service_instance.time.sleep.called)
-        self.assertTrue(service_instance.time.sleep.called)
+            key_name=key_data[0], nics=network_data['nics'],
+            availability_zone=service_instance.CONF.storage_availability_zone)
 
     @ddt.data(
         dict(name=None, path=None),
@@ -1181,6 +1149,91 @@ class ServiceInstanceManagerTestCase(test.TestCase):
             self._manager.admin_context)
         self._manager._get_key.assert_called_once_with(
             self._manager.admin_context)
+
+    @mock.patch('time.sleep')
+    @mock.patch('time.time')
+    def _test_wait_for_instance(self, mock_time, mock_sleep,
+                                server_get_side_eff=None,
+                                expected_try_count=1,
+                                expected_sleep_count=0,
+                                expected_ret_val=None,
+                                expected_exc=None):
+        mock_server_get = mock.Mock(side_effect=server_get_side_eff)
+        self.mock_object(self._manager.compute_api, 'server_get',
+                         mock_server_get)
+
+        self.fake_time = 0
+
+        def fake_time():
+            return self.fake_time
+
+        def fake_sleep(sleep_time):
+            self.fake_time += sleep_time
+
+        # Note(lpetrut): LOG methods can call time.time
+        mock_time.side_effect = fake_time
+        mock_sleep.side_effect = fake_sleep
+        timeout = 3
+
+        if expected_exc:
+            self.assertRaises(
+                expected_exc,
+                self._manager.wait_for_instance_to_be_active,
+                instance_id=mock.sentinel.instance_id,
+                timeout=timeout)
+        else:
+            instance = self._manager.wait_for_instance_to_be_active(
+                instance_id=mock.sentinel.instance_id,
+                timeout=timeout)
+            self.assertEqual(expected_ret_val, instance)
+
+        mock_server_get.assert_has_calls(
+            [mock.call(self._manager.admin_context,
+                       mock.sentinel.instance_id)] * expected_try_count)
+        mock_sleep.assert_has_calls([mock.call(1)] * expected_sleep_count)
+
+    def test_wait_for_instance_timeout(self):
+        server_get_side_eff = [
+            exception.InstanceNotFound(
+                instance_id=mock.sentinel.instance_id),
+            {'status': 'BUILDING'},
+            {'status': 'ACTIVE'}]
+        # Note that in this case, although the status is active, the
+        # 'networks' field is missing.
+        self._test_wait_for_instance(
+            server_get_side_eff=server_get_side_eff,
+            expected_exc=exception.ServiceInstanceException,
+            expected_try_count=3,
+            expected_sleep_count=3)
+
+    def test_wait_for_instance_error_state(self):
+        mock_instance = {'status': 'ERROR'}
+        self._test_wait_for_instance(
+            server_get_side_eff=[mock_instance],
+            expected_exc=exception.ServiceInstanceException,
+            expected_try_count=1)
+
+    def test_wait_for_instance_available(self):
+        mock_instance = {'status': 'ACTIVE',
+                         'networks': mock.sentinel.networks}
+        self._test_wait_for_instance(
+            server_get_side_eff=[mock_instance],
+            expected_try_count=1,
+            expected_ret_val=mock_instance)
+
+    def test_reboot_server(self):
+        fake_server = {'instance_id': mock.sentinel.instance_id}
+        soft_reboot = True
+
+        mock_reboot = mock.Mock()
+        self.mock_object(self._manager.compute_api, 'server_reboot',
+                         mock_reboot)
+
+        self._manager.reboot_server(fake_server, soft_reboot)
+
+        mock_reboot.assert_called_once_with(self._manager.admin_context,
+                                            fake_server['instance_id'],
+                                            soft_reboot)
 
 
 class BaseNetworkHelperTestCase(test.TestCase):
@@ -1242,26 +1295,45 @@ class NeutronNetworkHelperTestCase(test.TestCase):
 
     def _init_neutron_network_plugin(self):
         self.mock_object(
-            service_instance.NeutronNetworkHelper, 'get_service_network_id',
+            service_instance.NeutronNetworkHelper, '_get_service_network_id',
             mock.Mock(return_value='fake_service_network_id'))
         return service_instance.NeutronNetworkHelper(self.fake_manager)
 
     def test_init_neutron_network_plugin(self):
         instance = self._init_neutron_network_plugin()
-
         self.assertEqual(service_instance.NEUTRON_NAME, instance.NAME)
         attrs = [
             'neutron_api', 'vif_driver', 'service_network_id',
             'connect_share_server_to_tenant_network', 'get_config_option']
         for attr in attrs:
             self.assertTrue(hasattr(instance, attr), "No attr '%s'" % attr)
-        service_instance.NeutronNetworkHelper.get_service_network_id.\
+        service_instance.NeutronNetworkHelper._get_service_network_id.\
             assert_called_once_with()
+        self.assertEqual('DEFAULT', instance.neutron_api.config_group_name)
+
+    def test_init_neutron_network_plugin_with_driver_config_group(self):
+        self.fake_manager.driver_config = mock.Mock()
+        self.fake_manager.driver_config.config_group =\
+            'fake_config_group'
+        self.fake_manager.driver_config.network_config_group = None
+        instance = self._init_neutron_network_plugin()
+        self.assertEqual('fake_config_group',
+                         instance.neutron_api.config_group_name)
+
+    def test_init_neutron_network_plugin_with_network_config_group(self):
+        self.fake_manager.driver_config = mock.Mock()
+        self.fake_manager.driver_config.config_group =\
+            "fake_config_group"
+        self.fake_manager.driver_config.network_config_group =\
+            "fake_network_config_group"
+        instance = self._init_neutron_network_plugin()
+        self.assertEqual('fake_network_config_group',
+                         instance.neutron_api.config_group_name)
 
     def test_admin_project_id(self):
         instance = self._init_neutron_network_plugin()
         admin_project_id = 'fake_admin_project_id'
-        instance.neutron_api = mock.Mock()
+        self.mock_class('manila.network.neutron.api.API', mock.Mock())
         instance.neutron_api.admin_project_id = admin_project_id
         self.assertEqual(admin_project_id, instance.admin_project_id)
 
@@ -1294,13 +1366,12 @@ class NeutronNetworkHelperTestCase(test.TestCase):
             mock.Mock(return_value=network))
         instance = service_instance.NeutronNetworkHelper(self.fake_manager)
 
-        result = instance.get_service_network_id()
+        result = instance._get_service_network_id()
 
         self.assertEqual(network['id'], result)
-        service_instance.neutron.API.get_all_admin_project_networks.\
-            assert_has_calls([mock.call(), mock.call()])
+        self.assertTrue(service_instance.neutron.API.
+                        get_all_admin_project_networks.called)
         service_instance.neutron.API.network_create.assert_has_calls([
-            mock.call(instance.admin_project_id, service_network_name),
             mock.call(instance.admin_project_id, service_network_name)])
 
     def test_get_service_network_id_one_exist(self):
@@ -1315,11 +1386,11 @@ class NeutronNetworkHelperTestCase(test.TestCase):
             mock.Mock(return_value=admin_project_id))
         instance = service_instance.NeutronNetworkHelper(self.fake_manager)
 
-        result = instance.get_service_network_id()
+        result = instance._get_service_network_id()
 
         self.assertEqual(network['id'], result)
-        service_instance.neutron.API.get_all_admin_project_networks.\
-            assert_has_calls([mock.call(), mock.call()])
+        self.assertTrue(service_instance.neutron.API.
+                        get_all_admin_project_networks.called)
 
     def test_get_service_network_id_two_exist(self):
         service_network_name = fake_get_config_option('service_network_name')
@@ -1328,9 +1399,9 @@ class NeutronNetworkHelperTestCase(test.TestCase):
             service_instance.neutron.API, 'get_all_admin_project_networks',
             mock.Mock(return_value=[network, network]))
 
-        self.assertRaises(
-            exception.ServiceInstanceException,
-            service_instance.NeutronNetworkHelper, self.fake_manager)
+        helper = service_instance.NeutronNetworkHelper(self.fake_manager)
+        self.assertRaises(exception.ManilaException,
+                          lambda: helper.service_network_id)
 
         service_instance.neutron.API.get_all_admin_project_networks.\
             assert_has_calls([mock.call()])
@@ -1407,7 +1478,8 @@ class NeutronNetworkHelperTestCase(test.TestCase):
 
         self.assertFalse(
             service_instance.neutron.API.router_remove_interface.called)
-        service_instance.neutron.API.delete_port.assert_called_once(mock.ANY)
+        service_instance.neutron.API.delete_port.assert_called_once_with(
+            mock.ANY)
         service_instance.LOG.debug.assert_has_calls([])
 
     def test_teardown_network_with_wrong_ports(self):
@@ -1556,7 +1628,8 @@ class NeutronNetworkHelperTestCase(test.TestCase):
         service_subnet = dict(id='fake_service_subnet')
         instance = self._init_neutron_network_plugin()
         instance.connect_share_server_to_tenant_network = True
-        instance.service_network_id = 'fake_service_network_id'
+        self.mock_object(instance, '_get_service_network_id',
+                         mock.Mock(return_value='fake_service_network_id'))
         self.mock_object(
             service_instance.neutron.API, 'admin_project_id',
             mock.Mock(return_value=admin_project_id))
@@ -1573,9 +1646,11 @@ class NeutronNetworkHelperTestCase(test.TestCase):
             instance, '_get_cidr_for_subnet', mock.Mock(return_value=cidr))
         self.mock_object(
             instance, '_get_service_subnet', mock.Mock(return_value=None))
+        self.mock_object(
+            instance, '_get_service_ip', mock.Mock(return_value='fake_ip'))
         expected = dict(
             ip_address=self.public_port['fixed_ips'][0]['ip_address'],
-            public_port=self.public_port,
+            public_port=self.public_port, service_ip='fake_ip',
             service_port=self.service_port, service_subnet=service_subnet,
             ports=[self.service_port, self.public_port],
             nics=[{'port-id': self.service_port['id']},
@@ -1590,6 +1665,7 @@ class NeutronNetworkHelperTestCase(test.TestCase):
         instance._get_cidr_for_subnet.assert_called_once_with()
         self.assertTrue(service_instance.neutron.API.subnet_create.called)
         self.assertTrue(service_instance.neutron.API.create_port.called)
+        self.assertTrue(instance._get_service_ip.called)
 
     @ddt.data(None, exception.NetworkException(code=400))
     def test_setup_network_using_router_success(self, return_obj):
@@ -1604,7 +1680,8 @@ class NeutronNetworkHelperTestCase(test.TestCase):
         service_subnet = dict(id='fake_service_subnet')
         instance = self._init_neutron_network_plugin()
         instance.connect_share_server_to_tenant_network = False
-        instance.service_network_id = 'fake_service_network_id'
+        self.mock_object(instance, '_get_service_network_id',
+                         mock.Mock(return_value='fake_service_network_id'))
         router = dict(id='fake_router_id')
         self.mock_object(
             service_instance.neutron.API, 'admin_project_id',
@@ -1625,10 +1702,12 @@ class NeutronNetworkHelperTestCase(test.TestCase):
             instance, '_get_cidr_for_subnet', mock.Mock(return_value=cidr))
         self.mock_object(
             instance, '_get_service_subnet', mock.Mock(return_value=None))
+        self.mock_object(
+            instance, '_get_service_ip', mock.Mock(return_value='fake_ip'))
         expected = dict(
             ip_address=self.service_port['fixed_ips'][0]['ip_address'],
             service_port=self.service_port, service_subnet=service_subnet,
-            ports=[self.service_port], router=router,
+            ports=[self.service_port], router=router, service_ip='fake_ip',
             nics=[{'port-id': self.service_port['id']}])
 
         result = instance.setup_network(network_info)
@@ -1644,6 +1723,7 @@ class NeutronNetworkHelperTestCase(test.TestCase):
             network_info['neutron_net_id'], network_info['neutron_subnet_id'])
         service_instance.neutron.API.router_add_interface.\
             assert_called_once_with(router['id'], service_subnet['id'])
+        self.assertTrue(instance._get_service_ip.called)
 
     def test_setup_network_using_router_addon_of_interface_failed(self):
         network_info = dict(
@@ -1652,7 +1732,8 @@ class NeutronNetworkHelperTestCase(test.TestCase):
         service_subnet = dict(id='fake_service_subnet')
         instance = self._init_neutron_network_plugin()
         instance.connect_share_server_to_tenant_network = False
-        instance.service_network_id = 'fake_service_network_id'
+        self.mock_object(instance, '_get_service_network_id',
+                         mock.Mock(return_value='fake_service_network_id'))
         router = dict(id='fake_router_id')
         self.mock_object(
             instance, '_get_private_router', mock.Mock(return_value=router))
@@ -1685,7 +1766,8 @@ class NeutronNetworkHelperTestCase(test.TestCase):
         service_subnet = dict(id='fake_service_subnet')
         instance = self._init_neutron_network_plugin()
         instance.connect_share_server_to_tenant_network = False
-        instance.service_network_id = 'fake_service_network_id'
+        self.mock_object(instance, '_get_service_network_id',
+                         mock.Mock(return_value='fake_service_network_id'))
         router = dict(id='fake_router_id')
         self.mock_object(
             service_instance.neutron.API, 'admin_project_id',
@@ -1724,6 +1806,36 @@ class NeutronNetworkHelperTestCase(test.TestCase):
             assert_called_once_with(router['id'], service_subnet['id'])
         service_instance.neutron.API.delete_port.assert_has_calls([
             mock.call(self.service_port['id'])])
+
+    def test__get_service_ip(self):
+        fake_division_mask = fake_get_config_option(
+            'service_network_division_mask')
+        fake_subnet = fake_network.FakeSubnet(
+            cidr='10.254.0.0/%s' % fake_division_mask)
+        fake_port = fake_network.FakePort(fixed_ips=[
+            {'subnet_id': fake_subnet['id'], 'ip_address': '10.254.0.2'}],
+            mac_address='fake_mac_address')
+
+        instance = self._init_neutron_network_plugin()
+        result = instance._get_service_ip(fake_port, fake_subnet['id'])
+
+        # result should be equal to fake_port.fixed_ips[0]['ip_address']
+        self.assertEqual(fake_port.fixed_ips[0]['ip_address'], result)
+
+    def test__get_service_ip_exception(self):
+
+        fake_division_mask = fake_get_config_option(
+            'service_network_division_mask')
+        fake_subnet = fake_network.FakeSubnet(
+            cidr='10.254.0.0/%s' % fake_division_mask)
+        fake_port = fake_network.FakePort(fixed_ips=[
+            {'subnet_id': 'another_fake_id', 'ip_address': '10.254.0.2'}],
+            mac_address='fake_mac_address')
+
+        instance = self._init_neutron_network_plugin()
+        self.assertRaises(
+            exception.ServiceIPNotFound,
+            instance._get_service_ip, fake_port, fake_subnet['id'])
 
     def test__get_cidr_for_subnet_success(self):
         expected = (
@@ -1782,7 +1894,7 @@ class NeutronNetworkHelperTestCase(test.TestCase):
         self.mock_object(service_instance.ip_lib, 'IPDevice',
                          mock.Mock(return_value=device_mock))
 
-        instance.setup_connectivity_with_service_instances()
+        result = instance.setup_connectivity_with_service_instances()
 
         instance._get_service_port.assert_called_once_with()
         instance.vif_driver.get_device_name.assert_called_once_with(fake_port)
@@ -1797,6 +1909,9 @@ class NeutronNetworkHelperTestCase(test.TestCase):
         device_mock.route.pullup_route.assert_called_once_with(interface_name)
         instance._remove_outdated_interfaces.assert_called_once_with(
             device_mock)
+
+        # result should be equal to fake_port
+        self.assertEqual(fake_port, result)
 
     def test__get_set_of_device_cidrs(self):
         device = fake_network.FakeDevice('foo')
@@ -1824,6 +1939,8 @@ class NeutronNetworkHelperTestCase(test.TestCase):
     def test__get_service_port_none_exist(self):
         instance = self._init_neutron_network_plugin()
         admin_project_id = 'fake_admin_project_id'
+        fake_port_values = {'device_id': 'manila-share',
+                            'binding:host_id': 'fake_host'}
         self.mock_object(
             service_instance.neutron.API, 'admin_project_id',
             mock.Mock(return_value=admin_project_id))
@@ -1840,18 +1957,22 @@ class NeutronNetworkHelperTestCase(test.TestCase):
         result = instance._get_service_port()
 
         instance.neutron_api.list_ports.assert_called_once_with(
-            device_id='manila-share')
+            **fake_port_values)
         instance.neutron_api.create_port.assert_called_once_with(
             instance.admin_project_id, instance.service_network_id,
             device_id='manila-share', device_owner='manila:share',
             host_id='fake_host')
         service_instance.socket.gethostname.assert_called_once_with()
         self.assertFalse(instance.neutron_api.update_port_fixed_ips.called)
-        self.assertEqual(result, fake_service_port)
+        self.assertEqual(fake_service_port, result)
 
-    def test__get_service_port_one_exist(self):
+    def test__get_service_port_one_exist_on_same_host(self):
         instance = self._init_neutron_network_plugin()
-        fake_service_port = fake_network.FakePort(device_id='manila-share')
+        fake_port_values = {'device_id': 'manila-share',
+                            'binding:host_id': 'fake_host'}
+        fake_service_port = fake_network.FakePort(**fake_port_values)
+        self.mock_object(service_instance.socket, 'gethostname',
+                         mock.Mock(return_value='fake_host'))
         self.mock_object(instance.neutron_api, 'list_ports',
                          mock.Mock(return_value=[fake_service_port]))
         self.mock_object(instance.neutron_api, 'create_port',
@@ -1862,19 +1983,55 @@ class NeutronNetworkHelperTestCase(test.TestCase):
         result = instance._get_service_port()
 
         instance.neutron_api.list_ports.assert_called_once_with(
-            device_id='manila-share')
+            **fake_port_values)
         self.assertFalse(instance.neutron_api.create_port.called)
         self.assertFalse(instance.neutron_api.update_port_fixed_ips.called)
-        self.assertEqual(result, fake_service_port)
+        self.assertEqual(fake_service_port, result)
 
-    def test__get_service_port_two_exist(self):
+    def test__get_service_port_one_exist_on_different_host(self):
         instance = self._init_neutron_network_plugin()
-        fake_service_port = fake_network.FakePort(device_id='manila-share')
+        admin_project_id = 'fake_admin_project_id'
+        fake_port = {'device_id': 'manila-share',
+                     'binding:host_id': 'fake_host'}
+        self.mock_object(
+            service_instance.neutron.API, 'admin_project_id',
+            mock.Mock(return_value=admin_project_id))
+        fake_service_port = fake_network.FakePort(**fake_port)
+        self.mock_object(instance.neutron_api, 'list_ports',
+                         mock.Mock(return_value=[]))
+        self.mock_object(service_instance.socket, 'gethostname',
+                         mock.Mock(return_value='fake_host'))
+        self.mock_object(instance.neutron_api, 'create_port',
+                         mock.Mock(return_value=fake_service_port))
+        self.mock_object(instance.neutron_api, 'update_port_fixed_ips',
+                         mock.Mock(return_value=fake_service_port))
+
+        result = instance._get_service_port()
+
+        instance.neutron_api.list_ports.assert_called_once_with(
+            **fake_port)
+        instance.neutron_api.create_port.assert_called_once_with(
+            instance.admin_project_id, instance.service_network_id,
+            device_id='manila-share', device_owner='manila:share',
+            host_id='fake_host')
+        service_instance.socket.gethostname.assert_called_once_with()
+        self.assertFalse(instance.neutron_api.update_port_fixed_ips.called)
+        self.assertEqual(fake_service_port, result)
+
+    def test__get_service_port_two_exist_on_same_host(self):
+        instance = self._init_neutron_network_plugin()
+        fake_service_port = fake_network.FakePort(**{
+            'device_id': 'manila-share', 'binding:host_id': 'fake_host'})
         self.mock_object(
             instance.neutron_api, 'list_ports',
             mock.Mock(return_value=[fake_service_port, fake_service_port]))
+        self.mock_object(service_instance.socket, 'gethostname',
+                         mock.Mock(return_value='fake_host'))
+        self.mock_object(instance.neutron_api, 'create_port',
+                         mock.Mock(return_value=fake_service_port))
         self.assertRaises(
-            exception.ManilaException, instance._get_service_port)
+            exception.ServiceInstanceException, instance._get_service_port)
+        self.assertFalse(instance.neutron_api.create_port.called)
 
     def test__add_fixed_ips_to_service_port(self):
         ip_address1 = '13.0.0.13'
@@ -1963,7 +2120,7 @@ class NeutronNetworkHelperTestCase(test.TestCase):
 
         result = instance._get_service_subnet(subnet_name)
 
-        self.assertEqual(None, result)
+        self.assertIsNone(result)
         instance._get_all_service_subnets.assert_called_once_with()
 
     def test__get_service_subnet_unused_found(self):
@@ -2039,9 +2196,9 @@ class NovaNetworkHelperTestCase(test.TestCase):
     def test_init(self):
         instance = service_instance.NovaNetworkHelper(self.fake_manager)
         self.assertEqual(service_instance.NOVA_NAME, instance.NAME)
-        self.assertEqual(None, instance.teardown_network('fake'))
-        self.assertEqual(
-            None, instance.setup_connectivity_with_service_instances())
+        self.assertIsNone(instance.teardown_network('fake'))
+        self.assertIsNone(
+            instance.setup_connectivity_with_service_instances())
 
     def test_get_network_name(self):
         network_info = dict(nova_net_id='fake_nova_net_id')
@@ -2066,13 +2223,15 @@ class NovaNetworkHelperTestCase(test.TestCase):
 
     def test_setup_network(self):
         network_info = dict(nova_net_id='fake_nova_net_id')
-        network = dict(label='fake_network', id='fake_network_id')
+        network = dict(label='fake_network', id='fake_network_id',
+                       gateway='fake_gateway_ip')
         instance = service_instance.NovaNetworkHelper(self.fake_manager)
         self.mock_object(instance.compute_api, 'network_get',
                          mock.Mock(return_value=network))
         expected = dict(
             nova_net_id=network_info['nova_net_id'],
-            nics=[{'net-id': network['id']}])
+            nics=[{'net-id': network['id']}],
+            service_ip='fake_gateway_ip')
 
         result = instance.setup_network(network_info)
 

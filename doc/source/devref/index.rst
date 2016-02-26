@@ -38,8 +38,9 @@ Background Concepts for Manila
 
    architecture
    threading
-   il8n
+   i18n
    rpc
+   driver_requirements
    pool-aware-manila-scheduler
 
 Other Resources
@@ -57,6 +58,9 @@ API Reference
    :maxdepth: 3
 
    api
+   api_microversion_dev
+   api_microversion_history
+   experimental_apis
 
 Module Reference
 ----------------
@@ -67,11 +71,27 @@ Module Reference
    services
    database
    share
+   share_hooks
    auth
    api
    scheduler
    fakes
    manila
+   ganesha
+
+Capabilities and Extra-Specs
+----------------------------
+.. toctree::
+   :maxdepth: 3
+
+   capabilities_and_extra_specs
+
+Share backends feature support mapping
+--------------------------------------
+.. toctree::
+   :maxdepth: 3
+
+   share_back_ends_feature_support_mapping
 
 Share backends
 --------------
@@ -87,7 +107,8 @@ Share backends
    gpfs_driver
    huawei_nas_driver
    hdfs_native_driver
-   hp_3par_driver
+   hds_hnas_driver
+   hpe_3par_driver
 
 Indices and tables
 ------------------

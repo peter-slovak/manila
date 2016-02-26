@@ -41,16 +41,15 @@ class NetAppBaseClient(object):
         if cached:
             return self.connection.get_api_version()
 
-        ontapi_version = netapp_api.NaElement('system-get-ontapi-version')
-        res = self.connection.invoke_successfully(ontapi_version, False)
-        major = res.get_child_content('major-version')
-        minor = res.get_child_content('minor-version')
+        result = self.send_request('system-get-ontapi-version',
+                                   enable_tunneling=False)
+        major = result.get_child_content('major-version')
+        minor = result.get_child_content('minor-version')
         return major, minor
 
-    def check_is_naelement(self, elem):
-        """Checks if object is instance of NaElement."""
-        if not isinstance(elem, netapp_api.NaElement):
-            raise ValueError('Expects NaElement')
+    def _init_features(self):
+        """Set up the repository of available Data ONTAP features."""
+        self.features = Features()
 
     def send_request(self, api_name, api_args=None, enable_tunneling=True):
         """Sends request to Ontapi."""
@@ -74,3 +73,19 @@ class NetAppBaseClient(object):
     def send_ems_log_message(self, message_dict):
         """Sends a message to the Data ONTAP EMS log."""
         raise NotImplementedError()
+
+
+class Features(object):
+
+    def __init__(self):
+        self.defined_features = set()
+
+    def add_feature(self, name, supported=True):
+        if not isinstance(supported, bool):
+            raise TypeError("Feature value must be a bool type.")
+        self.defined_features.add(name)
+        setattr(self, name, supported)
+
+    def __getattr__(self, name):
+        # NOTE(cknight): Needed to keep pylint happy.
+        raise AttributeError

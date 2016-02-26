@@ -30,11 +30,11 @@ class NetAppCmodeMultiSvmShareDriver(driver.ShareDriver):
 
     DRIVER_NAME = 'NetApp_Cluster_MultiSVM'
 
-    def __init__(self, db, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         super(NetAppCmodeMultiSvmShareDriver, self).__init__(
             True, *args, **kwargs)
         self.library = lib_multi_svm.NetAppCmodeMultiSVMFileStorageLibrary(
-            db, self.DRIVER_NAME, **kwargs)
+            self.DRIVER_NAME, **kwargs)
 
     def do_setup(self, context):
         self.library.do_setup(context)
@@ -61,8 +61,39 @@ class NetAppCmodeMultiSvmShareDriver(driver.ShareDriver):
     def delete_snapshot(self, context, snapshot, **kwargs):
         self.library.delete_snapshot(context, snapshot, **kwargs)
 
+    def extend_share(self, share, new_size, **kwargs):
+        self.library.extend_share(share, new_size, **kwargs)
+
+    def shrink_share(self, share, new_size, **kwargs):
+        self.library.shrink_share(share, new_size, **kwargs)
+
+    def create_consistency_group(self, context, cg_dict, **kwargs):
+        return self.library.create_consistency_group(context, cg_dict,
+                                                     **kwargs)
+
+    def create_consistency_group_from_cgsnapshot(self, context, cg_dict,
+                                                 cgsnapshot_dict, **kwargs):
+        return self.library.create_consistency_group_from_cgsnapshot(
+            context, cg_dict, cgsnapshot_dict, **kwargs)
+
+    def delete_consistency_group(self, context, cg_dict, **kwargs):
+        return self.library.delete_consistency_group(context, cg_dict,
+                                                     **kwargs)
+
+    def create_cgsnapshot(self, context, snap_dict, **kwargs):
+        return self.library.create_cgsnapshot(context, snap_dict, **kwargs)
+
+    def delete_cgsnapshot(self, context, snap_dict, **kwargs):
+        return self.library.delete_cgsnapshot(context, snap_dict, **kwargs)
+
     def ensure_share(self, context, share, **kwargs):
         pass
+
+    def manage_existing(self, share, driver_options):
+        raise NotImplementedError
+
+    def unmanage(self, share):
+        raise NotImplementedError
 
     def allow_access(self, context, share, access, **kwargs):
         self.library.allow_access(context, share, access, **kwargs)
@@ -74,6 +105,9 @@ class NetAppCmodeMultiSvmShareDriver(driver.ShareDriver):
         data = self.library.get_share_stats()
         super(NetAppCmodeMultiSvmShareDriver, self)._update_share_stats(
             data=data)
+
+    def get_share_server_pools(self, share_server):
+        return self.library.get_share_server_pools(share_server)
 
     def get_network_allocations_number(self):
         return self.library.get_network_allocations_number()

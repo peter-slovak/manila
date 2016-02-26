@@ -25,9 +25,9 @@ import re
 from oslo_log import log
 from oslo_utils import excutils
 
-from manila import context
 from manila import exception
 from manila.i18n import _, _LE, _LW
+from manila.share.drivers.netapp.dataontap.client import client_cmode
 from manila.share.drivers.netapp.dataontap.cluster_mode import lib_base
 from manila.share.drivers.netapp import utils as na_utils
 from manila import utils
@@ -35,6 +35,7 @@ from manila import utils
 
 LOG = log.getLogger(__name__)
 SUPPORTED_NETWORK_TYPES = (None, 'flat', 'vlan')
+SEGMENTED_NETWORK_TYPES = ('vlan',)
 
 
 class NetAppCmodeMultiSVMFileStorageLibrary(
@@ -42,8 +43,6 @@ class NetAppCmodeMultiSVMFileStorageLibrary(
 
     @na_utils.trace
     def check_for_setup_error(self):
-
-        self._check_data_ontap_version()
 
         if self._have_cluster_creds:
             if self.configuration.netapp_vserver:
@@ -65,17 +64,6 @@ class NetAppCmodeMultiSVMFileStorageLibrary(
 
         super(NetAppCmodeMultiSVMFileStorageLibrary, self).\
             check_for_setup_error()
-
-    def _check_data_ontap_version(self):
-        # Temporary check to indicate that the Kilo multi-SVM driver does not
-        # support cDOT 8.3 or higher.
-        ontapi_version = self._client.get_ontapi_version()
-        if ontapi_version >= (1, 30):
-            msg = _('Clustered Data ONTAP 8.3.0 or higher is not '
-                    'supported by this version of the driver when the '
-                    'configuration option driver_handles_share_servers '
-                    'is set to True.')
-            raise exception.NetAppException(msg)
 
     @na_utils.trace
     def _get_vserver(self, share_server=None):
@@ -120,8 +108,17 @@ class NetAppCmodeMultiSVMFileStorageLibrary(
         """Creates and configures new Vserver."""
         LOG.debug('Creating server %s', network_info['server_id'])
         self._validate_network_type(network_info)
-        vserver_name = self._create_vserver_if_nonexistent(network_info)
-        return {'vserver_name': vserver_name}
+
+        vserver_name = self._get_vserver_name(network_info['server_id'])
+        server_details = {'vserver_name': vserver_name}
+
+        try:
+            self._create_vserver(vserver_name, network_info)
+        except Exception as e:
+            e.detail_data = {'server_details': server_details}
+            raise
+
+        return server_details
 
     @na_utils.trace
     def _validate_network_type(self, network_info):
@@ -133,50 +130,78 @@ class NetAppCmodeMultiSVMFileStorageLibrary(
                 reason=msg % network_info['network_type'])
 
     @na_utils.trace
-    def _create_vserver_if_nonexistent(self, network_info):
+    def _get_vserver_name(self, server_id):
+        return self.configuration.netapp_vserver_name_template % server_id
+
+    @na_utils.trace
+    def _create_vserver(self, vserver_name, network_info):
         """Creates Vserver with given parameters if it doesn't exist."""
-        vserver_name = (self.configuration.netapp_vserver_name_template %
-                        network_info['server_id'])
-        context_adm = context.get_admin_context()
-        self.db.share_server_backend_details_set(
-            context_adm,
-            network_info['server_id'],
-            {'vserver_name': vserver_name},
-        )
 
         if self._client.vserver_exists(vserver_name):
             msg = _('Vserver %s already exists.')
             raise exception.NetAppException(msg % vserver_name)
+
+        ipspace_name = self._create_ipspace(network_info)
 
         LOG.debug('Vserver %s does not exist, creating.', vserver_name)
         self._client.create_vserver(
             vserver_name,
             self.configuration.netapp_root_volume_aggregate,
             self.configuration.netapp_root_volume,
-            self._find_matching_aggregates())
+            self._find_matching_aggregates(),
+            ipspace_name)
 
         vserver_client = self._get_api_client(vserver=vserver_name)
+        security_services = None
         try:
             self._create_vserver_lifs(vserver_name,
                                       vserver_client,
-                                      network_info)
+                                      network_info,
+                                      ipspace_name)
+
+            vserver_client.enable_nfs()
+
+            security_services = network_info.get('security_services')
+            if security_services:
+                self._client.setup_security_services(security_services,
+                                                     vserver_client,
+                                                     vserver_name)
         except Exception:
             with excutils.save_and_reraise_exception():
-                LOG.error(_LE("Failed to create network interface(s)."))
-                self._client.delete_vserver(vserver_name, vserver_client)
+                LOG.error(_LE("Failed to configure Vserver."))
+                self._delete_vserver(vserver_name,
+                                     security_services=security_services)
 
-        vserver_client.enable_nfs()
+    def _get_valid_ipspace_name(self, network_id):
+        """Get IPspace name according to network id."""
+        return 'ipspace_' + network_id.replace('-', '_')
 
-        security_services = network_info.get('security_services')
-        if security_services:
-            self._client.setup_security_services(security_services,
-                                                 vserver_client,
-                                                 vserver_name)
-        return vserver_name
+    @na_utils.trace
+    def _create_ipspace(self, network_info):
+        """If supported, create an IPspace for a new Vserver."""
+
+        if not self._client.features.IPSPACES:
+            return None
+
+        if network_info['network_type'] not in SEGMENTED_NETWORK_TYPES:
+            return client_cmode.DEFAULT_IPSPACE
+
+        # NOTE(cknight): Neutron needs cDOT IP spaces because it can provide
+        # overlapping IP address ranges for different subnets.  That is not
+        # believed to be an issue for any of Manila's other network plugins.
+        ipspace_id = network_info.get('neutron_subnet_id')
+        if not ipspace_id:
+            return client_cmode.DEFAULT_IPSPACE
+
+        ipspace_name = self._get_valid_ipspace_name(ipspace_id)
+        if not self._client.ipspace_exists(ipspace_name):
+            self._client.create_ipspace(ipspace_name)
+
+        return ipspace_name
 
     @na_utils.trace
     def _create_vserver_lifs(self, vserver_name, vserver_client,
-                             network_info):
+                             network_info, ipspace_name):
 
         nodes = self._client.list_cluster_nodes()
         node_network_info = zip(nodes, network_info['network_allocations'])
@@ -193,6 +218,7 @@ class NetAppCmodeMultiSVMFileStorageLibrary(
                                             port,
                                             ip,
                                             netmask,
+                                            ipspace_name,
                                             vserver_client)
 
     @na_utils.trace
@@ -209,14 +235,15 @@ class NetAppCmodeMultiSVMFileStorageLibrary(
 
     @na_utils.trace
     def _create_lif_if_nonexistent(self, vserver_name, allocation_id, vlan,
-                                   node, port, ip, netmask, vserver_client):
+                                   node, port, ip, netmask, ipspace_name,
+                                   vserver_client):
         """Creates LIF for Vserver."""
         if not vserver_client.network_interface_exists(vserver_name, node,
                                                        port, ip, netmask,
                                                        vlan):
             self._client.create_network_interface(
                 ip, netmask, vlan, node, port, vserver_name, allocation_id,
-                self.configuration.netapp_lif_name_template)
+                self.configuration.netapp_lif_name_template, ipspace_name)
 
     @na_utils.trace
     def get_network_allocations_number(self):
@@ -241,7 +268,19 @@ class NetAppCmodeMultiSVMFileStorageLibrary(
                             "record will proceed anyway."), vserver)
             return
 
+        self._delete_vserver(vserver, security_services=security_services)
+
+    @na_utils.trace
+    def _delete_vserver(self, vserver, security_services=None):
+        """Delete a Vserver plus IPspace and security services as needed."""
+
+        ipspace_name = self._client.get_vserver_ipspace(vserver)
+
         vserver_client = self._get_api_client(vserver=vserver)
         self._client.delete_vserver(vserver,
                                     vserver_client,
                                     security_services=security_services)
+
+        if ipspace_name and not self._client.ipspace_has_data_vservers(
+                ipspace_name):
+            self._client.delete_ipspace(ipspace_name)

@@ -22,6 +22,7 @@ Test WSGI basics and provide some helper functions for other WSGI tests.
 from manila import test
 
 import routes
+import six
 import webob
 
 from manila import wsgi
@@ -36,11 +37,11 @@ class Test(test.TestCase):
 
             def __call__(self, environ, start_response):
                 start_response("200", [("X-Test", "checking")])
-                return ['Test result']
+                return [six.b('Test result')]
 
         application = wsgi.Debug(Application())
         result = webob.Request.blank('/').get_response(application)
-        self.assertEqual(result.body, "Test result")
+        self.assertEqual(six.b("Test result"), result.body)
 
     def test_router(self):
 
@@ -60,6 +61,6 @@ class Test(test.TestCase):
                 super(Router, self).__init__(mapper)
 
         result = webob.Request.blank('/test').get_response(Router())
-        self.assertEqual(result.body, "Router result")
+        self.assertEqual("Router result", result.body)
         result = webob.Request.blank('/bad').get_response(Router())
         self.assertNotEqual(result.body, "Router result")

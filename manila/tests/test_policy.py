@@ -17,14 +17,11 @@
 
 import os.path
 
-import mock
 from oslo_config import cfg
-import six
-from six.moves.urllib import request as urlrequest
+from oslo_policy import policy as common_policy
 
 from manila import context
 from manila import exception
-from manila.openstack.common import policy as common_policy
 from manila import policy
 from manila import test
 from manila import utils
@@ -44,7 +41,7 @@ class PolicyFileTestCase(test.TestCase):
     def test_modified_policy_reloads(self):
         with utils.tempdir() as tmpdir:
             tmpfilename = os.path.join(tmpdir, 'policy')
-            self.flags(policy_file=tmpfilename)
+            CONF.set_override('policy_file', tmpfilename, group='oslo_policy')
             action = "example:test"
             with open(tmpfilename, "w") as policyfile:
                 policyfile.write("""{"example:test": []}""")
@@ -90,9 +87,7 @@ class PolicyTestCase(test.TestCase):
         super(PolicyTestCase, self).tearDown()
 
     def _set_rules(self):
-        these_rules = common_policy.Rules(
-            dict((k, common_policy.parse_rule(v))
-                 for k, v in self.rules.items()))
+        these_rules = common_policy.Rules.from_dict(self.rules)
         policy._ENFORCER.set_rules(these_rules)
 
     def test_enforce_nonexistent_action_throws(self):
@@ -108,28 +103,6 @@ class PolicyTestCase(test.TestCase):
     def test_enforce_good_action(self):
         action = "example:allowed"
         policy.enforce(self.context, action, self.target)
-
-    def test_enforce_http_true(self):
-
-        def fakeurlopen(url, post_data):
-            return six.StringIO("True")
-
-        action = "example:get_http"
-        target = {}
-        with mock.patch.object(urlrequest, 'urlopen', fakeurlopen):
-            result = policy.enforce(self.context, action, target)
-        self.assertTrue(result)
-
-    def test_enforce_http_false(self):
-
-        def fakeurlopen(url, post_data):
-            return six.StringIO("False")
-
-        action = "example:get_http"
-        target = {}
-        with mock.patch.object(urlrequest, 'urlopen', fakeurlopen):
-            self.assertRaises(exception.PolicyNotAuthorized, policy.enforce,
-                              self.context, action, target)
 
     def test_templatized_enforcement(self):
         target_mine = {'project_id': 'fake'}
@@ -169,7 +142,7 @@ class DefaultPolicyTestCase(test.TestCase):
 
         self.rules = {
             "default": [],
-            "example:exist": [["false:false"]]
+            "example:exist": "false:false"
         }
         self._set_rules('default')
         self.context = context.RequestContext('fake', 'fake')
@@ -179,9 +152,8 @@ class DefaultPolicyTestCase(test.TestCase):
         policy.reset()
 
     def _set_rules(self, default_rule):
-        these_rules = common_policy.Rules(
-            dict((k, common_policy.parse_rule(v))
-                 for k, v in self.rules.items()), default_rule)
+        these_rules = common_policy.Rules.from_dict(self.rules,
+                                                    default_rule=default_rule)
         policy._ENFORCER.set_rules(these_rules)
 
     def test_policy_called(self):
@@ -211,9 +183,8 @@ class ContextIsAdminPolicyTestCase(test.TestCase):
         policy.init()
 
     def _set_rules(self, rules, default_rule):
-        these_rules = common_policy.Rules(
-            dict((k, common_policy.parse_rule(v))
-                 for k, v in rules.items()), default_rule)
+        these_rules = common_policy.Rules.from_dict(rules,
+                                                    default_rule=default_rule)
         policy._ENFORCER.set_rules(these_rules)
 
     def test_default_admin_role_is_admin(self):
@@ -227,7 +198,7 @@ class ContextIsAdminPolicyTestCase(test.TestCase):
         rules = {
             'context_is_admin': [["role:administrator"], ["role:johnny-admin"]]
         }
-        self._set_rules(rules, CONF.policy_default_rule)
+        self._set_rules(rules, CONF.oslo_policy.policy_default_rule)
         ctx = context.RequestContext('fake', 'fake', roles=['johnny-admin'])
         self.assertTrue(ctx.is_admin)
         ctx = context.RequestContext('fake', 'fake', roles=['administrator'])
@@ -238,10 +209,10 @@ class ContextIsAdminPolicyTestCase(test.TestCase):
 
     def test_context_is_admin_undefined(self):
         rules = {
-            "admin_or_owner": [["role:admin"], ["project_id:%(project_id)s"]],
-            "default": [["rule:admin_or_owner"]],
+            "admin_or_owner": "role:admin or project_id:%(project_id)s",
+            "default": "rule:admin_or_owner",
         }
-        self._set_rules(rules, CONF.policy_default_rule)
+        self._set_rules(rules, CONF.oslo_policy.policy_default_rule)
         ctx = context.RequestContext('fake', 'fake')
         self.assertFalse(ctx.is_admin)
         ctx = context.RequestContext('fake', 'fake', roles=['admin'])

@@ -19,13 +19,13 @@ Module dedicated functions/classes dealing with rate limiting requests.
 
 import collections
 import copy
-import httplib
 import math
 import re
 import time
 
 from oslo_serialization import jsonutils
 from oslo_utils import importutils
+from six.moves import http_client
 import webob.dec
 import webob.exc
 
@@ -45,15 +45,18 @@ PER_HOUR = 60 * 60
 PER_DAY = 60 * 60 * 24
 
 
-class LimitsController(object):
+class LimitsController(wsgi.Controller):
     """Controller for accessing limits in the OpenStack API."""
 
     def index(self, req):
         """Return all global and rate limit information."""
         context = req.environ['manila.context']
         quotas = QUOTAS.get_project_quotas(context, context.project_id,
-                                           usages=False)
-        abs_limits = dict((k, v['limit']) for k, v in quotas.items())
+                                           usages=True)
+        abs_limits = {'in_use': {}, 'limit': {}}
+        for k, v in quotas.items():
+            abs_limits['limit'][k] = v['limit']
+            abs_limits['in_use'][k] = v['in_use']
         rate_limits = req.environ.get("manila.limits", [])
 
         builder = self._get_view_builder(req)
@@ -77,7 +80,7 @@ class Limit(object):
         60 * 60 * 24: "DAY",
     }
 
-    UNIT_MAP = dict([(v, k) for k, v in UNITS.items()])
+    UNIT_MAP = {v: k for k, v in UNITS.items()}
 
     def __init__(self, verb, uri, regex, value, unit):
         """Initialize a new `Limit`.
@@ -406,7 +409,7 @@ class WsgiLimiterProxy(object):
         body = jsonutils.dumps({"verb": verb, "path": path})
         headers = {"Content-Type": "application/json"}
 
-        conn = httplib.HTTPConnection(self.limiter_address)
+        conn = http_client.HTTPConnection(self.limiter_address)
 
         if username:
             conn.request("POST", "/%s" % (username), body, headers)

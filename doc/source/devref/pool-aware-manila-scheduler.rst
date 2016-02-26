@@ -20,7 +20,7 @@ capabilities and single capacity. In reality this assumption is not true for
 many storage providers, as their storage can be further divided or
 partitioned into pools to offer completely different sets of capabilities and
 capacities. That is, there are storage backends which are a combination of
-storage pools rather than a single homogenous entity. Usually shares/snapshots
+storage pools rather than a single homogeneous entity. Usually shares/snapshots
 can't be placed across pools on such backends.
 
 In the current implementation, an attempt is made to map a single backend
@@ -191,7 +191,7 @@ pools:
              'total_capacity_gb': 500,        #  mandatory stats for
              'free_capacity_gb': 230,         #  pools
              'allocated_capacity_gb': 270,    # |
-             'QoS_support': 'False',          # |
+             'qos': True,                     # |
              'reserved_percentage': 0,        #/
 
              'dying_disks': 100,              #\
@@ -203,7 +203,7 @@ pools:
              'total_capacity_gb': 1024,
              'free_capacity_gb': 1024,
              'allocated_capacity_gb': 0,
-             'QoS_support': 'False',
+             'qos': False,
              'reserved_percentage': 0,
 
              'dying_disks': 200,

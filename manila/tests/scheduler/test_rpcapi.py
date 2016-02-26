@@ -52,7 +52,7 @@ class SchedulerRpcAPITestCase(test.TestCase):
 
         def _fake_prepare_method(*args, **kwds):
             for kwd in kwds:
-                self.assertEqual(kwds[kwd], target[kwd])
+                self.assertEqual(target[kwd], kwds[kwd])
             return rpcapi.client
 
         def _fake_rpc_method(*args, **kwargs):
@@ -67,10 +67,10 @@ class SchedulerRpcAPITestCase(test.TestCase):
             with mock.patch.object(rpcapi.client, rpc_method) as mock_method:
                 mock_method.side_effect = _fake_rpc_method
                 retval = getattr(rpcapi, method)(ctxt, **kwargs)
-                self.assertEqual(retval, expected_retval)
+                self.assertEqual(expected_retval, retval)
                 expected_args = [ctxt, method, expected_msg]
                 for arg, expected_arg in zip(self.fake_args, expected_args):
-                    self.assertEqual(arg, expected_arg)
+                    self.assertEqual(expected_arg, arg)
 
     def test_update_service_capabilities(self):
         self._test_scheduler_api('update_service_capabilities',
@@ -80,18 +80,33 @@ class SchedulerRpcAPITestCase(test.TestCase):
                                  capabilities='fake_capabilities',
                                  fanout=True)
 
-    def test_create_share(self):
-        self._test_scheduler_api('create_share',
+    def test_create_share_instance(self):
+        self._test_scheduler_api('create_share_instance',
                                  rpc_method='cast',
-                                 topic='topic',
-                                 share_id='share_id',
-                                 snapshot_id='snapshot_id',
                                  request_spec='fake_request_spec',
                                  filter_properties='filter_properties',
-                                 version='1.0')
+                                 version='1.2')
 
     def test_get_pools(self):
         self._test_scheduler_api('get_pools',
                                  rpc_method='call',
                                  filters=None,
                                  version='1.1')
+
+    def test_create_consistency_group(self):
+        self._test_scheduler_api('create_consistency_group',
+                                 rpc_method='cast',
+                                 cg_id='cg_id',
+                                 request_spec='fake_request_spec',
+                                 filter_properties='filter_properties',
+                                 version='1.3')
+
+    def test_migrate_share_to_host(self):
+        self._test_scheduler_api('migrate_share_to_host',
+                                 rpc_method='cast',
+                                 share_id='share_id',
+                                 host='host',
+                                 force_host_copy=True,
+                                 request_spec='fake_request_spec',
+                                 filter_properties='filter_properties',
+                                 version='1.4')

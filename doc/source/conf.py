@@ -12,6 +12,7 @@
 # All configuration values have a default; values that are commented out
 # serve to show the default.
 
+import subprocess
 import sys
 import os
 
@@ -139,7 +140,7 @@ man_pages = [
 # Theme options are theme-specific and customize the look and feel of a theme
 # further.  For a list of options available for each theme, see the
 # documentation.
-html_theme_options = {'incubating': True}
+html_theme_options = {}
 
 # Add any paths that contain custom themes here, relative to this directory.
 #html_theme_path = []
@@ -168,8 +169,11 @@ html_theme_options = {'incubating': True}
 # If not '', a 'Last updated on:' timestamp is inserted at every page bottom,
 # using the given strftime format.
 #html_last_updated_fmt = '%b %d, %Y'
-git_cmd = "git log --pretty=format:'%ad, commit %h' --date=local -n1"
-html_last_updated_fmt = os.popen(git_cmd).read()
+git_cmd = [
+    "git", "log", "--pretty=format:'%ad, commit %h'", "--date=local", "-n1"
+]
+html_last_updated_fmt = subprocess.Popen(
+    git_cmd, stdout=subprocess.PIPE).communicate()[0]
 
 # If true, SmartyPants will be used to convert quotes and dashes to
 # typographically correct entities.

@@ -86,8 +86,9 @@ class ShareTypesTestCase(test.TestCase):
         }
     }
 
-    fake_types = dict(fake_type.items() + fake_type_w_extra.items()
-                      + fake_type_w_valid_extra.items())
+    fake_types = fake_type.copy()
+    fake_types.update(fake_type_w_extra)
+    fake_types.update(fake_type_w_valid_extra)
 
     fake_share = {'id': u'fooid-1', 'share_type_id': fake_share_type_id}
 
@@ -185,21 +186,21 @@ class ShareTypesTestCase(test.TestCase):
         actual_result = share_types.is_valid_required_extra_spec(
             'fake', 'fake')
 
-        self.assertEqual(None, actual_result)
+        self.assertIsNone(actual_result)
 
     @ddt.data('1', 'True', 'false', '0', True, False)
     def test_validate_required_extra_spec_valid(self, value):
         key = constants.ExtraSpecs.DRIVER_HANDLES_SHARE_SERVERS
         actual_result = share_types.is_valid_required_extra_spec(key, value)
 
-        self.assertEqual(True, actual_result)
+        self.assertTrue(actual_result)
 
     @ddt.data('invalid', {}, '0000000000')
     def test_validate_required_extra_spec_invalid(self, value):
         key = constants.ExtraSpecs.DRIVER_HANDLES_SHARE_SERVERS
         actual_result = share_types.is_valid_required_extra_spec(key, value)
 
-        self.assertEqual(False, actual_result)
+        self.assertFalse(actual_result)
 
     @ddt.data({constants.ExtraSpecs.DRIVER_HANDLES_SHARE_SERVERS: 'true'},
               {constants.ExtraSpecs.DRIVER_HANDLES_SHARE_SERVERS: 'true',
@@ -255,3 +256,23 @@ class ShareTypesTestCase(test.TestCase):
         self.assertRaises(exception.InvalidShareType,
                           share_types.remove_share_type_access,
                           'fake', None, 'fake')
+
+    @ddt.data({'spec_value': '<is> True', 'expected': True},
+              {'spec_value': '<is>true', 'expected': True},
+              {'spec_value': '<is> False', 'expected': False},
+              {'spec_value': '<is>false', 'expected': False},
+              {'spec_value': u' <is> FaLsE ', 'expected': False})
+    @ddt.unpack
+    def test_parse_boolean_extra_spec(self, spec_value, expected):
+
+        result = share_types.parse_boolean_extra_spec('fake_key', spec_value)
+
+        self.assertEqual(expected, result)
+
+    @ddt.data('True', 'False', '<isnt> True', '<is> Wrong', None, 5)
+    def test_parse_boolean_extra_spec_invalid(self, spec_value):
+
+        self.assertRaises(exception.InvalidExtraSpec,
+                          share_types.parse_boolean_extra_spec,
+                          'fake_key',
+                          spec_value)

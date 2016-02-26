@@ -49,11 +49,10 @@ class HDFSNativeShareDriverTestCase(test.TestCase):
         CONF.set_default('hdfs_ssh_private_key', 'fake_sshkey')
 
         self.fake_conf = config.Configuration(None)
-        self._db = mock.Mock()
         self._driver = hdfs_native.HDFSNativeShareDriver(
-            self._db,
             execute=self._hdfs_execute,
             configuration=self.fake_conf)
+        self.hdfs_bin = 'hdfs'
         self._driver._hdfs_bin = 'fake_hdfs_bin'
         self.share = fake_share.fake_share(share_proto='HDFS')
         self.snapshot = fake_share.fake_snapshot(share_proto='HDFS')
@@ -68,9 +67,8 @@ class HDFSNativeShareDriverTestCase(test.TestCase):
             ['127.0.0.1', self.local_ip]))
 
     def test_do_setup(self):
-        self._driver._get_hdfs_bin_path = mock.Mock()
         self._driver.do_setup(self._context)
-        self._driver._get_hdfs_bin_path.assert_called_once_with()
+        self.assertEqual(self._driver._hdfs_bin, self.hdfs_bin)
 
     def test_create_share(self):
         self._driver._create_share = mock.Mock()
@@ -92,15 +90,41 @@ class HDFSNativeShareDriverTestCase(test.TestCase):
                           share_server=None)
         self.assertFalse(self._driver._get_share_path.called)
 
-    def test__create_share(self):
+    def test__set_share_size(self):
         share_dir = '/' + self.share['name']
         sizestr = six.text_type(self.share['size']) + 'g'
         self._driver._hdfs_execute = mock.Mock(return_value=True)
+        self._driver._set_share_size(self.share)
+        self._driver._hdfs_execute.assert_called_once_with(
+            'fake_hdfs_bin', 'dfsadmin', '-setSpaceQuota', sizestr, share_dir)
+
+    def test__set_share_size_exception(self):
+        share_dir = '/' + self.share['name']
+        sizestr = six.text_type(self.share['size']) + 'g'
+        self._driver._hdfs_execute = mock.Mock(
+            side_effect=exception.ProcessExecutionError)
+        self.assertRaises(exception.HDFSException,
+                          self._driver._set_share_size, self.share)
+        self._driver._hdfs_execute.assert_called_once_with(
+            'fake_hdfs_bin', 'dfsadmin', '-setSpaceQuota', sizestr, share_dir)
+
+    def test__set_share_size_with_new_size(self):
+        share_dir = '/' + self.share['name']
+        new_size = 'fake_size'
+        sizestr = new_size + 'g'
+        self._driver._hdfs_execute = mock.Mock(return_value=True)
+        self._driver._set_share_size(self.share, new_size)
+        self._driver._hdfs_execute.assert_called_once_with(
+            'fake_hdfs_bin', 'dfsadmin', '-setSpaceQuota', sizestr, share_dir)
+
+    def test__create_share(self):
+        share_dir = '/' + self.share['name']
+        self._driver._hdfs_execute = mock.Mock(return_value=True)
+        self._driver._set_share_size = mock.Mock()
         self._driver._create_share(self.share)
         self._driver._hdfs_execute.assert_any_call(
             'fake_hdfs_bin', 'dfs', '-mkdir', share_dir)
-        self._driver._hdfs_execute.assert_any_call(
-            'fake_hdfs_bin', 'dfsadmin', '-setSpaceQuota', sizestr, share_dir)
+        self._driver._set_share_size.assert_called_once_with(self.share)
         self._driver._hdfs_execute.assert_any_call(
             'fake_hdfs_bin', 'dfsadmin', '-allowSnapshot', share_dir)
 
@@ -113,8 +137,10 @@ class HDFSNativeShareDriverTestCase(test.TestCase):
         self._driver._hdfs_execute.assert_called_once_with(
             'fake_hdfs_bin', 'dfs', '-mkdir', share_dir)
 
-    def test_create_share_from_snapshot(self):
-        self._driver._hdfs_execute = mock.Mock(return_value=True)
+    def test_create_share_from_empty_snapshot(self):
+        return_hdfs_execute = (None, None)
+        self._driver._hdfs_execute = mock.Mock(
+            return_value=return_hdfs_execute)
         self._driver._create_share = mock.Mock(return_value=True)
         self._driver._get_share_path = mock.Mock(return_value=self.
                                                  fakesharepath)
@@ -128,8 +154,34 @@ class HDFSNativeShareDriverTestCase(test.TestCase):
         self._driver._get_snapshot_path.assert_called_once_with(
             self.snapshot)
         self._driver._hdfs_execute.assert_called_once_with(
-            'fake_hdfs_bin', 'dfs', '-cp', '-r',
-            self.fakesnapshotpath, '/' + self.share['name'])
+            'fake_hdfs_bin', 'dfs', '-ls', self.fakesnapshotpath)
+        self._driver._get_share_path.assert_called_once_with(self.share)
+        self.assertEqual(self.fakesharepath, result)
+
+    def test_create_share_from_snapshot(self):
+        return_hdfs_execute = ("fake_content", None)
+        self._driver._hdfs_execute = mock.Mock(
+            return_value=return_hdfs_execute)
+        self._driver._create_share = mock.Mock(return_value=True)
+        self._driver._get_share_path = mock.Mock(return_value=self.
+                                                 fakesharepath)
+        self._driver._get_snapshot_path = mock.Mock(return_value=self.
+                                                    fakesnapshotpath)
+        result = self._driver.create_share_from_snapshot(self._context,
+                                                         self.share,
+                                                         self.snapshot,
+                                                         share_server=None)
+        self._driver._create_share.assert_called_once_with(self.share)
+        self._driver._get_snapshot_path.assert_called_once_with(
+            self.snapshot)
+
+        calls = [mock.call('fake_hdfs_bin', 'dfs',
+                           '-ls', self.fakesnapshotpath),
+                 mock.call('fake_hdfs_bin', 'dfs', '-cp',
+                           self.fakesnapshotpath + '/*',
+                           '/' + self.share['name'])]
+
+        self._driver._hdfs_execute.assert_has_calls(calls)
         self._driver._get_share_path.assert_called_once_with(self.share)
         self.assertEqual(self.fakesharepath, result)
 
@@ -147,9 +199,9 @@ class HDFSNativeShareDriverTestCase(test.TestCase):
                           self.snapshot, share_server=None)
         self._driver._create_share.assert_called_once_with(self.share)
         self._driver._get_snapshot_path.assert_called_once_with(self.snapshot)
+
         self._driver._hdfs_execute.assert_called_once_with(
-            'fake_hdfs_bin', 'dfs', '-cp', '-r',
-            self.fakesnapshotpath, '/' + self.share['name'])
+            'fake_hdfs_bin', 'dfs', '-ls', self.fakesnapshotpath)
         self.assertFalse(self._driver._get_share_path.called)
 
     def test_create_snapshot(self):
@@ -293,13 +345,20 @@ class HDFSNativeShareDriverTestCase(test.TestCase):
         self._driver._hdfs_execute.assert_called_once_with(
             *cmd, check_exit_code=True)
 
+    def test_extend_share(self):
+        new_size = "fake_size"
+        self._driver._set_share_size = mock.Mock()
+        self._driver.extend_share(self.share, new_size)
+        self._driver._set_share_size.assert_called_once_with(
+            self.share, new_size)
+
     def test__check_hdfs_state_healthy(self):
         fake_out = "fakeinfo\n...Status: HEALTHY"
         self._driver._hdfs_execute = mock.Mock(return_value=(fake_out, ''))
         result = self._driver._check_hdfs_state()
         self._driver._hdfs_execute.assert_called_once_with(
             'fake_hdfs_bin', 'fsck', '/')
-        self.assertEqual(True, result)
+        self.assertTrue(result)
 
     def test__check_hdfs_state_down(self):
         fake_out = "fakeinfo\n...Status: DOWN"
@@ -307,7 +366,7 @@ class HDFSNativeShareDriverTestCase(test.TestCase):
         result = self._driver._check_hdfs_state()
         self._driver._hdfs_execute.assert_called_once_with(
             'fake_hdfs_bin', 'fsck', '/')
-        self.assertEqual(False, result)
+        self.assertFalse(result)
 
     def test__check_hdfs_state_exception(self):
         self._driver._hdfs_execute = mock.Mock(
@@ -346,7 +405,7 @@ class HDFSNativeShareDriverTestCase(test.TestCase):
             return_value=(11111.0, 12345.0))
         result = self._driver.get_share_stats(True)
         expected_keys = [
-            'QoS_support', 'driver_version', 'share_backend_name',
+            'qos', 'driver_version', 'share_backend_name',
             'free_capacity_gb', 'total_capacity_gb',
             'driver_handles_share_servers',
             'reserved_percentage', 'vendor_name', 'storage_protocol',
@@ -360,7 +419,7 @@ class HDFSNativeShareDriverTestCase(test.TestCase):
         cmd = 'testcmd'
         self.mock_object(utils, 'execute', mock.Mock(return_value=True))
         self._driver._hdfs_local_execute(cmd)
-        utils.execute.assert_called_once_with(cmd, run_as_root=True)
+        utils.execute.assert_called_once_with(cmd, run_as_root=False)
 
     def test__hdfs_remote_execute(self):
         self._driver._run_ssh = mock.Mock(return_value=True)

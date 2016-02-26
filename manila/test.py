@@ -30,7 +30,7 @@ import mock
 from oslo_concurrency import lockutils
 from oslo_config import cfg
 from oslo_config import fixture as config_fixture
-from oslo_log import log
+import oslo_i18n
 from oslo_messaging import conffixture as messaging_conffixture
 import oslotest.base as base_test
 import six
@@ -51,8 +51,6 @@ test_opts = [
 
 CONF = cfg.CONF
 CONF.register_opts(test_opts)
-
-LOG = log.getLogger(__name__)
 
 _DB_CACHE = None
 
@@ -108,6 +106,7 @@ class TestCase(base_test.BaseTestCase):
         """Run before each test method to initialize test environment."""
         super(TestCase, self).setUp()
 
+        oslo_i18n.enable_lazy(enable=False)
         conf_fixture.set_defaults(CONF)
         CONF([], default_config_files=[])
 
@@ -197,6 +196,20 @@ class TestCase(base_test.BaseTestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         return new_attr
+
+    def mock_class(self, class_name, new_val=None, **kwargs):
+        """Use python mock to mock a class
+
+        Mocks the specified objects attribute with the given value.
+        Automatically performs 'addCleanup' for the mock.
+
+        """
+        if not new_val:
+            new_val = mock.Mock()
+        patcher = mock.patch(class_name, new_val, **kwargs)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return new_val
 
     # Useful assertions
     def assertDictMatch(self, d1, d2, approx_equal=False, tolerance=0.001):
@@ -312,7 +325,7 @@ class TestCase(base_test.BaseTestCase):
         try:
             f = super(TestCase, self).assertIsInstance
         except AttributeError:
-            self.assertTrue(isinstance(a, b))
+            self.assertIsInstance(a, b)
         else:
             f(a, b, *args, **kwargs)
 
@@ -328,8 +341,8 @@ class TestCase(base_test.BaseTestCase):
     def _dict_from_object(self, obj, ignored_keys):
         if ignored_keys is None:
             ignored_keys = []
-        return dict([(k, v) for k, v in obj.iteritems()
-                     if k not in ignored_keys])
+        return {k: v for k, v in obj.iteritems()
+                if k not in ignored_keys}
 
     def _assertEqualListsOfObjects(self, objs1, objs2, ignored_keys=None):
         obj_to_dict = lambda o: self._dict_from_object(o, ignored_keys)

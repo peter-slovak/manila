@@ -32,7 +32,6 @@ import abc
 import copy
 import math
 import os
-import pipes
 import re
 import socket
 
@@ -61,7 +60,6 @@ ERR_FILE_NOT_FOUND = 2
 
 gpfs_share_opts = [
     cfg.StrOpt('gpfs_share_export_ip',
-               default=None,
                help='IP to be added to GPFS export string.'),
     cfg.StrOpt('gpfs_mount_point_base',
                default='$state_path/mnt',
@@ -71,23 +69,19 @@ gpfs_share_opts = [
                help=('NFS Server type. Valid choices are "KNFS" (kernel NFS) '
                      'or "GNFS" (Ganesha NFS).')),
     cfg.ListOpt('gpfs_nfs_server_list',
-                default=None,
                 help=('A list of the fully qualified NFS server names that '
                       'make up the OpenStack Manila configuration.')),
-    cfg.IntOpt('gpfs_ssh_port',
-               default=22,
-               help='GPFS server SSH port.'),
+    cfg.PortOpt('gpfs_ssh_port',
+                default=22,
+                help='GPFS server SSH port.'),
     cfg.StrOpt('gpfs_ssh_login',
-               default=None,
                help='GPFS server SSH login name.'),
     cfg.StrOpt('gpfs_ssh_password',
-               default=None,
                secret=True,
                help='GPFS server SSH login password. '
                     'The password is not needed, if \'gpfs_ssh_private_key\' '
                     'is configured.'),
     cfg.StrOpt('gpfs_ssh_private_key',
-               default=None,
                help='Path to GPFS server SSH private key for login.'),
     cfg.ListOpt('gpfs_share_helpers',
                 default=[
@@ -120,12 +114,12 @@ class GPFSShareDriver(driver.ExecuteMixin, driver.GaneshaMixin,
     API version history:
 
         1.0 - Initial version.
+        1.1 - Added extend_share functionality
     """
 
-    def __init__(self, db, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         """Do initialization."""
         super(GPFSShareDriver, self).__init__(False, *args, **kwargs)
-        self.db = db
         self._helpers = {}
         self.configuration.append_config_values(gpfs_share_opts)
         self.backend_name = self.configuration.safe_get(
@@ -154,13 +148,13 @@ class GPFSShareDriver(driver.ExecuteMixin, driver.GaneshaMixin,
     def _gpfs_remote_execute(self, *cmd, **kwargs):
         host = self.configuration.gpfs_share_export_ip
         check_exit_code = kwargs.pop('check_exit_code', True)
-        ignore_exit_codes = kwargs.pop('ignore_exit_codes', None)
 
-        return self._run_ssh(host, cmd, ignore_exit_codes, check_exit_code)
+        return self._run_ssh(host, cmd, check_exit_code)
 
-    def _run_ssh(self, host, cmd_list, ignore_exit_codes=None,
+    def _run_ssh(self, host, cmd_list, ignore_exit_code=None,
                  check_exit_code=True):
-        command = ' '.join(pipes.quote(cmd_arg) for cmd_arg in cmd_list)
+        command = ' '.join(six.moves.shlex_quote(cmd_arg)
+                           for cmd_arg in cmd_list)
 
         if not self.sshpool:
             gpfs_ssh_login = self.configuration.gpfs_ssh_login
@@ -184,7 +178,6 @@ class GPFSShareDriver(driver.ExecuteMixin, driver.GaneshaMixin,
                 return self._gpfs_ssh_execute(
                     ssh,
                     command,
-                    ignore_exit_codes=ignore_exit_codes,
                     check_exit_code=check_exit_code)
 
         except Exception as e:
@@ -195,7 +188,7 @@ class GPFSShareDriver(driver.ExecuteMixin, driver.GaneshaMixin,
                 LOG.error(msg)
                 raise exception.GPFSException(msg)
 
-    def _gpfs_ssh_execute(self, ssh, cmd, ignore_exit_codes=None,
+    def _gpfs_ssh_execute(self, ssh, cmd, ignore_exit_code=None,
                           check_exit_code=True):
         sanitized_cmd = strutils.mask_password(cmd)
         LOG.debug('Running cmd (SSH): %s', sanitized_cmd)
@@ -217,8 +210,8 @@ class GPFSShareDriver(driver.ExecuteMixin, driver.GaneshaMixin,
             LOG.debug('Result was %s' % exit_status)
             if ((check_exit_code and exit_status != 0)
                 and
-                (ignore_exit_codes is None or
-                 exit_status not in ignore_exit_codes)):
+                (ignore_exit_code is None or
+                 exit_status not in ignore_exit_code)):
                 raise exception.ProcessExecutionError(exit_code=exit_status,
                                                       stdout=sanitized_stdout,
                                                       stderr=sanitized_stderr,
@@ -287,7 +280,7 @@ class GPFSShareDriver(driver.ExecuteMixin, driver.GaneshaMixin,
     def _get_gpfs_device(self):
         fspath = self.configuration.gpfs_mount_point_base
         try:
-            (out, _) = self._gpfs_execute('df', fspath)
+            (out, __) = self._gpfs_execute('df', fspath)
         except exception.ProcessExecutionError as e:
             msg = (_('Failed to get GPFS device for %(fspath)s.'
                    'Error: %(excmsg)s') %
@@ -346,7 +339,7 @@ class GPFSShareDriver(driver.ExecuteMixin, driver.GaneshaMixin,
             self._gpfs_execute('chmod', '777', sharepath)
         except exception.ProcessExecutionError as e:
             msg = (_('Failed to set permissions for share %(sharename)s. '
-                     'Error: %(excmsg).') %
+                     'Error: %(excmsg)s.') %
                    {'sharename': sharename, 'excmsg': e})
             LOG.error(msg)
             raise exception.GPFSException(msg)
@@ -361,12 +354,11 @@ class GPFSShareDriver(driver.ExecuteMixin, driver.GaneshaMixin,
         # we want to ignore that error condition while deleting the fileset,
         # i.e. 'Fileset name share-xyz not found', with error code '2'
         # and mark the deletion successful
-        ignore_exit_codes = [ERR_FILE_NOT_FOUND]
+        # ignore_exit_code = [ERR_FILE_NOT_FOUND]
 
         # unlink and delete the share's fileset
         try:
-            self._gpfs_execute('mmunlinkfileset', fsdev, sharename, '-f',
-                               ignore_exit_codes=ignore_exit_codes)
+            self._gpfs_execute('mmunlinkfileset', fsdev, sharename, '-f')
         except exception.ProcessExecutionError as e:
             msg = (_('Failed unlink fileset for share %(sharename)s. '
                      'Error: %(excmsg)s.') %
@@ -375,8 +367,7 @@ class GPFSShareDriver(driver.ExecuteMixin, driver.GaneshaMixin,
             raise exception.GPFSException(msg)
 
         try:
-            self._gpfs_execute('mmdelfileset', fsdev, sharename, '-f',
-                               ignore_exit_codes=ignore_exit_codes)
+            self._gpfs_execute('mmdelfileset', fsdev, sharename, '-f')
         except exception.ProcessExecutionError as e:
             msg = (_('Failed delete fileset for share %(sharename)s. '
                      'Error: %(excmsg)s.') %
@@ -448,6 +439,20 @@ class GPFSShareDriver(driver.ExecuteMixin, driver.GaneshaMixin,
             LOG.error(msg)
             raise exception.GPFSException(msg)
 
+    def _extend_share(self, shareobj, new_size):
+        sharename = shareobj['name']
+        sizestr = '%sG' % new_size
+        fsdev = self._get_gpfs_device()
+        try:
+            self._gpfs_execute('mmsetquota', '-j', sharename, '-h',
+                               sizestr, fsdev)
+        except exception.ProcessExecutionError as e:
+            msg = (_('Failed to set quota for the share %(sharename)s. '
+                     'Error: %(excmsg)s.') %
+                   {'sharename': sharename, 'excmsg': e})
+            LOG.error(msg)
+            raise exception.GPFSException(msg)
+
     def get_network_allocations_number(self):
         return 0
 
@@ -479,6 +484,10 @@ class GPFSShareDriver(driver.ExecuteMixin, driver.GaneshaMixin,
     def delete_snapshot(self, context, snapshot, share_server=None):
         """Deletes a snapshot."""
         self._delete_share_snapshot(snapshot)
+
+    def extend_share(self, share, new_size, share_server=None):
+        """Extends the quota on the share fileset."""
+        self._extend_share(share, new_size)
 
     def ensure_share(self, ctx, share, share_server=None):
         """Ensure that storage are mounted and exported."""
@@ -638,13 +647,14 @@ class KNFSHelper(NASHelperBase):
 
         metadata = share.get('share_metadata')
         options = None
-        for item in metadata:
-            if item['key'] == 'export_options':
-                options = item['value']
-            else:
-                msg = (_('Unknown metadata key %s.') % item['key'])
-                LOG.error(msg)
-                raise exception.InvalidInput(reason=msg)
+        if metadata:
+            for item in metadata:
+                if item['key'] == 'export_options':
+                    options = item['value']
+                else:
+                    msg = (_('Unknown metadata key %s.') % item['key'])
+                    LOG.error(msg)
+                    raise exception.InvalidInput(reason=msg)
         if not options:
             options = self.configuration.knfs_export_options
 
@@ -734,7 +744,7 @@ class GNFSHelper(NASHelperBase):
 
         return options
 
-    @utils.synchronized("ganesha-process-req")
+    @utils.synchronized("ganesha-process-req", external=True)
     def _ganesha_process_request(self, req_type, local_path,
                                  share, access_type=None,
                                  access=None, force=False):

@@ -15,6 +15,7 @@
 
 import mock
 from oslo_config import cfg
+import six
 
 from manila import context
 from manila import exception
@@ -34,8 +35,8 @@ def fake_rpc_handler(name, *args):
     elif name == 'createVolume':
         return {'volume_uuid': 'voluuid'}
     elif name == 'exportVolume':
-        return {'nfs_server_ip': '10.10.1.1',
-                'nfs_export_path': '/voluuid'}
+        return {'nfs_server_ip': 'fake_location',
+                'nfs_export_path': '/fake_share'}
 
 
 class QuobyteShareDriverTestCase(test.TestCase):
@@ -49,9 +50,7 @@ class QuobyteShareDriverTestCase(test.TestCase):
         CONF.set_default('driver_handles_share_servers', False)
 
         self.fake_conf = config.Configuration(None)
-        self._db = mock.Mock()
-        self._driver = quobyte.QuobyteShareDriver(self._db,
-                                                  configuration=self.fake_conf)
+        self._driver = quobyte.QuobyteShareDriver(configuration=self.fake_conf)
         self._driver.rpc = mock.Mock()
         self.share = fake_share.fake_share(share_proto='NFS')
         self.access = fake_share.fake_access()
@@ -77,7 +76,7 @@ class QuobyteShareDriverTestCase(test.TestCase):
 
         result = self._driver.create_share(self._context, self.share)
 
-        self.assertEqual('10.10.1.1:/voluuid', result)
+        self.assertEqual(self.share['export_location'], result)
         self._driver.rpc.call.assert_has_calls([
             mock.call('createVolume', dict(
                 name=self.share['name'],
@@ -171,6 +170,24 @@ class QuobyteShareDriverTestCase(test.TestCase):
                              'read_only': False,
                              'add_allow_ip': '10.0.0.1'})
 
+    def test_allow_ro_access(self):
+        def rpc_handler(name, *args):
+            if name == 'resolveVolumeName':
+                return {'volume_uuid': 'voluuid'}
+            elif name == 'exportVolume':
+                return {'nfs_server_ip': '10.10.1.1',
+                        'nfs_export_path': '/voluuid'}
+
+        self._driver.rpc.call = mock.Mock(wraps=rpc_handler)
+        ro_access = fake_share.fake_access(access_level='ro')
+
+        self._driver.allow_access(self._context, self.share, ro_access)
+
+        self._driver.rpc.call.assert_called_with(
+            'exportVolume', {'volume_uuid': 'voluuid',
+                             'read_only': True,
+                             'add_allow_ip': '10.0.0.1'})
+
     def test_allow_access_nonip(self):
         self._driver.rpc.call = mock.Mock(wraps=fake_rpc_handler)
 
@@ -242,10 +259,83 @@ class QuobyteShareDriverTestCase(test.TestCase):
 
     @mock.patch.object(driver.ShareDriver, '_update_share_stats')
     def test_update_share_stats(self, mock_uss):
+        self._driver._get_capacities = mock.Mock(return_value=[42, 23])
+
         self._driver._update_share_stats()
 
         mock_uss.assert_called_once_with(
             dict(storage_protocol='NFS',
                  vendor_name='Quobyte',
                  share_backend_name=self._driver.backend_name,
-                 driver_version=self._driver.DRIVER_VERSION))
+                 driver_version=self._driver.DRIVER_VERSION,
+                 total_capacity_gb=42,
+                 free_capacity_gb=23,
+                 reserved_percentage=0))
+
+    def test_get_capacities_gb(self):
+        capval = 42115548133
+        useval = 19695128917
+        self._driver.rpc.call = mock.Mock(
+            return_value={'total_logical_capacity': six.text_type(capval),
+                          'total_logical_usage': six.text_type(useval)})
+
+        self.assertEqual((39.223160718, 20.880642548),
+                         self._driver._get_capacities())
+
+    @mock.patch.object(quobyte.QuobyteShareDriver,
+                       "_resolve_volume_name",
+                       return_value="fake_uuid")
+    def test_ensure_share(self, mock_qb_resolve_volname):
+        self._driver.rpc.call = mock.Mock(wraps=fake_rpc_handler)
+
+        result = self._driver.ensure_share(self._context, self.share, None)
+
+        self.assertEqual(self.share["export_location"], result)
+        (mock_qb_resolve_volname.
+         assert_called_once_with(self.share['name'],
+                                 self.share['project_id']))
+        self._driver.rpc.call.assert_has_calls([
+            mock.call('exportVolume', dict(
+                volume_uuid="fake_uuid",
+                protocol='NFS'
+            ))])
+
+    @mock.patch.object(quobyte.QuobyteShareDriver,
+                       "_resolve_volume_name",
+                       return_value=None)
+    def test_ensure_deleted_share(self, mock_qb_resolve_volname):
+        self._driver.rpc.call = mock.Mock(wraps=fake_rpc_handler)
+
+        self.assertRaises(exception.ShareResourceNotFound,
+                          self._driver.ensure_share,
+                          self._context, self.share, None)
+        (mock_qb_resolve_volname.
+         assert_called_once_with(self.share['name'],
+                                 self.share['project_id']))
+
+    @mock.patch.object(quobyte.QuobyteShareDriver, "_resize_share")
+    def test_extend_share(self, mock_qsd_resize_share):
+        self._driver.extend_share(ext_share=self.share,
+                                  ext_size=2,
+                                  share_server=None)
+        mock_qsd_resize_share.assert_called_once_with(share=self.share,
+                                                      new_size=2)
+
+    def test_resize_share(self):
+        self._driver.rpc.call = mock.Mock(wraps=fake_rpc_handler)
+
+        self._driver._resize_share(share=self.share, new_size=7)
+
+        self._driver.rpc.call.assert_has_calls([
+            mock.call('setQuota',
+                      {"consumer": {"type": 3,
+                                    "identifier": self.share["name"]},
+                       "limits": {"type": 5, "value": 7}})])
+
+    @mock.patch.object(quobyte.QuobyteShareDriver, "_resize_share")
+    def test_shrink_share(self, mock_qsd_resize_share):
+        self._driver.shrink_share(shrink_share=self.share,
+                                  shrink_size=3,
+                                  share_server=None)
+        mock_qsd_resize_share.assert_called_once_with(share=self.share,
+                                                      new_size=3)

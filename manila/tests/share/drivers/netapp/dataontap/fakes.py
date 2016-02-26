@@ -31,14 +31,27 @@ VOLUME_NAME_TEMPLATE = 'share_%(share_id)s'
 VSERVER_NAME_TEMPLATE = 'os_%s'
 AGGREGATE_NAME_SEARCH_PATTERN = '(.*)'
 SHARE_NAME = 'share_7cf7c200_d3af_4e05_b87e_9167c95dfcad'
+FLEXVOL_NAME = 'fake_volume'
+JUNCTION_PATH = '/%s' % FLEXVOL_NAME
+EXPORT_LOCATION = '%s:%s' % (HOST_NAME, JUNCTION_PATH)
 SNAPSHOT_NAME = 'fake_snapshot'
+CONSISTENCY_GROUP_NAME = 'fake_consistency_group'
 SHARE_SIZE = 10
 TENANT_ID = '24cb2448-13d8-4f41-afd9-eff5c4fd2a57'
 SHARE_ID = '7cf7c200-d3af-4e05-b87e-9167c95dfcad'
+SHARE_ID2 = 'b51c5a31-aa5b-4254-9ee8-7d39fa4c8c38'
+SHARE_ID3 = '1379991d-037b-4897-bf3a-81b4aac72eff'
+SHARE_ID4 = '1cb41aad-fd9b-4964-8059-646f69de925e'
 PARENT_SHARE_ID = '585c3935-2aa9-437c-8bad-5abae1076555'
 SNAPSHOT_ID = 'de4c9050-e2f9-4ce1-ade4-5ed0c9f26451'
+CONSISTENCY_GROUP_ID = '65bfa2c9-dc6c-4513-951a-b8d15b453ad8'
+CONSISTENCY_GROUP_ID2 = '35f5c1ea-45fb-40c4-98ae-2a2a17554159'
+CG_SNAPSHOT_ID = '6ddd8a6b-5df7-417b-a2ae-3f6e449f4eea'
+CG_SNAPSHOT_MEMBER_ID1 = '629f79ef-b27e-4596-9737-30f084e5ba29'
+CG_SNAPSHOT_MEMBER_ID2 = 'e876aa9c-a322-4391-bd88-9266178262be'
 FREE_CAPACITY = 10000000000
 TOTAL_CAPACITY = 20000000000
+AGGREGATE = 'manila_aggr_1'
 AGGREGATES = ('manila_aggr_1', 'manila_aggr_2')
 ROOT_VOLUME_AGGREGATE = 'manila1'
 ROOT_VOLUME = 'root'
@@ -49,6 +62,8 @@ NODE_DATA_PORTS = ('e0c', 'e0d')
 LIF_NAME_TEMPLATE = 'os_%(net_allocation_id)s'
 SHARE_TYPE_ID = '26e89a5b-960b-46bb-a8cf-0778e653098f'
 SHARE_TYPE_NAME = 'fake_share_type'
+IPSPACE = 'fake_ipspace'
+IPSPACE_ID = '27d38c27-3e8b-4d7d-9d91-fcf295e3ac8f'
 
 CLIENT_KWARGS = {
     'username': 'admin',
@@ -73,31 +88,50 @@ SHARE = {
     'share_server_id': '7e6a2cc8-871f-4b1d-8364-5aad0f98da86',
     'network_info': {
         'network_allocations': [{'ip_address': 'ip'}]
-    }
+    },
+}
+
+FLEXVOL_TO_MANAGE = {
+    'aggregate': POOL_NAME,
+    'junction-path': '/%s' % FLEXVOL_NAME,
+    'name': FLEXVOL_NAME,
+    'type': 'rw',
+    'style': 'flex',
+    'size': '1610612736',  # rounds down to 1 GB
 }
 
 EXTRA_SPEC = {
     'netapp:thin_provisioned': 'true',
     'netapp:snapshot_policy': 'default',
     'netapp:language': 'en-US',
+    'netapp:dedup': 'True',
+    'netapp:compression': 'false',
     'netapp:max_files': 5000,
+    'netapp_disk_type': 'FCAL',
+    'netapp_raid_type': 'raid4',
 }
 
 PROVISIONING_OPTIONS = {
     'thin_provisioned': True,
     'snapshot_policy': 'default',
     'language': 'en-US',
+    'dedup_enabled': True,
+    'compression_enabled': False,
     'max_files': 5000,
 }
 
 PROVISIONING_OPTIONS_BOOLEAN = {
     'thin_provisioned': True,
+    'dedup_enabled': False,
+    'compression_enabled': False,
 }
 
 PROVISIONING_OPTIONS_BOOLEAN_THIN_PROVISIONED_TRUE = {
     'thin_provisioned': True,
     'snapshot_policy': None,
     'language': None,
+    'dedup_enabled': False,
+    'compression_enabled': False,
     'max_files': None,
 }
 
@@ -140,18 +174,14 @@ INVALID_EXTRA_SPEC = {
     'netapp:language': 'abc',
 }
 
+INVALID_EXTRA_SPEC_COMBO = {
+    'netapp:dedup': 'false',
+    'netapp:compression': 'true'
+}
+
 INVALID_MAX_FILE_EXTRA_SPEC = {
     'netapp:max_files': -1,
 }
-
-BOOLEAN_EXTRA_SPEC = {
-    'netapp:thin_provisioned': 'true',
-}
-
-BOOLEAN_SHORT_EXTRA_SPEC = {
-    'netapp:thin_provisioned': 'true',
-}
-
 
 EMPTY_EXTRA_SPEC = {}
 
@@ -159,6 +189,21 @@ SHARE_TYPE = {
     'id': SHARE_TYPE_ID,
     'name': SHARE_TYPE_NAME,
     'extra_specs': EXTRA_SPEC
+}
+
+OVERLAPPING_EXTRA_SPEC = {
+    'compression': '<is> True',
+    'netapp:compression': 'true',
+    'dedupe': '<is> True',
+    'netapp:dedup': 'false',
+    'thin_provisioning': '<is> False',
+    'netapp:thin_provisioned': 'true',
+}
+
+REMAPPED_OVERLAPPING_EXTRA_SPEC = {
+    'netapp:compression': 'true',
+    'netapp:dedup': 'true',
+    'netapp:thin_provisioned': 'false',
 }
 
 EXTRA_SPEC_SHARE = copy.deepcopy(SHARE)
@@ -175,7 +220,8 @@ NETWORK_INFO = {
          'ip_address': '10.10.10.10'},
         {'id': '7eabdeed-bad2-46ea-bd0f-a33884c869e0',
          'ip_address': '10.10.10.20'}
-    ]
+    ],
+    'neutron_subnet_id': '62bf1c2c-18eb-421b-8983-48a6d39aafe0',
 }
 NETWORK_INFO_NETMASK = '255.255.255.0'
 
@@ -205,6 +251,113 @@ CDOT_SNAPSHOT_BUSY_VOLUME_CLONE = {
     'busy': True,
     'owners': {'volume clone'},
 }
+
+SHARE_FOR_CG1 = {
+    'id': SHARE_ID,
+    'host': '%(host)s@%(backend)s#%(pool)s' % {
+        'host': HOST_NAME, 'backend': BACKEND_NAME, 'pool': POOL_NAME},
+    'name': 'share1',
+    'share_proto': 'NFS',
+    'source_cgsnapshot_member_id': None,
+}
+
+SHARE_FOR_CG2 = {
+    'id': SHARE_ID2,
+    'host': '%(host)s@%(backend)s#%(pool)s' % {
+        'host': HOST_NAME, 'backend': BACKEND_NAME, 'pool': POOL_NAME},
+    'name': 'share2',
+    'share_proto': 'NFS',
+    'source_cgsnapshot_member_id': None,
+}
+
+# Clone dest of SHARE_FOR_CG1
+SHARE_FOR_CG3 = {
+    'id': SHARE_ID3,
+    'host': '%(host)s@%(backend)s#%(pool)s' % {
+        'host': HOST_NAME, 'backend': BACKEND_NAME, 'pool': POOL_NAME},
+    'name': 'share3',
+    'share_proto': 'NFS',
+    'source_cgsnapshot_member_id': CG_SNAPSHOT_MEMBER_ID1,
+}
+
+# Clone dest of SHARE_FOR_CG2
+SHARE_FOR_CG4 = {
+    'id': SHARE_ID4,
+    'host': '%(host)s@%(backend)s#%(pool)s' % {
+        'host': HOST_NAME, 'backend': BACKEND_NAME, 'pool': POOL_NAME},
+    'name': 'share4',
+    'share_proto': 'NFS',
+    'source_cgsnapshot_member_id': CG_SNAPSHOT_MEMBER_ID2,
+}
+
+EMPTY_CONSISTENCY_GROUP = {
+    'cgsnapshots': [],
+    'description': 'fake description',
+    'host': '%(host)s@%(backend)s' % {
+        'host': HOST_NAME, 'backend': BACKEND_NAME},
+    'id': CONSISTENCY_GROUP_ID,
+    'name': CONSISTENCY_GROUP_NAME,
+    'shares': [],
+}
+
+CONSISTENCY_GROUP = {
+    'cgsnapshots': [],
+    'description': 'fake description',
+    'host': '%(host)s@%(backend)s' % {
+        'host': HOST_NAME, 'backend': BACKEND_NAME},
+    'id': CONSISTENCY_GROUP_ID,
+    'name': CONSISTENCY_GROUP_NAME,
+    'shares': [SHARE_FOR_CG1, SHARE_FOR_CG2],
+}
+
+CONSISTENCY_GROUP_DEST = {
+    'cgsnapshots': [],
+    'description': 'fake description',
+    'host': '%(host)s@%(backend)s' % {
+        'host': HOST_NAME, 'backend': BACKEND_NAME},
+    'id': CONSISTENCY_GROUP_ID,
+    'name': CONSISTENCY_GROUP_NAME,
+    'shares': [SHARE_FOR_CG3, SHARE_FOR_CG4],
+}
+
+CG_SNAPSHOT_MEMBER_1 = {
+    'cgsnapshot_id': CG_SNAPSHOT_ID,
+    'id': CG_SNAPSHOT_MEMBER_ID1,
+    'share_id': SHARE_ID,
+    'share_proto': 'NFS',
+}
+
+CG_SNAPSHOT_MEMBER_2 = {
+    'cgsnapshot_id': CG_SNAPSHOT_ID,
+    'id': CG_SNAPSHOT_MEMBER_ID2,
+    'share_id': SHARE_ID2,
+    'share_proto': 'NFS',
+}
+
+CG_SNAPSHOT = {
+    'cgsnapshot_members': [CG_SNAPSHOT_MEMBER_1, CG_SNAPSHOT_MEMBER_2],
+    'consistency_group': CONSISTENCY_GROUP,
+    'consistency_group_id': CONSISTENCY_GROUP_ID,
+    'id': CG_SNAPSHOT_ID,
+    'project_id': TENANT_ID,
+}
+
+COLLATED_CGSNAPSHOT_INFO = [
+    {
+        'share': SHARE_FOR_CG3,
+        'snapshot': {
+            'share_id': SHARE_ID,
+            'id': CG_SNAPSHOT_ID
+        }
+    },
+    {
+        'share': SHARE_FOR_CG4,
+        'snapshot': {
+            'share_id': SHARE_ID2,
+            'id': CG_SNAPSHOT_ID
+        }
+    },
+]
 
 LIF_NAMES = []
 LIF_ADDRESSES = ['10.10.10.10', '10.10.10.20']
@@ -259,6 +412,15 @@ AGGREGATE_CAPACITIES = {
     }
 }
 
+AGGREGATE_CAPACITIES_VSERVER_CREDS = {
+    AGGREGATES[0]: {
+        'available': 1181116007,  # 1.1 GB
+    },
+    AGGREGATES[1]: {
+        'available': 2147483648,  # 2.0 GB
+    }
+}
+
 SSC_INFO = {
     AGGREGATES[0]: {
         'netapp_raid_type': 'raid4',
@@ -269,6 +431,60 @@ SSC_INFO = {
         'netapp_disk_type': 'SSD'
     }
 }
+
+POOLS = [
+    {'pool_name': AGGREGATES[0],
+     'total_capacity_gb': 3.3,
+     'free_capacity_gb': 1.1,
+     'allocated_capacity_gb': 2.2,
+     'qos': 'False',
+     'reserved_percentage': 0,
+     'dedupe': [True, False],
+     'compression': [True, False],
+     'thin_provisioning': [True, False],
+     'netapp_raid_type': 'raid4',
+     'netapp_disk_type': 'FCAL'
+     },
+    {'pool_name': AGGREGATES[1],
+     'total_capacity_gb': 6.0,
+     'free_capacity_gb': 2.0,
+     'allocated_capacity_gb': 4.0,
+     'qos': 'False',
+     'reserved_percentage': 0,
+     'dedupe': [True, False],
+     'compression': [True, False],
+     'thin_provisioning': [True, False],
+     'netapp_raid_type': 'raid_dp',
+     'netapp_disk_type': 'SSD'
+     },
+]
+
+POOLS_VSERVER_CREDS = [
+    {'pool_name': AGGREGATES[0],
+     'total_capacity_gb': 'unknown',
+     'free_capacity_gb': 1.1,
+     'allocated_capacity_gb': 0.0,
+     'qos': 'False',
+     'reserved_percentage': 0,
+     'dedupe': [True, False],
+     'compression': [True, False],
+     'thin_provisioning': [True, False],
+     'netapp_raid_type': 'raid4',
+     'netapp_disk_type': 'FCAL'
+     },
+    {'pool_name': AGGREGATES[1],
+     'total_capacity_gb': 'unknown',
+     'free_capacity_gb': 2.0,
+     'allocated_capacity_gb': 0.0,
+     'qos': 'False',
+     'reserved_percentage': 0,
+     'dedupe': [True, False],
+     'compression': [True, False],
+     'thin_provisioning': [True, False],
+     'netapp_raid_type': 'raid_dp',
+     'netapp_disk_type': 'SSD'
+     },
+]
 
 SSC_RAID_TYPES = {
     AGGREGATES[0]: 'raid4',
@@ -295,4 +511,5 @@ def get_config_cmode():
     config.netapp_root_volume_aggregate = ROOT_VOLUME_AGGREGATE
     config.netapp_root_volume = ROOT_VOLUME
     config.netapp_lif_name_template = LIF_NAME_TEMPLATE
+    config.netapp_volume_snapshot_reserve_percent = 8
     return config

@@ -71,12 +71,25 @@ class ShareNetworkController(wsgi.Controller):
         except exception.ShareNetworkNotFound as e:
             raise exc.HTTPNotFound(explanation=six.text_type(e))
 
-        shares = db_api.share_get_all_by_share_network(context, id)
-        if shares:
+        share_instances = (
+            db_api.share_instances_get_all_by_share_network(context, id)
+        )
+        if share_instances:
             msg = _("Can not delete share network %(id)s, it has "
-                    "%(len)s share(s).") % {'id': id, 'len': len(shares)}
+                    "%(len)s share(s).") % {'id': id,
+                                            'len': len(share_instances)}
             LOG.error(msg)
             raise exc.HTTPConflict(explanation=msg)
+
+        # NOTE(ameade): Do not allow deletion of share network used by CG
+        cg_count = db_api.count_consistency_groups_in_share_network(context,
+                                                                    id)
+        if cg_count:
+            msg = _("Can not delete share network %(id)s, it has %(len)s "
+                    "consistency group(s).") % {'id': id, 'len': cg_count}
+            LOG.error(msg)
+            raise exc.HTTPConflict(explanation=msg)
+
         for share_server in share_network['share_servers']:
             self.share_rpcapi.delete_share_server(context, share_server)
         db_api.share_network_delete(context, id)
@@ -247,12 +260,13 @@ class ShareNetworkController(wsgi.Controller):
                 return (usages[name]['reserved'] + usages[name]['in_use'])
 
             if 'share_networks' in overs:
-                LOG.warn(_LW("Quota exceeded for %(s_pid)s, tried to create "
-                             "share-network (%(d_consumed)d of %(d_quota)d "
-                             "already consumed)"), {
-                                 's_pid': context.project_id,
-                                 'd_consumed': _consumed('share_networks'),
-                                 'd_quota': quotas['share_networks']})
+                LOG.warning(_LW("Quota exceeded for %(s_pid)s, "
+                                "tried to create "
+                                "share-network (%(d_consumed)d of %(d_quota)d "
+                                "already consumed)."), {
+                                    's_pid': context.project_id,
+                                    'd_consumed': _consumed('share_networks'),
+                                    'd_quota': quotas['share_networks']})
                 raise exception.ShareNetworksLimitExceeded(
                     allowed=quotas['share_networks'])
         else:

@@ -53,6 +53,7 @@ underscore_import_check = re.compile(r"(.)*import _(.)*")
 # We need this for cases where they have created their own _ function.
 custom_underscore_check = re.compile(r"(.)*_\s*=\s*(.)*")
 oslo_namespace_imports = re.compile(r"from[\s]*oslo[.](.*)")
+dict_constructor_with_list_copy_re = re.compile(r".*\bdict\((\[)?(\(|\[)")
 
 
 class BaseASTChecker(ast.NodeVisitor):
@@ -120,7 +121,7 @@ def no_translate_debug_logs(logical_line, filename):
 def validate_log_translations(logical_line, physical_line, filename):
     # Translations are not required in the test and tempest
     # directories.
-    if ("manila/tests" in filename or
+    if ("manila/tests" in filename or "manila_tempest_tests" in filename or
             "contrib/tempest" in filename):
         return
     if pep8.noqa(physical_line):
@@ -226,10 +227,18 @@ def check_oslo_namespace_imports(logical_line, physical_line, filename):
     if pep8.noqa(physical_line):
         return
     if re.match(oslo_namespace_imports, logical_line):
-        msg = ("N333: '%s' must be used instead of '%s'.") % (
+        msg = ("M333: '%s' must be used instead of '%s'.") % (
             logical_line.replace('oslo.', 'oslo_'),
             logical_line)
         yield(0, msg)
+
+
+def dict_constructor_with_list_copy(logical_line):
+    msg = ("M336: Must use a dict comprehension instead of a dict constructor"
+           " with a sequence of key-value pairs."
+           )
+    if dict_constructor_with_list_copy_re.match(logical_line):
+        yield (0, msg)
 
 
 def factory(register):
@@ -239,3 +248,4 @@ def factory(register):
     register(CheckForStrExc)
     register(CheckForTransAdd)
     register(check_oslo_namespace_imports)
+    register(dict_constructor_with_list_copy)

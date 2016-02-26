@@ -154,12 +154,18 @@ class GaneshaUtilsTestCase(test.TestCase):
         share_path = '/fs0/share-1111'
         export = ganesha_utils._get_export_by_path(self.fake_exports,
                                                    share_path)
-        self.assertEqual(export, None)
+        self.assertIsNone(export)
 
     def test_get_next_id(self):
         expected_id = 102
         result = ganesha_utils.get_next_id(self.fake_exports)
         self.assertEqual(result, expected_id)
+
+    def test_convert_ipstring_to_ipn_exception(self):
+        ipstring = 'fake ip string'
+        self.assertRaises(exception.GPFSGaneshaException,
+                          ganesha_utils._convert_ipstring_to_ipn,
+                          ipstring)
 
     @mock.patch('six.moves.builtins.map')
     def test_get_next_id_first_export(self, mock_map):
@@ -211,6 +217,14 @@ class GaneshaUtilsTestCase(test.TestCase):
                 *reload_cmd, run_as_root=False
             )
 
+    def test_reload_ganesha_config_exception(self):
+        self.mock_object(
+            utils, 'execute',
+            mock.Mock(side_effect=exception.ProcessExecutionError))
+        self.assertRaises(exception.GPFSGaneshaException,
+                          ganesha_utils.reload_ganesha_config,
+                          self.servers, self.sshlogin)
+
     @mock.patch('six.moves.builtins.open')
     def test__publish_local_config(self, mock_open):
         self.mock_object(utils, 'execute', mock.Mock(return_value=True))
@@ -221,10 +235,8 @@ class GaneshaUtilsTestCase(test.TestCase):
         ganesha_utils._publish_local_config(configpath,
                                             self.fake_pre_lines,
                                             self.fake_exports)
-        cpcmd = ['cp', configpath, tmp_path]
+        cpcmd = ['install', '-m', '666', configpath, tmp_path]
         utils.execute.assert_any_call(*cpcmd, run_as_root=True)
-        chmodcmd = ['chmod', 'o+w', tmp_path]
-        utils.execute.assert_any_call(*chmodcmd, run_as_root=True)
         mvcmd = ['mv', tmp_path, configpath]
         utils.execute.assert_any_call(*mvcmd, run_as_root=True)
         self.assertTrue(time.time.called)
@@ -241,7 +253,7 @@ class GaneshaUtilsTestCase(test.TestCase):
         self.assertRaises(exception.GPFSGaneshaException,
                           ganesha_utils._publish_local_config, configpath,
                           self.fake_pre_lines, self.fake_exports)
-        cpcmd = ['cp', configpath, tmp_path]
+        cpcmd = ['install', '-m', '666', configpath, tmp_path]
         utils.execute.assert_called_once_with(*cpcmd, run_as_root=True)
         self.assertTrue(time.time.called)
 

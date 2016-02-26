@@ -49,6 +49,7 @@ Supported Operations
 - Create snapshot
 - Delete snapshot
 - Create share from snapshot
+- Extend share
 
 Requirements
 ------------
@@ -60,7 +61,7 @@ Requirements
 Manila driver configuration
 ---------------------------
 
-- `share_driver` = manila.share.drivers.hdfs_native.HDFSNativeShareDriver
+- `share_driver` = manila.share.drivers.hdfs.hdfs_native.HDFSNativeShareDriver
 - `hdfs_namenode_ip` = the IP address of the HDFS namenode, and only single
     namenode is supported now
 - `hdfs_namenode_port` = the port of the HDFS namenode service

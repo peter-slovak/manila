@@ -26,7 +26,7 @@ from six import moves
 
 from manila import db
 from manila import exception
-from manila.openstack.common.scheduler import filters
+from manila.scheduler.filters import base_host
 from manila.scheduler import host_manager
 from manila import test
 from manila.tests.scheduler import fakes
@@ -36,12 +36,12 @@ from manila import utils
 CONF = cfg.CONF
 
 
-class FakeFilterClass1(filters.BaseHostFilter):
+class FakeFilterClass1(base_host.BaseHostFilter):
     def host_passes(self, host_state, filter_properties):
         pass
 
 
-class FakeFilterClass2(filters.BaseHostFilter):
+class FakeFilterClass2(base_host.BaseHostFilter):
     def host_passes(self, host_state, filter_properties):
         pass
 
@@ -77,7 +77,7 @@ class HostManagerTestCase(test.TestCase):
         for x in info['got_fprops']:
             self.assertEqual(info['expected_fprops'], x)
         self.assertEqual(set(info['expected_objs']), set(info['got_objs']))
-        self.assertEqual(set(result), set(info['got_objs']))
+        self.assertEqual(set(info['got_objs']), set(result))
 
     def test_get_filtered_hosts(self):
         fake_properties = {'moo': 1, 'cow': 2}
@@ -147,6 +147,7 @@ class HostManagerTestCase(test.TestCase):
         self.mock_object(
             db, 'service_get_all_by_topic',
             mock.Mock(return_value=fakes.SHARE_SERVICES_WITH_POOLS))
+        self.mock_object(utils, 'service_is_up', mock.Mock(return_value=True))
 
         with mock.patch.dict(self.host_manager.service_states,
                              fakes.SHARE_SERVICE_STATES_WITH_POOLS):
@@ -156,7 +157,7 @@ class HostManagerTestCase(test.TestCase):
 
             self.assertEqual(4, len(host_state_map))
             # Check that service is up
-            for i in xrange(4):
+            for i in moves.range(4):
                 share_node = fakes.SHARE_SERVICES_WITH_POOLS[i]
                 host = share_node['host']
                 self.assertEqual(share_node, host_state_map[host].service)
@@ -168,7 +169,7 @@ class HostManagerTestCase(test.TestCase):
         self.mock_object(
             db, 'service_get_all_by_topic',
             mock.Mock(return_value=fakes.SHARE_SERVICES_NO_POOLS))
-        host_manager.LOG.warn = mock.Mock()
+        host_manager.LOG.warning = mock.Mock()
 
         with mock.patch.dict(self.host_manager.service_states,
                              fakes.SERVICE_STATES_NO_POOLS):
@@ -188,9 +189,16 @@ class HostManagerTestCase(test.TestCase):
                         'driver_version': None,
                         'total_capacity_gb': 512,
                         'reserved_percentage': 0,
+                        'provisioned_capacity_gb': 312,
+                        'max_over_subscription_ratio': 1.0,
+                        'thin_provisioning': False,
                         'vendor_name': None,
                         'storage_protocol': None,
                         'driver_handles_share_servers': False,
+                        'snapshot_support': False,
+                        'consistency_group_support': False,
+                        'dedupe': False,
+                        'compression': False,
                     },
                 }, {
                     'name': 'host2@back1#BBB',
@@ -204,9 +212,16 @@ class HostManagerTestCase(test.TestCase):
                         'driver_version': None,
                         'total_capacity_gb': 256,
                         'reserved_percentage': 0,
+                        'provisioned_capacity_gb': 400,
+                        'max_over_subscription_ratio': 2.0,
+                        'thin_provisioning': True,
                         'vendor_name': None,
                         'storage_protocol': None,
                         'driver_handles_share_servers': False,
+                        'snapshot_support': True,
+                        'consistency_group_support': False,
+                        'dedupe': False,
+                        'compression': False,
                     },
                 }, {
                     'name': 'host2@back2#CCC',
@@ -220,14 +235,23 @@ class HostManagerTestCase(test.TestCase):
                         'driver_version': None,
                         'total_capacity_gb': 10000,
                         'reserved_percentage': 0,
+                        'provisioned_capacity_gb': 50000,
+                        'max_over_subscription_ratio': 20.0,
+                        'thin_provisioning': True,
                         'vendor_name': None,
                         'storage_protocol': None,
                         'driver_handles_share_servers': False,
+                        'snapshot_support': True,
+                        'consistency_group_support': False,
+                        'dedupe': False,
+                        'compression': False,
                     },
                 },
             ]
+            self.assertIsInstance(res, list)
             self.assertEqual(len(expected), len(res))
-            self.assertEqual(sorted(expected), sorted(res))
+            for pool in expected:
+                self.assertIn(pool, res)
 
     def test_get_pools(self):
         context = 'fake_context'
@@ -235,7 +259,7 @@ class HostManagerTestCase(test.TestCase):
         self.mock_object(
             db, 'service_get_all_by_topic',
             mock.Mock(return_value=fakes.SHARE_SERVICES_WITH_POOLS))
-        host_manager.LOG.warn = mock.Mock()
+        host_manager.LOG.warning = mock.Mock()
 
         with mock.patch.dict(self.host_manager.service_states,
                              fakes.SHARE_SERVICE_STATES_WITH_POOLS):
@@ -256,9 +280,16 @@ class HostManagerTestCase(test.TestCase):
                         'driver_version': None,
                         'total_capacity_gb': 51,
                         'reserved_percentage': 0,
+                        'provisioned_capacity_gb': 10,
+                        'max_over_subscription_ratio': 1.0,
+                        'thin_provisioning': False,
                         'vendor_name': None,
                         'storage_protocol': None,
                         'driver_handles_share_servers': False,
+                        'snapshot_support': True,
+                        'consistency_group_support': False,
+                        'dedupe': False,
+                        'compression': False,
                     },
                 }, {
                     'name': 'host2@BBB#pool2',
@@ -273,9 +304,16 @@ class HostManagerTestCase(test.TestCase):
                         'driver_version': None,
                         'total_capacity_gb': 52,
                         'reserved_percentage': 0,
+                        'provisioned_capacity_gb': 60,
+                        'max_over_subscription_ratio': 2.0,
+                        'thin_provisioning': True,
                         'vendor_name': None,
                         'storage_protocol': None,
                         'driver_handles_share_servers': False,
+                        'snapshot_support': True,
+                        'consistency_group_support': False,
+                        'dedupe': False,
+                        'compression': False,
                     },
                 }, {
                     'name': 'host3@CCC#pool3',
@@ -290,9 +328,16 @@ class HostManagerTestCase(test.TestCase):
                         'driver_version': None,
                         'total_capacity_gb': 53,
                         'reserved_percentage': 0,
+                        'provisioned_capacity_gb': 100,
+                        'max_over_subscription_ratio': 20.0,
+                        'thin_provisioning': True,
                         'vendor_name': None,
                         'storage_protocol': None,
                         'driver_handles_share_servers': False,
+                        'snapshot_support': True,
+                        'consistency_group_support': 'pool',
+                        'dedupe': False,
+                        'compression': False,
                     },
                 }, {
                     'name': 'host4@DDD#pool4a',
@@ -307,9 +352,16 @@ class HostManagerTestCase(test.TestCase):
                         'driver_version': None,
                         'total_capacity_gb': 541,
                         'reserved_percentage': 0,
+                        'provisioned_capacity_gb': 800,
+                        'max_over_subscription_ratio': 2.0,
+                        'thin_provisioning': True,
                         'vendor_name': None,
                         'storage_protocol': None,
                         'driver_handles_share_servers': False,
+                        'snapshot_support': True,
+                        'consistency_group_support': 'host',
+                        'dedupe': False,
+                        'compression': False,
                     },
                 }, {
                     'name': 'host4@DDD#pool4b',
@@ -324,15 +376,24 @@ class HostManagerTestCase(test.TestCase):
                         'driver_version': None,
                         'total_capacity_gb': 542,
                         'reserved_percentage': 0,
+                        'provisioned_capacity_gb': 2000,
+                        'max_over_subscription_ratio': 10.0,
+                        'thin_provisioning': True,
                         'vendor_name': None,
                         'storage_protocol': None,
                         'driver_handles_share_servers': False,
+                        'snapshot_support': True,
+                        'consistency_group_support': 'host',
+                        'dedupe': False,
+                        'compression': False,
                     },
                 },
             ]
-
+            self.assertIsInstance(res, list)
+            self.assertIsInstance(self.host_manager.host_state_map, dict)
             self.assertEqual(len(expected), len(res))
-            self.assertEqual(sorted(expected), sorted(res))
+            for pool in expected:
+                self.assertIn(pool, res)
 
     def test_get_pools_host_down(self):
         context = 'fake_context'
@@ -340,7 +401,7 @@ class HostManagerTestCase(test.TestCase):
         self.mock_object(
             db, 'service_get_all_by_topic',
             mock.Mock(return_value=fakes.SHARE_SERVICES_NO_POOLS))
-        host_manager.LOG.warn = mock.Mock()
+        host_manager.LOG.warning = mock.Mock()
 
         with mock.patch.dict(self.host_manager.service_states,
                              fakes.SERVICE_STATES_NO_POOLS):
@@ -368,13 +429,20 @@ class HostManagerTestCase(test.TestCase):
                     'capabilities': {
                         'timestamp': None,
                         'driver_handles_share_servers': False,
+                        'snapshot_support': False,
                         'share_backend_name': 'AAA',
                         'free_capacity_gb': 200,
                         'driver_version': None,
                         'total_capacity_gb': 512,
                         'reserved_percentage': 0,
                         'vendor_name': None,
-                        'storage_protocol': None
+                        'storage_protocol': None,
+                        'provisioned_capacity_gb': 312,
+                        'max_over_subscription_ratio': 1.0,
+                        'thin_provisioning': False,
+                        'consistency_group_support': False,
+                        'dedupe': False,
+                        'compression': False,
                     },
                 }, {
                     'name': 'host2@back1#BBB',
@@ -384,20 +452,30 @@ class HostManagerTestCase(test.TestCase):
                     'capabilities': {
                         'timestamp': None,
                         'driver_handles_share_servers': False,
+                        'snapshot_support': True,
                         'share_backend_name': 'BBB',
                         'free_capacity_gb': 100,
                         'driver_version': None,
                         'total_capacity_gb': 256,
                         'reserved_percentage': 0,
                         'vendor_name': None,
-                        'storage_protocol': None
+                        'storage_protocol': None,
+                        'provisioned_capacity_gb': 400,
+                        'max_over_subscription_ratio': 2.0,
+                        'thin_provisioning': True,
+                        'consistency_group_support': False,
+                        'dedupe': False,
+                        'compression': False,
                     },
                 },
             ]
+            self.assertIsInstance(res, list)
+            self.assertIsInstance(self.host_manager.host_state_map, dict)
+            self.assertEqual(len(expected), len(res))
             self.assertEqual(len(expected),
                              len(self.host_manager.host_state_map))
-            self.assertEqual(len(expected), len(res))
-            self.assertEqual(sorted(expected), sorted(res))
+            for pool in expected:
+                self.assertIn(pool, res)
 
     def test_get_pools_with_filters(self):
         context = 'fake_context'
@@ -405,7 +483,7 @@ class HostManagerTestCase(test.TestCase):
         self.mock_object(
             db, 'service_get_all_by_topic',
             mock.Mock(return_value=fakes.SHARE_SERVICES_WITH_POOLS))
-        host_manager.LOG.warn = mock.Mock()
+        host_manager.LOG.warning = mock.Mock()
 
         with mock.patch.dict(self.host_manager.service_states,
                              fakes.SHARE_SERVICE_STATES_WITH_POOLS):
@@ -423,13 +501,20 @@ class HostManagerTestCase(test.TestCase):
                         'pool_name': 'pool2',
                         'timestamp': None,
                         'driver_handles_share_servers': False,
+                        'snapshot_support': True,
                         'share_backend_name': 'BBB',
                         'free_capacity_gb': 42,
                         'driver_version': None,
                         'total_capacity_gb': 52,
                         'reserved_percentage': 0,
+                        'provisioned_capacity_gb': 60,
+                        'max_over_subscription_ratio': 2.0,
+                        'thin_provisioning': True,
                         'vendor_name': None,
-                        'storage_protocol': None
+                        'storage_protocol': None,
+                        'consistency_group_support': False,
+                        'dedupe': False,
+                        'compression': False,
                     },
                 },
             ]
@@ -504,7 +589,7 @@ class HostStateTestCase(test.TestCase):
                  'total_capacity_gb': 500,
                  'free_capacity_gb': 230,
                  'allocated_capacity_gb': 270,
-                 'QoS_support': 'False',
+                 'qos': 'False',
                  'reserved_percentage': 0,
                  'dying_disks': 100,
                  'super_hero_1': 'spider-man',
@@ -515,11 +600,10 @@ class HostStateTestCase(test.TestCase):
                  'total_capacity_gb': 1024,
                  'free_capacity_gb': 1024,
                  'allocated_capacity_gb': 0,
-                 'QoS_support': 'False',
+                 'qos': 'False',
                  'reserved_percentage': 0,
                  'dying_disks': 200,
                  'super_hero_1': 'superman',
-                 'super_hero_2': ' ',
                  'super_hero_2': 'Hulk',
                  }
             ],
@@ -554,7 +638,7 @@ class HostStateTestCase(test.TestCase):
                  'total_capacity_gb': 10000,
                  'free_capacity_gb': 10000,
                  'allocated_capacity_gb': 0,
-                 'QoS_support': 'False',
+                 'qos': 'False',
                  'reserved_percentage': 0,
                  },
             ],
@@ -575,27 +659,9 @@ class HostStateTestCase(test.TestCase):
         self.assertEqual(10000, fake_host.pools['pool3'].total_capacity_gb)
         self.assertEqual(10000, fake_host.pools['pool3'].free_capacity_gb)
 
-    def test_update_from_share_infinite_capability(self):
-        share_capability = {'total_capacity_gb': 'infinite',
-                            'free_capacity_gb': 'infinite',
-                            'reserved_percentage': 0,
-                            'timestamp': None}
-        fake_host = host_manager.HostState('host1#_pool0')
-        self.assertIsNone(fake_host.free_capacity_gb)
-
-        fake_host.update_from_share_capability(share_capability)
-        # Backend level stats remain uninitialized
-        self.assertEqual(fake_host.total_capacity_gb, 0)
-        self.assertIsNone(fake_host.free_capacity_gb)
-        # Pool stats has been updated
-        self.assertEqual(fake_host.pools['_pool0'].total_capacity_gb,
-                         'infinite')
-        self.assertEqual(fake_host.pools['_pool0'].free_capacity_gb,
-                         'infinite')
-
     def test_update_from_share_unknown_capability(self):
         share_capability = {
-            'total_capacity_gb': 'infinite',
+            'total_capacity_gb': 'unknown',
             'free_capacity_gb': 'unknown',
             'reserved_percentage': 0,
             'timestamp': None
@@ -609,7 +675,7 @@ class HostStateTestCase(test.TestCase):
         self.assertIsNone(fake_host.free_capacity_gb)
         # Pool stats has been updated
         self.assertEqual(fake_host.pools['_pool0'].total_capacity_gb,
-                         'infinite')
+                         'unknown')
         self.assertEqual(fake_host.pools['_pool0'].free_capacity_gb,
                          'unknown')
 
@@ -630,25 +696,9 @@ class HostStateTestCase(test.TestCase):
         self.assertEqual(fake_host.free_capacity_gb,
                          free_capacity - share_size)
 
-    def test_consume_from_share_infinite_capability(self):
-        share_capability = {
-            'total_capacity_gb': 'infinite',
-            'free_capacity_gb': 'infinite',
-            'reserved_percentage': 0,
-            'timestamp': None
-        }
-        fake_host = host_manager.PoolState('host1', share_capability, '_pool0')
-        share_size = 1000
-        fake_share = {'id': 'foo', 'size': share_size}
-
-        fake_host.update_from_share_capability(share_capability)
-        fake_host.consume_from_share(fake_share)
-        self.assertEqual(fake_host.total_capacity_gb, 'infinite')
-        self.assertEqual(fake_host.free_capacity_gb, 'infinite')
-
     def test_consume_from_share_unknown_capability(self):
         share_capability = {
-            'total_capacity_gb': 'infinite',
+            'total_capacity_gb': 'unknown',
             'free_capacity_gb': 'unknown',
             'reserved_percentage': 0,
             'timestamp': None
@@ -659,8 +709,15 @@ class HostStateTestCase(test.TestCase):
 
         fake_host.update_from_share_capability(share_capability)
         fake_host.consume_from_share(fake_share)
-        self.assertEqual(fake_host.total_capacity_gb, 'infinite')
+        self.assertEqual(fake_host.total_capacity_gb, 'unknown')
         self.assertEqual(fake_host.free_capacity_gb, 'unknown')
+
+    def test_consume_from_share_invalid_capacity(self):
+        fake_host = host_manager.PoolState('host1', {}, '_pool0')
+        fake_host.free_capacity_gb = 'invalid_foo_string'
+
+        self.assertRaises(exception.InvalidCapacity,
+                          fake_host.consume_from_share, 'fake')
 
     def test_repr(self):
 

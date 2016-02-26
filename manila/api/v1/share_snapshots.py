@@ -23,21 +23,52 @@ from webob import exc
 from manila.api import common
 from manila.api.openstack import wsgi
 from manila.api.views import share_snapshots as snapshot_views
+from manila import db
 from manila import exception
-from manila.i18n import _LI
+from manila.i18n import _, _LI
 from manila import share
 
 LOG = log.getLogger(__name__)
 
 
-class ShareSnapshotsController(wsgi.Controller):
+class ShareSnapshotsController(wsgi.Controller, wsgi.AdminActionsMixin):
     """The Share Snapshots API controller for the OpenStack API."""
 
+    resource_name = 'share_snapshot'
     _view_builder_class = snapshot_views.ViewBuilder
 
     def __init__(self):
         super(ShareSnapshotsController, self).__init__()
         self.share_api = share.API()
+
+    def _update(self, *args, **kwargs):
+        db.share_snapshot_update(*args, **kwargs)
+
+    def _get(self, *args, **kwargs):
+        return self.share_api.get_snapshot(*args, **kwargs)
+
+    def _delete(self, *args, **kwargs):
+        return self.share_api.delete_snapshot(*args, **kwargs)
+
+    @wsgi.Controller.api_version('1.0', '2.6')
+    @wsgi.action('os-reset_status')
+    def snapshot_reset_status_legacy(self, req, id, body):
+        return self._reset_status(req, id, body)
+
+    @wsgi.Controller.api_version('2.7')
+    @wsgi.action('reset_status')
+    def snapshot_reset_status(self, req, id, body):
+        return self._reset_status(req, id, body)
+
+    @wsgi.Controller.api_version('1.0', '2.6')
+    @wsgi.action('os-force_delete')
+    def snapshot_force_delete_legacy(self, req, id, body):
+        return self._force_delete(req, id, body)
+
+    @wsgi.Controller.api_version('2.7')
+    @wsgi.action('force_delete')
+    def snapshot_force_delete(self, req, id, body):
+        return self._force_delete(req, id, body)
 
     def show(self, req, id):
         """Return data about the given snapshot."""
@@ -45,6 +76,10 @@ class ShareSnapshotsController(wsgi.Controller):
 
         try:
             snapshot = self.share_api.get_snapshot(context, id)
+
+            # Snapshot with no instances is filtered out.
+            if(snapshot.get('status') is None):
+                raise exc.HTTPNotFound()
         except exception.NotFound:
             raise exc.HTTPNotFound()
 
@@ -99,6 +134,11 @@ class ShareSnapshotsController(wsgi.Controller):
             sort_key=sort_key,
             sort_dir=sort_dir,
         )
+
+        # Snapshots with no instances are filtered out.
+        snapshots = list(filter(lambda x: x.get('status') is not None,
+                                snapshots))
+
         limited_list = common.limited(snapshots, req)
         if is_detail:
             snapshots = self._view_builder.detail_list(req, limited_list)
@@ -123,9 +163,9 @@ class ShareSnapshotsController(wsgi.Controller):
             'display_description',
         )
 
-        update_dict = dict([(key, snapshot_data[key])
-                            for key in valid_update_keys
-                            if key in snapshot_data])
+        update_dict = {key: snapshot_data[key]
+                       for key in valid_update_keys
+                       if key in snapshot_data}
 
         try:
             snapshot = self.share_api.get_snapshot(context, id)
@@ -149,6 +189,14 @@ class ShareSnapshotsController(wsgi.Controller):
 
         share_id = snapshot['share_id']
         share = self.share_api.get(context, share_id)
+
+        # Verify that share can be snapshotted
+        if not share['snapshot_support']:
+            msg = _("Snapshot cannot be created from share '%s', because "
+                    "share back end does not support it.") % share_id
+            LOG.error(msg)
+            raise exc.HTTPUnprocessableEntity(explanation=msg)
+
         LOG.info(_LI("Create snapshot from share %s"),
                  share_id, context=context)
 

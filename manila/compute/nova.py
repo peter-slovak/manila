@@ -16,16 +16,13 @@
 Handles all requests to Nova.
 """
 
-import sys
-
+from novaclient import client as nova_client
 from novaclient import exceptions as nova_exception
 from novaclient import service_catalog
 from novaclient import utils
-from novaclient.v2 import client as nova_client
-from novaclient.v2.contrib import assisted_volume_snapshots
-from novaclient.v2 import servers as nova_servers
 from oslo_config import cfg
 from oslo_log import log
+import six
 
 from manila.db import base
 from manila import exception
@@ -41,10 +38,8 @@ nova_opts = [
                default='compute:nova:adminURL',
                help='Same as nova_catalog_info, but for admin endpoint.'),
     cfg.StrOpt('os_region_name',
-               default=None,
                help='Region name of this node.'),
     cfg.StrOpt('nova_ca_certificates_file',
-               default=None,
                help='Location of CA certificates file to use for nova client '
                     'requests.'),
     cfg.BoolOpt('nova_api_insecure',
@@ -61,6 +56,9 @@ nova_opts = [
     cfg.StrOpt('nova_admin_auth_url',
                default='http://localhost:5000/v2.0',
                help='Identity service URL.'),
+    cfg.StrOpt('nova_api_microversion',
+               default='2.10',
+               help='Version of Nova API to be used.'),
 ]
 
 CONF = cfg.CONF
@@ -71,12 +69,16 @@ LOG = log.getLogger(__name__)
 
 def novaclient(context):
     if context.is_admin and context.project_id is None:
-        c = nova_client.Client(CONF.nova_admin_username,
-                               CONF.nova_admin_password,
-                               CONF.nova_admin_tenant_name,
-                               CONF.nova_admin_auth_url)
+        c = nova_client.Client(
+            CONF.nova_api_microversion,
+            CONF.nova_admin_username,
+            CONF.nova_admin_password,
+            CONF.nova_admin_tenant_name,
+            CONF.nova_admin_auth_url,
+        )
         c.authenticate()
         return c
+
     compat_catalog = {
         'access': {'serviceCatalog': context.service_catalog or []}
     }
@@ -101,15 +103,13 @@ def novaclient(context):
 
     LOG.debug('Novaclient connection created using URL: %s', url)
 
-    extensions = [assisted_volume_snapshots]
-
     c = nova_client.Client(context.user_id,
                            context.auth_token,
                            context.project_id,
                            auth_url=url,
                            insecure=CONF.nova_api_insecure,
                            cacert=CONF.nova_ca_certificates_file,
-                           extensions=extensions)
+                           extensions=[])
     # noauth extracts user_id:project_id from auth_token
     c.client.auth_token = context.auth_token or '%s:%s' % (context.user_id,
                                                            context.project_id)
@@ -149,17 +149,20 @@ def translate_server_exception(method):
 
     Note: keeps its traceback intact.
     """
+
+    @six.wraps(method)
     def wrapper(self, ctx, instance_id, *args, **kwargs):
         try:
             res = method(self, ctx, instance_id, *args, **kwargs)
-        except nova_exception.ClientException:
-            exc_type, exc_value, exc_trace = sys.exc_info()
-            if isinstance(exc_value, nova_exception.NotFound):
-                exc_value = exception.InstanceNotFound(instance_id=instance_id)
-            elif isinstance(exc_value, nova_exception.BadRequest):
-                exc_value = exception.InvalidInput(reason=exc_value.message)
-            raise exc_value, None, exc_trace
-        return res
+            return res
+        except nova_exception.ClientException as e:
+            if isinstance(e, nova_exception.NotFound):
+                raise exception.InstanceNotFound(instance_id=instance_id)
+            elif isinstance(e, nova_exception.BadRequest):
+                raise exception.InvalidInput(reason=six.text_type(e))
+            else:
+                raise exception.ManilaException(e)
+
     return wrapper
 
 
@@ -171,7 +174,7 @@ class API(base.Base):
                       block_device_mapping=None,
                       block_device_mapping_v2=None, nics=None,
                       availability_zone=None, instance_count=1,
-                      admin_pass=None):
+                      admin_pass=None, meta=None):
         return _untranslate_server_summary_view(
             novaclient(context).servers.create(
                 name, image, flavor, userdata=user_data,
@@ -179,7 +182,8 @@ class API(base.Base):
                 block_device_mapping=block_device_mapping,
                 block_device_mapping_v2=block_device_mapping_v2,
                 nics=nics, availability_zone=availability_zone,
-                min_count=instance_count, admin_pass=admin_pass)
+                min_count=instance_count, admin_pass=admin_pass,
+                meta=meta)
         )
 
     def server_delete(self, context, instance):
@@ -231,9 +235,7 @@ class API(base.Base):
 
     @translate_server_exception
     def server_reboot(self, context, instance_id, soft_reboot=False):
-        hardness = nova_servers.REBOOT_HARD
-        if soft_reboot:
-            hardness = nova_servers.REBOOT_SOFT
+        hardness = 'SOFT' if soft_reboot else 'HARD'
         novaclient(context).servers.reboot(instance_id, hardness)
 
     @translate_server_exception

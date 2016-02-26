@@ -1,4 +1,4 @@
-# Copyright 2013 Openstack Foundation
+# Copyright 2013 OpenStack Foundation
 # Copyright 2015 Mirantis, Inc.
 # All Rights Reserved.
 #
@@ -15,13 +15,13 @@
 #    under the License.
 
 from oslo_config import cfg
-from oslo_log import log
 
 from manila.common import constants
 from manila import exception
 from manila import network
 from manila.network.neutron import api as neutron_api
 from manila.network.neutron import constants as neutron_constants
+from manila import utils
 
 neutron_single_network_plugin_opts = [
     cfg.StrOpt(
@@ -29,20 +29,17 @@ neutron_single_network_plugin_opts = [
         help="Default Neutron network that will be used for share server "
              "creation. This opt is used only with "
              "class 'NeutronSingleNetworkPlugin'.",
-        deprecated_group='DEFAULT',
-        default=None),
+        deprecated_group='DEFAULT'),
     cfg.StrOpt(
         'neutron_subnet_id',
         help="Default Neutron subnet that will be used for share server "
              "creation. Should be assigned to network defined in opt "
              "'neutron_net_id'. This opt is used only with "
              "class 'NeutronSingleNetworkPlugin'.",
-        deprecated_group='DEFAULT',
-        default=None),
+        deprecated_group='DEFAULT'),
 ]
 
 CONF = cfg.CONF
-LOG = log.getLogger(__name__)
 
 
 class NeutronNetworkPlugin(network.NetworkBaseAPI):
@@ -50,7 +47,17 @@ class NeutronNetworkPlugin(network.NetworkBaseAPI):
     def __init__(self, *args, **kwargs):
         db_driver = kwargs.pop('db_driver', None)
         super(NeutronNetworkPlugin, self).__init__(db_driver=db_driver)
-        self.neutron_api = neutron_api.API(*args, **kwargs)
+        self._neutron_api = None
+        self._neutron_api_args = args
+        self._neutron_api_kwargs = kwargs
+
+    @property
+    @utils.synchronized("instantiate_neutron_api")
+    def neutron_api(self):
+        if not self._neutron_api:
+            self._neutron_api = neutron_api.API(*self._neutron_api_args,
+                                                **self._neutron_api_kwargs)
+        return self._neutron_api
 
     def allocate_network(self, context, share_server, share_network, **kwargs):
         """Allocate network resources using given network information.
@@ -125,8 +132,8 @@ class NeutronNetworkPlugin(network.NetworkBaseAPI):
             self.db.network_allocation_delete(context, port['id'])
 
     def _has_provider_network_extension(self):
-        extentions = self.neutron_api.list_extensions()
-        return neutron_constants.PROVIDER_NW_EXT in extentions
+        extensions = self.neutron_api.list_extensions()
+        return neutron_constants.PROVIDER_NW_EXT in extensions
 
     def _save_neutron_network_data(self, context, share_network):
         net_info = self.neutron_api.get_network(
@@ -187,9 +194,30 @@ class NeutronSingleNetworkPlugin(NeutronNetworkPlugin):
 
     def _update_share_network_net_data(self, context, share_network):
         upd = dict()
+
+        if share_network.get('nova_net_id') is not None:
+            raise exception.NetworkBadConfigurationException(
+                "Share network has nova_net_id set.")
+
         if not share_network.get('neutron_net_id') == self.net:
+            if share_network.get('neutron_net_id') is not None:
+                raise exception.NetworkBadConfigurationException(
+                    "Using neutron net id different from None or value "
+                    "specified in the config is forbidden for "
+                    "NeutronSingleNetworkPlugin. Allowed values: (%(net)s, "
+                    "None), received value: %(err)s" % {
+                        "net": self.net,
+                        "err": share_network.get('neutron_net_id')})
             upd['neutron_net_id'] = self.net
         if not share_network.get('neutron_subnet_id') == self.subnet:
+            if share_network.get('neutron_subnet_id') is not None:
+                raise exception.NetworkBadConfigurationException(
+                    "Using neutron subnet id different from None or value "
+                    "specified in the config is forbidden for "
+                    "NeutronSingleNetworkPlugin. Allowed values: (%(snet)s, "
+                    "None), received value: %(err)s" % {
+                        "snet": self.subnet,
+                        "err": share_network.get('neutron_subnet_id')})
             upd['neutron_subnet_id'] = self.subnet
         if upd:
             share_network = self.db.share_network_update(

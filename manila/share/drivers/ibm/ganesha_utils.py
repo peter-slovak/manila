@@ -207,49 +207,40 @@ def _convert_ipstring_to_ipn(ipstring):
     return ipns
 
 
+def _format_ips(iptokens):
+    ipaddrs = set()
+    for iptoken in iptokens:
+        ipn_list = _convert_ipstring_to_ipn(iptoken)
+        for ipn in ipn_list:
+            ips = [ip for ip in netaddr.iter_unique_ips(ipn)]
+            ipaddrs = ipaddrs.union(ips)
+    return ipaddrs
+
+
 def format_access_list(access_string, deny_access=None):
     """Transform access string into a format ganesha understands."""
-    ipaddrs = set()
-    deny_ipaddrs = set()
     # handle the case where there is an access string with a trailing comma
     access_string = access_string.strip(',')
     iptokens = access_string.split(',')
 
+    ipaddrs = _format_ips(iptokens)
+
     if deny_access:
-        for deny_token in deny_access.split(','):
-            deny_ipns = _convert_ipstring_to_ipn(deny_token)
-            for deny_ipn in deny_ipns:
-                deny_ips = [ip for ip in netaddr.iter_unique_ips(deny_ipn)]
-                deny_ipaddrs = deny_ipaddrs.union(deny_ips)
-
-    for ipstring in iptokens:
-        ipn_list = _convert_ipstring_to_ipn(ipstring)
-        for ipn in ipn_list:
-            ips = [ip for ip in netaddr.iter_unique_ips(ipn)]
-            ipaddrs = ipaddrs.union(ips)
-
+        deny_tokens = deny_access.split(',')
+        deny_ipaddrs = _format_ips(deny_tokens)
         ipaddrs = ipaddrs - deny_ipaddrs
-        ipaddrlist = sorted(list(ipaddrs))
-    return ','.join([str(ip) for ip in ipaddrlist])
+
+    ipaddrlist = sorted(list(ipaddrs))
+
+    return ','.join([six.text_type(ip) for ip in ipaddrlist])
 
 
 def _publish_local_config(configpath, pre_lines, exports):
     tmp_path = '%s.tmp.%s' % (configpath, time.time())
     LOG.debug("tmp_path = %s", tmp_path)
-    cpcmd = ['cp', configpath, tmp_path]
+    cpcmd = ['install', '-m', '666', configpath, tmp_path]
     try:
         utils.execute(*cpcmd, run_as_root=True)
-    except exception.ProcessExecutionError as e:
-        msg = (_('Failed while publishing ganesha config locally. '
-                 'Error: %s.') % six.text_type(e))
-        LOG.error(msg)
-        raise exception.GPFSGaneshaException(msg)
-
-    # change permission of the tmp file, so that it can be edited
-    # by a non-root user
-    chmodcmd = ['chmod', 'o+w', tmp_path]
-    try:
-        utils.execute(*chmodcmd, run_as_root=True)
     except exception.ProcessExecutionError as e:
         msg = (_('Failed while publishing ganesha config locally. '
                  'Error: %s.') % six.text_type(e))

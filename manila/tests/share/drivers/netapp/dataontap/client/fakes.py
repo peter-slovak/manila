@@ -35,10 +35,15 @@ SHARE_AGGREGATE_NAMES = ('fake_aggr1', 'fake_aggr2')
 SHARE_AGGREGATE_RAID_TYPES = ('raid4', 'raid_dp')
 SHARE_AGGREGATE_DISK_TYPE = 'FCAL'
 SHARE_NAME = 'fake_share'
+SHARE_SIZE = '1000000000'
+SHARE_NAME_2 = 'fake_share_2'
 SNAPSHOT_NAME = 'fake_snapshot'
+CG_SNAPSHOT_ID = 'fake_cg_id'
 PARENT_SHARE_NAME = 'fake_parent_share'
 PARENT_SNAPSHOT_NAME = 'fake_parent_snapshot'
 MAX_FILES = 5000
+LANGUAGE = 'fake_language'
+SNAPSHOT_POLICY_NAME = 'fake_snapshot_policy'
 EXPORT_POLICY_NAME = 'fake_export_policy'
 DELETED_EXPORT_POLICIES = {
     VSERVER_NAME: [
@@ -60,6 +65,21 @@ NETMASK = '255.255.255.0'
 NET_ALLOCATION_ID = 'fake_allocation_id'
 LIF_NAME_TEMPLATE = 'os_%(net_allocation_id)s'
 LIF_NAME = LIF_NAME_TEMPLATE % {'net_allocation_id': NET_ALLOCATION_ID}
+IPSPACE_NAME = 'fake_ipspace'
+BROADCAST_DOMAIN = 'fake_domain'
+MTU = 9000
+
+IPSPACES = [{
+    'uuid': 'fake_uuid',
+    'ipspace': IPSPACE_NAME,
+    'id': 'fake_id',
+    'broadcast-domains': ['OpenStack'],
+    'ports': [NODE_NAME + ':' + VLAN_PORT],
+    'vservers': [
+        IPSPACE_NAME,
+        VSERVER_NAME,
+    ]
+}]
 
 EMS_MESSAGE = {
     'computer-name': 'fake_host',
@@ -76,6 +96,10 @@ NO_RECORDS_RESPONSE = etree.XML("""
   <results status="passed">
     <num-records>0</num-records>
   </results>
+""")
+
+PASSED_RESPONSE = etree.XML("""
+  <results status="passed" />
 """)
 
 VSERVER_GET_ITER_RESPONSE = etree.XML("""
@@ -100,6 +124,18 @@ VSERVER_GET_ROOT_VOLUME_NAME_RESPONSE = etree.XML("""
     <num-records>1</num-records>
   </results>
 """ % {'root_volume': ROOT_VOLUME_NAME, 'fake_vserver': VSERVER_NAME})
+
+VSERVER_GET_IPSPACE_NAME_RESPONSE = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <vserver-info>
+        <ipspace>%(ipspace)s</ipspace>
+        <vserver-name>%(fake_vserver)s</vserver-name>
+      </vserver-info>
+    </attributes-list>
+    <num-records>1</num-records>
+  </results>
+""" % {'ipspace': IPSPACE_NAME, 'fake_vserver': VSERVER_NAME})
 
 VSERVER_GET_RESPONSE = etree.XML("""
   <results status="passed">
@@ -431,6 +467,78 @@ SORTED_PORTS_ALL_SPEEDS = (
     {'node': NODE_NAME, 'port': 'port7'},
 )
 
+NET_PORT_GET_ITER_BROADCAST_DOMAIN_RESPONSE = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <net-port-info>
+        <ipspace>%(ipspace)s</ipspace>
+        <broadcast-domain>%(domain)s</broadcast-domain>
+        <node>%(node)s</node>
+        <port>%(port)s</port>
+      </net-port-info>
+    </attributes-list>
+    <num-records>1</num-records>
+  </results>
+""" % {
+    'domain': BROADCAST_DOMAIN,
+    'node': NODE_NAME,
+    'port': PORT,
+    'ipspace': IPSPACE_NAME,
+})
+
+NET_PORT_GET_ITER_BROADCAST_DOMAIN_MISSING_RESPONSE = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <net-port-info>
+        <ipspace>%(ipspace)s</ipspace>
+        <node>%(node)s</node>
+        <port>%(port)s</port>
+      </net-port-info>
+    </attributes-list>
+    <num-records>1</num-records>
+  </results>
+""" % {'node': NODE_NAME, 'port': PORT, 'ipspace': IPSPACE_NAME})
+
+NET_PORT_BROADCAST_DOMAIN_GET_ITER_RESPONSE = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <net-port-broadcast-domain-info>
+        <broadcast-domain>%(domain)s</broadcast-domain>
+        <ipspace>%(ipspace)s</ipspace>
+      </net-port-broadcast-domain-info>
+    </attributes-list>
+    <num-records>1</num-records>
+  </results>
+""" % {'domain': BROADCAST_DOMAIN, 'ipspace': IPSPACE_NAME})
+
+NET_IPSPACES_GET_ITER_RESPONSE = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <net-ipspaces-info>
+        <broadcast-domains>
+          <broadcast-domain-name>OpenStack</broadcast-domain-name>
+        </broadcast-domains>
+        <id>fake_id</id>
+        <ipspace>%(ipspace)s</ipspace>
+        <ports>
+          <net-qualified-port-name>%(node)s:%(port)s</net-qualified-port-name>
+        </ports>
+        <uuid>fake_uuid</uuid>
+        <vservers>
+          <vserver-name>%(ipspace)s</vserver-name>
+          <vserver-name>%(vserver)s</vserver-name>
+        </vservers>
+      </net-ipspaces-info>
+    </attributes-list>
+    <num-records>1</num-records>
+  </results>
+""" % {
+    'ipspace': IPSPACE_NAME,
+    'node': NODE_NAME,
+    'port': VLAN_PORT,
+    'vserver': VSERVER_NAME
+})
+
 NET_INTERFACE_GET_ITER_RESPONSE = etree.XML("""
   <results status="passed">
     <attributes-list>
@@ -722,6 +830,23 @@ AGGR_GET_SPACE_RESPONSE = etree.XML("""
     'aggr2': SHARE_AGGREGATE_NAMES[1],
 })
 
+AGGR_GET_NODE_RESPONSE = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <aggr-attributes>
+        <aggr-ownership-attributes>
+          <home-name>%(node)s</home-name>
+        </aggr-ownership-attributes>
+        <aggregate-name>%(aggr)s</aggregate-name>
+      </aggr-attributes>
+    </attributes-list>
+    <num-records>1</num-records>
+  </results>
+""" % {
+    'aggr': SHARE_AGGREGATE_NAME,
+    'node': NODE_NAME
+})
+
 AGGR_GET_ITER_RESPONSE = etree.XML("""
   <results status="passed">
     <attributes-list>
@@ -997,6 +1122,47 @@ VOLUME_GET_VOLUME_PATH_CIFS_RESPONSE = etree.XML("""
 VOLUME_JUNCTION_PATH = '/' + SHARE_NAME
 VOLUME_JUNCTION_PATH_CIFS = '\\' + SHARE_NAME
 
+VOLUME_MODIFY_ITER_RESPONSE = etree.XML("""
+  <results status="passed">
+    <failure-list />
+    <num-failed>0</num-failed>
+    <num-succeeded>1</num-succeeded>
+    <success-list>
+      <volume-modify-iter-info>
+        <volume-key>
+          <volume-attributes>
+            <volume-id-attributes>
+              <name>%(volume)s</name>
+              <owning-vserver-name>%(vserver)s</owning-vserver-name>
+            </volume-id-attributes>
+          </volume-attributes>
+        </volume-key>
+      </volume-modify-iter-info>
+    </success-list>
+  </results>
+""" % {'volume': SHARE_NAME, 'vserver': VSERVER_NAME})
+
+VOLUME_MODIFY_ITER_ERROR_RESPONSE = etree.XML("""
+  <results status="passed">
+    <failure-list>
+      <volume-modify-iter-info>
+        <error-code>160</error-code>
+        <error-message>Unable to set volume attribute "size"</error-message>
+        <volume-key>
+          <volume-attributes>
+            <volume-id-attributes>
+              <name>%(volume)s</name>
+              <owning-vserver-name>%(vserver)s</owning-vserver-name>
+            </volume-id-attributes>
+          </volume-attributes>
+        </volume-key>
+      </volume-modify-iter-info>
+    </failure-list>
+    <num-failed>1</num-failed>
+    <num-succeeded>0</num-succeeded>
+  </results>
+""" % {'volume': SHARE_NAME, 'vserver': VSERVER_NAME})
+
 SNAPSHOT_GET_ITER_NOT_BUSY_RESPONSE = etree.XML("""
   <results status="passed">
     <attributes-list>
@@ -1085,6 +1251,18 @@ SNAPSHOT_GET_ITER_OTHER_ERROR_RESPONSE = etree.XML("""
     </volume-errors>
   </results>
 """ % {'volume': SHARE_NAME, 'vserver': VSERVER_NAME})
+
+SNAPSHOT_MULTIDELETE_ERROR_RESPONSE = etree.XML("""
+  <results status="passed">
+    <volume-errors>
+      <volume-error>
+        <errno>13021</errno>
+        <name>%(volume)s</name>
+        <reason>No such snapshot.</reason>
+      </volume-error>
+    </volume-errors>
+  </results>
+""" % {'volume': SHARE_NAME})
 
 NFS_EXPORT_RULES = ('10.10.10.10', '10.10.10.20')
 
@@ -1284,4 +1462,77 @@ DELETED_EXPORT_POLICY_GET_ITER_RESPONSE = etree.XML("""
     'policy1': DELETED_EXPORT_POLICIES[VSERVER_NAME][0],
     'policy2': DELETED_EXPORT_POLICIES[VSERVER_NAME][1],
     'policy3': DELETED_EXPORT_POLICIES[VSERVER_NAME_2][0],
+})
+
+LUN_GET_ITER_RESPONSE = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <lun-info>
+        <path>/vol/%(volume)s/fakelun</path>
+        <qtree />
+        <volume>%(volume)s</volume>
+        <vserver>%(vserver)s</vserver>
+      </lun-info>
+    </attributes-list>
+    <num-records>1</num-records>
+  </results>
+""" % {
+    'vserver': VSERVER_NAME,
+    'volume': SHARE_NAME,
+})
+
+VOLUME_GET_ITER_JUNCTIONED_VOLUMES_RESPONSE = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <volume-attributes>
+        <volume-id-attributes>
+          <name>fake_volume</name>
+          <owning-vserver-name>test</owning-vserver-name>
+        </volume-id-attributes>
+      </volume-attributes>
+    </attributes-list>
+    <num-records>1</num-records>
+  </results>
+""")
+
+VOLUME_GET_ITER_VOLUME_TO_MANAGE_RESPONSE = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <volume-attributes>
+        <volume-id-attributes>
+          <containing-aggregate-name>%(aggr)s</containing-aggregate-name>
+          <junction-path>/%(volume)s</junction-path>
+          <name>%(volume)s</name>
+          <owning-vserver-name>%(vserver)s</owning-vserver-name>
+          <style>flex</style>
+          <type>rw</type>
+        </volume-id-attributes>
+        <volume-space-attributes>
+          <size>%(size)s</size>
+        </volume-space-attributes>
+      </volume-attributes>
+    </attributes-list>
+    <num-records>1</num-records>
+  </results>
+""" % {
+    'aggr': SHARE_AGGREGATE_NAME,
+    'vserver': VSERVER_NAME,
+    'volume': SHARE_NAME,
+    'size': SHARE_SIZE,
+})
+
+SIS_GET_ITER_RESPONSE = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <sis-status-info>
+        <is-compression-enabled>true</is-compression-enabled>
+        <path>/vol/%(volume)s</path>
+        <state>enabled</state>
+        <vserver>%(vserver)s</vserver>
+      </sis-status-info>
+    </attributes-list>
+  </results>
+""" % {
+    'vserver': VSERVER_NAME,
+    'volume': SHARE_NAME,
 })
