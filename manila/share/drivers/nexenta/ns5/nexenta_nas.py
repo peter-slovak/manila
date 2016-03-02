@@ -60,7 +60,7 @@ class NexentaNasDriver(driver.ShareDriver):
         self.nef_password = self.configuration.nexenta_password
 
         self.pool_name = self.configuration.nexenta_volume
-        self.fs_prefix = self.configuration.nexenta_share
+        self.fs_prefix = self.configuration.nexenta_nfs_share
 
         self.storage_protocol = 'NFS'
         self.nfs_mount_point_base = self.configuration.nexenta_mount_point_base
