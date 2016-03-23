@@ -143,7 +143,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             service_instance.ServiceInstanceManager(
                 driver_config=self.configuration))
 
-    def _ssh_exec(self, server, command):
+    def _ssh_exec(self, server, command, check_exit_code=True):
         connection = self.ssh_connections.get(server['instance_id'])
         ssh_conn_timeout = self.configuration.ssh_conn_timeout
         if not connection:
@@ -163,7 +163,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             ssh_pool.remove(ssh)
             ssh = ssh_pool.create()
             self.ssh_connections[server['instance_id']] = (ssh_pool, ssh)
-        return processutils.ssh_execute(ssh, ' '.join(command))
+        return processutils.ssh_execute(ssh, ' '.join(command),
+                                        check_exit_code=check_exit_code)
 
     def check_for_setup_error(self):
         """Returns an error if prerequisites aren't met."""
@@ -214,16 +215,6 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 "No protocol helpers selected for Generic Driver. "
                 "Please specify using config option 'share_helpers'.")
 
-    def _get_access_rule_for_data_copy(self, context, share, share_server):
-        if not self.driver_handles_share_servers:
-            service_ip = self.configuration.safe_get(
-                'migration_data_copy_node_ip')
-        else:
-            service_ip = share_server['backend_details']['service_ip']
-        return {'access_type': 'ip',
-                'access_level': 'rw',
-                'access_to': service_ip}
-
     @ensure_server
     def create_share(self, context, share, share_server=None):
         """Creates share."""
@@ -240,18 +231,38 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         location = helper.create_export(
             server_details,
             share['name'])
-        return {
+        export_list = [{
             "path": location,
             "is_admin_only": False,
             "metadata": {
-                # TODO(vponomaryov): remove this fake metadata when proper
-                # appears.
+                # TODO(vponomaryov): remove this fake metadata when
+                # proper appears.
                 "export_location_metadata_example": "example",
             },
-        }
+        }]
+        if server_details.get('admin_ip'):
+            admin_location = location.replace(
+                server_details['public_address'], server_details['admin_ip'])
+            export_list.append({
+                "path": admin_location,
+                "is_admin_only": True,
+                "metadata": {
+                    # TODO(vponomaryov): remove this fake metadata when
+                    #  proper appears.
+                    "export_location_metadata_example": "example",
+                },
+            })
+        return export_list
+
+    @utils.retry(exception.ProcessExecutionError, backoff_rate=1)
+    def _is_device_file_available(self, server_details, volume):
+        """Checks whether the device file is available"""
+        command = ['sudo', 'test', '-b', volume['mountpoint']]
+        self._ssh_exec(server_details, command)
 
     def _format_device(self, server_details, volume):
         """Formats device attached to the service vm."""
+        self._is_device_file_available(server_details, volume)
         command = ['sudo', 'mkfs.%s' % self.configuration.share_volume_fstype,
                    volume['mountpoint']]
         self._ssh_exec(server_details, command)
@@ -406,9 +417,13 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                         _('Failed to attach volume %s') % volume['id'])
                 time.sleep(1)
             else:
+                err_msg = {
+                    'volume_id': volume['id'],
+                    'max_time': self.configuration.max_time_to_attach
+                }
                 raise exception.ManilaException(
-                    _('Volume have not been attached in %ss. Giving up') %
-                    self.configuration.max_time_to_attach)
+                    _('Volume %(volume_id)s has not been attached in '
+                      '%(max_time)ss. Giving up.') % err_msg)
         return do_attach(volume)
 
     def _get_volume_name(self, share_id):
@@ -499,9 +514,13 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                         break
                     time.sleep(1)
                 else:
+                    err_msg = {
+                        'volume_id': volume['id'],
+                        'max_time': self.configuration.max_time_to_attach
+                    }
                     raise exception.ManilaException(
-                        _('Volume have not been detached in %ss. Giving up')
-                        % self.configuration.max_time_to_attach)
+                        _('Volume %(volume_id)s has not been detached in '
+                          '%(max_time)ss. Giving up.') % err_msg)
         do_detach()
 
     def _allocate_container(self, context, share, snapshot=None):
@@ -602,6 +621,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                    share_server=None):
         """Is called to create share from snapshot."""
         helper = self._get_helper(share)
+        server_details = share_server['backend_details']
         volume = self._allocate_container(self.admin_context, share, snapshot)
         volume = self._attach_volume(
             self.admin_context, share,
@@ -609,7 +629,28 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         self._mount_device(share, share_server['backend_details'], volume)
         location = helper.create_export(share_server['backend_details'],
                                         share['name'])
-        return location
+        export_list = [{
+            "path": location,
+            "is_admin_only": False,
+            "metadata": {
+                # TODO(vponomaryov): remove this fake metadata when
+                # proper appears.
+                "export_location_metadata_example": "example",
+            },
+        }]
+        if server_details.get('admin_ip'):
+            admin_location = location.replace(
+                server_details['public_address'], server_details['admin_ip'])
+            export_list.append({
+                "path": admin_location,
+                "is_admin_only": True,
+                "metadata": {
+                    # TODO(vponomaryov): remove this fake metadata when
+                    #  proper appears.
+                    "export_location_metadata_example": "example",
+                },
+            })
+        return export_list
 
     @ensure_server
     def extend_share(self, share, new_size, share_server=None):
@@ -730,6 +771,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def create_snapshot(self, context, snapshot, share_server=None):
         """Creates a snapshot."""
+        model_update = {}
         volume = self._get_volume(self.admin_context, snapshot['share_id'])
         volume_snapshot_name = (self.configuration.
                                 volume_snapshot_name_template % snapshot['id'])
@@ -747,13 +789,21 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 self.admin_context,
                 volume_snapshot['id'])
 
+            # NOTE(xyang): We should look at whether we still need to save
+            # volume_snapshot_id in private_storage later, now that is saved
+            # in provider_location.
             self.private_storage.update(
                 snapshot['id'], {'volume_snapshot_id': volume_snapshot['id']})
+            # NOTE(xyang): Need to update provider_location in the db so
+            # that it can be used in manage/unmanage snapshot tempest tests.
+            model_update['provider_location'] = volume_snapshot['id']
         else:
             raise exception.ManilaException(
                 _('Volume snapshot have not been '
                   'created in %ss. Giving up') %
                 self.configuration.max_time_to_create_volume)
+
+        return model_update
 
     def delete_snapshot(self, context, snapshot, share_server=None):
         """Deletes a snapshot."""
@@ -797,23 +847,34 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 share_server['backend_details'], share['name'], recreate=True)
 
     @ensure_server
-    def allow_access(self, context, share, access, share_server=None):
-        """Allow access to the share."""
+    def update_access(self, context, share, access_rules, add_rules,
+                      delete_rules, share_server=None):
+        """Update access rules for given share.
 
-        # NOTE(vponomaryov): use direct verification for case some additional
-        # level is added.
-        access_level = access['access_level']
-        if access_level not in (const.ACCESS_LEVEL_RW, const.ACCESS_LEVEL_RO):
-            raise exception.InvalidShareAccessLevel(level=access_level)
-        self._get_helper(share).allow_access(
-            share_server['backend_details'], share['name'],
-            access['access_type'], access['access_level'], access['access_to'])
+        This driver has two different behaviors according to parameters:
+        1. Recovery after error - 'access_rules' contains all access_rules,
+        'add_rules' and 'delete_rules' shall be empty. Previously existing
+        access rules are cleared and then added back according
+        to 'access_rules'.
 
-    @ensure_server
-    def deny_access(self, context, share, access, share_server=None):
-        """Deny access to the share."""
-        self._get_helper(share).deny_access(
-            share_server['backend_details'], share['name'], access)
+        2. Adding/Deleting of several access rules - 'access_rules' contains
+        all access_rules, 'add_rules' and 'delete_rules' contain rules which
+        should be added/deleted. Rules in 'access_rules' are ignored and
+        only rules from 'add_rules' and 'delete_rules' are applied.
+
+        :param context: Current context
+        :param share: Share model with share data.
+        :param access_rules: All access rules for given share
+        :param add_rules: Empty List or List of access rules which should be
+               added. access_rules already contains these rules.
+        :param delete_rules: Empty List or List of access rules which should be
+               removed. access_rules doesn't contain these rules.
+        :param share_server: None or Share server model
+        """
+        self._get_helper(share).update_access(share_server['backend_details'],
+                                              share['name'], access_rules,
+                                              add_rules=add_rules,
+                                              delete_rules=delete_rules)
 
     def _get_helper(self, share):
         helper = self._helpers.get(share['share_proto'])
@@ -919,6 +980,46 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         export_locations = helper.get_exports_for_share(
             server_details, old_export_location)
         return {'size': share_size, 'export_locations': export_locations}
+
+    def manage_existing_snapshot(self, snapshot, driver_options):
+        """Manage existing share snapshot with manila.
+
+        :param snapshot: Snapshot data
+        :param driver_options: Not used by the Generic driver currently
+        :return: dict with share snapshot size, example: {'size': 1}
+        """
+        model_update = {}
+        volume_snapshot = None
+        snapshot_size = snapshot.get('share_size', 0)
+        provider_location = snapshot.get('provider_location')
+        try:
+            volume_snapshot = self.volume_api.get_snapshot(
+                self.admin_context,
+                provider_location)
+        except exception.VolumeSnapshotNotFound as e:
+            raise exception.ManageInvalidShareSnapshot(
+                reason=six.text_type(e))
+
+        if volume_snapshot:
+            snapshot_size = volume_snapshot['size']
+            # NOTE(xyang): volume_snapshot_id is saved in private_storage
+            # in create_snapshot, so saving it here too for consistency.
+            # We should look at whether we still need to save it in
+            # private_storage later.
+            self.private_storage.update(
+                snapshot['id'], {'volume_snapshot_id': volume_snapshot['id']})
+            # NOTE(xyang): provider_location is used to map a Manila snapshot
+            # to its name on the storage backend and prevent managing of the
+            # same snapshot twice.
+            model_update['provider_location'] = volume_snapshot['id']
+
+        model_update['size'] = snapshot_size
+        return model_update
+
+    def unmanage_snapshot(self, snapshot):
+        """Unmanage share snapshot with manila."""
+
+        self.private_storage.delete(snapshot['id'])
 
     def _get_mount_stats_by_index(self, mount_path, server_details, index,
                                   block_size='G'):

@@ -29,6 +29,7 @@ import six
 
 from manila.api import extensions
 from manila.common import constants
+from manila.data import rpcapi as data_rpcapi
 from manila.db import base
 from manila import exception
 from manila.i18n import _
@@ -68,7 +69,7 @@ class API(base.Base):
         super(API, self).__init__(db_driver)
 
     def create(self, context, share_proto, size, name, description,
-               snapshot=None, availability_zone=None, metadata=None,
+               snapshot_id=None, availability_zone=None, metadata=None,
                share_network_id=None, share_type=None, is_public=False,
                consistency_group_id=None, cgsnapshot_member=None):
         """Create new share."""
@@ -76,16 +77,15 @@ class API(base.Base):
 
         self._check_metadata_properties(context, metadata)
 
-        if snapshot is not None:
-            if snapshot['status'] != constants.STATUS_AVAILABLE:
+        if snapshot_id is not None:
+            snapshot = self.get_snapshot(context, snapshot_id)
+            if snapshot['aggregate_status'] != constants.STATUS_AVAILABLE:
                 msg = _("status must be '%s'") % constants.STATUS_AVAILABLE
                 raise exception.InvalidShareSnapshot(reason=msg)
             if not size:
                 size = snapshot['size']
-
-            snapshot_id = snapshot['id']
         else:
-            snapshot_id = None
+            snapshot = None
 
         def as_int(s):
             try:
@@ -110,9 +110,12 @@ class API(base.Base):
             share_type_id = share_type['id'] if share_type else None
         else:
             source_share = self.db.share_get(context, snapshot['share_id'])
-            availability_zone = source_share['availability_zone']
+            availability_zone = source_share['instance']['availability_zone']
             if share_type is None:
+                # Grab the source share's share_type if no new share type
+                # has been provided.
                 share_type_id = source_share['share_type_id']
+                share_type = share_types.get_share_type(context, share_type_id)
             else:
                 share_type_id = share_type['id']
                 if share_type_id != source_share['share_type_id']:
@@ -170,6 +173,8 @@ class API(base.Base):
                 share_type.get('extra_specs', {}).get(
                     'snapshot_support', True) if share_type else True,
                 strict=True)
+            replication_type = share_type.get('extra_specs', {}).get(
+                'replication_type') if share_type else None
         except ValueError as e:
             raise exception.InvalidParameterValue(six.text_type(e))
 
@@ -221,6 +226,7 @@ class API(base.Base):
                    'project_id': context.project_id,
                    'snapshot_id': snapshot_id,
                    'snapshot_support': snapshot_support,
+                   'replication_type': replication_type,
                    'metadata': metadata,
                    'display_name': name,
                    'display_description': description,
@@ -247,12 +253,15 @@ class API(base.Base):
         if snapshot and not CONF.use_scheduler_creating_share_from_snapshot:
             # Shares from snapshots with restriction - source host only.
             # It is common situation for different types of backends.
-            host = snapshot['share']['host']
+            host = snapshot['share']['instance']['host']
 
         self.create_instance(context, share, share_network_id=share_network_id,
                              host=host, availability_zone=availability_zone,
                              consistency_group=consistency_group,
                              cgsnapshot_member=cgsnapshot_member)
+
+        # Retrieve the share with instance details
+        share = self.db.share_get(context, share['id'])
 
         return share
 
@@ -261,25 +270,11 @@ class API(base.Base):
                         consistency_group=None, cgsnapshot_member=None):
         policy.check_policy(context, 'share', 'create')
 
-        availability_zone_id = None
-        if availability_zone:
-            availability_zone_id = self.db.availability_zone_get(
-                context, availability_zone).id
-
-        # TODO(u_glide): Add here validation that provided share network
-        # doesn't conflict with provided availability_zone when Neutron
-        # will have AZ support.
-
-        share_instance = self.db.share_instance_create(
-            context, share['id'],
-            {
-                'share_network_id': share_network_id,
-                'status': constants.STATUS_CREATING,
-                'scheduled_at': timeutils.utcnow(),
-                'host': host if host else '',
-                'availability_zone_id': availability_zone_id,
-            }
-        )
+        request_spec, share_instance = (
+            self._create_share_instance_and_get_request_spec(
+                context, share, availability_zone=availability_zone,
+                consistency_group=consistency_group, host=host,
+                share_network_id=share_network_id))
 
         if cgsnapshot_member:
             host = cgsnapshot_member['share']['host']
@@ -288,45 +283,6 @@ class API(base.Base):
                                                   {'host': host})
             # NOTE(ameade): Do not cast to driver if creating from cgsnapshot
             return
-
-        share_properties = {
-            'size': share['size'],
-            'user_id': share['user_id'],
-            'project_id': share['project_id'],
-            'metadata': self.db.share_metadata_get(context, share['id']),
-            'share_server_id': share['share_server_id'],
-            'snapshot_support': share['snapshot_support'],
-            'share_proto': share['share_proto'],
-            'share_type_id': share['share_type_id'],
-            'is_public': share['is_public'],
-            'consistency_group_id': share['consistency_group_id'],
-            'source_cgsnapshot_member_id': share[
-                'source_cgsnapshot_member_id'],
-            'snapshot_id': share['snapshot_id'],
-        }
-        share_instance_properties = {
-            'availability_zone_id': share_instance['availability_zone_id'],
-            'share_network_id': share_instance['share_network_id'],
-            'share_server_id': share_instance['share_server_id'],
-            'share_id': share_instance['share_id'],
-            'host': share_instance['host'],
-            'status': share_instance['status'],
-        }
-
-        share_type = None
-        if share['share_type_id']:
-            share_type = self.db.share_type_get(
-                context, share['share_type_id'])
-
-        request_spec = {
-            'share_properties': share_properties,
-            'share_instance_properties': share_instance_properties,
-            'share_proto': share['share_proto'],
-            'share_id': share['id'],
-            'snapshot_id': share['snapshot_id'],
-            'share_type': share_type,
-            'consistency_group': consistency_group,
-        }
 
         if host:
             self.share_rpcapi.create_share_instance(
@@ -345,23 +301,229 @@ class API(base.Base):
 
         return share_instance
 
+    def _create_share_instance_and_get_request_spec(
+            self, context, share, availability_zone=None,
+            consistency_group=None, host=None, share_network_id=None):
+
+        availability_zone_id = None
+        if availability_zone:
+            availability_zone_id = self.db.availability_zone_get(
+                context, availability_zone).id
+
+        # TODO(u_glide): Add here validation that provided share network
+        # doesn't conflict with provided availability_zone when Neutron
+        # will have AZ support.
+        share_instance = self.db.share_instance_create(
+            context, share['id'],
+            {
+                'share_network_id': share_network_id,
+                'status': constants.STATUS_CREATING,
+                'scheduled_at': timeutils.utcnow(),
+                'host': host if host else '',
+                'availability_zone_id': availability_zone_id,
+            }
+        )
+
+        share_properties = {
+            'id': share['id'],
+            'size': share['size'],
+            'user_id': share['user_id'],
+            'project_id': share['project_id'],
+            'metadata': self.db.share_metadata_get(context, share['id']),
+            'share_server_id': share_instance['share_server_id'],
+            'snapshot_support': share['snapshot_support'],
+            'share_proto': share['share_proto'],
+            'share_type_id': share['share_type_id'],
+            'is_public': share['is_public'],
+            'consistency_group_id': share['consistency_group_id'],
+            'source_cgsnapshot_member_id': share[
+                'source_cgsnapshot_member_id'],
+            'snapshot_id': share['snapshot_id'],
+            'replication_type': share['replication_type'],
+        }
+        share_instance_properties = {
+            'id': share_instance['id'],
+            'availability_zone_id': share_instance['availability_zone_id'],
+            'share_network_id': share_instance['share_network_id'],
+            'share_server_id': share_instance['share_server_id'],
+            'share_id': share_instance['share_id'],
+            'host': share_instance['host'],
+            'status': share_instance['status'],
+            'replica_state': share_instance['replica_state'],
+        }
+
+        share_type = None
+        if share['share_type_id']:
+            share_type = self.db.share_type_get(
+                context, share['share_type_id'])
+
+        request_spec = {
+            'share_properties': share_properties,
+            'share_instance_properties': share_instance_properties,
+            'share_proto': share['share_proto'],
+            'share_id': share['id'],
+            'snapshot_id': share['snapshot_id'],
+            'share_type': share_type,
+            'consistency_group': consistency_group,
+            'availability_zone_id': availability_zone_id,
+        }
+        return request_spec, share_instance
+
+    def create_share_replica(self, context, share, availability_zone=None,
+                             share_network_id=None):
+
+        if not share.get('replication_type'):
+            msg = _("Replication not supported for share %s.")
+            raise exception.InvalidShare(message=msg % share['id'])
+
+        self._check_is_share_busy(share)
+
+        active_replica = self.db.share_replicas_get_available_active_replica(
+            context, share['id'])
+
+        if not active_replica:
+            msg = _("Share %s does not have any active replica in available "
+                    "state.")
+            raise exception.ReplicationException(reason=msg % share['id'])
+
+        request_spec, share_replica = (
+            self._create_share_instance_and_get_request_spec(
+                context, share, availability_zone=availability_zone,
+                share_network_id=share_network_id))
+
+        all_replicas = self.db.share_replicas_get_all_by_share(
+            context, share['id'])
+        all_hosts = [r['host'] for r in all_replicas]
+
+        request_spec['active_replica_host'] = active_replica['host']
+        request_spec['all_replica_hosts'] = ','.join(all_hosts)
+
+        self.db.share_replica_update(
+            context, share_replica['id'],
+            {'replica_state': constants.REPLICA_STATE_OUT_OF_SYNC})
+
+        existing_snapshots = (
+            self.db.share_snapshot_get_all_for_share(
+                context, share_replica['share_id'])
+        )
+        snapshot_instance = {
+            'status': constants.STATUS_CREATING,
+            'progress': '0%',
+            'share_instance_id': share_replica['id'],
+        }
+        for snapshot in existing_snapshots:
+            self.db.share_snapshot_instance_create(
+                context, snapshot['id'], snapshot_instance)
+
+        self.scheduler_rpcapi.create_share_replica(
+            context, request_spec=request_spec, filter_properties={})
+
+        return share_replica
+
+    def delete_share_replica(self, context, share_replica, force=False):
+        # Disallow deletion of ONLY active replica, *even* when this
+        # operation is forced.
+        replicas = self.db.share_replicas_get_all_by_share(
+            context, share_replica['share_id'])
+        active_replicas = list(filter(
+            lambda x: x['replica_state'] == constants.REPLICA_STATE_ACTIVE,
+            replicas))
+        if (share_replica.get('replica_state') ==
+                constants.REPLICA_STATE_ACTIVE and len(active_replicas) == 1):
+            msg = _("Cannot delete last active replica.")
+            raise exception.ReplicationException(reason=msg)
+
+        LOG.info(_LI("Deleting replica %s."), id)
+
+        self.db.share_replica_update(
+            context, share_replica['id'],
+            {
+                'status': constants.STATUS_DELETING,
+                'terminated_at': timeutils.utcnow(),
+            }
+        )
+
+        if not share_replica['host']:
+            # Delete any snapshot instances created on the database
+            replica_snapshots = (
+                self.db.share_snapshot_instance_get_all_with_filters(
+                    context, {'share_instance_ids': share_replica['id']})
+            )
+            for snapshot in replica_snapshots:
+                self.db.share_snapshot_instance_delete(context, snapshot['id'])
+
+            # Delete the replica from the database
+            self.db.share_replica_delete(context, share_replica['id'])
+        else:
+
+            self.share_rpcapi.delete_share_replica(context,
+                                                   share_replica,
+                                                   force=force)
+
+    def promote_share_replica(self, context, share_replica):
+
+        if share_replica.get('status') != constants.STATUS_AVAILABLE:
+            msg = _("Replica %(replica_id)s must be in %(status)s state to be "
+                    "promoted.")
+            raise exception.ReplicationException(
+                reason=msg % {'replica_id': share_replica['id'],
+                              'status': constants.STATUS_AVAILABLE})
+
+        replica_state = share_replica['replica_state']
+
+        if (replica_state in (constants.REPLICA_STATE_OUT_OF_SYNC,
+                              constants.STATUS_ERROR)
+                and not context.is_admin):
+            msg = _("Promoting a replica with 'replica_state': %s requires "
+                    "administrator privileges.")
+            raise exception.AdminRequired(
+                message=msg % replica_state)
+
+        self.db.share_replica_update(
+            context, share_replica['id'],
+            {'status': constants.STATUS_REPLICATION_CHANGE})
+
+        self.share_rpcapi.promote_share_replica(context, share_replica)
+
+        return self.db.share_replica_get(context, share_replica['id'])
+
+    def update_share_replica(self, context, share_replica):
+
+        if not share_replica['host']:
+            msg = _("Share replica does not have a valid host.")
+            raise exception.InvalidHost(reason=msg)
+
+        self.share_rpcapi.update_share_replica(context, share_replica)
+
     def manage(self, context, share_data, driver_options):
         policy.check_policy(context, 'share', 'manage')
 
         shares = self.get_all(context, {
             'host': share_data['host'],
             'export_location': share_data['export_location'],
-            'share_proto': share_data['share_proto']
+            'share_proto': share_data['share_proto'],
+            'share_type_id': share_data['share_type_id']
         })
+
+        share_type = {}
+        share_type_id = share_data['share_type_id']
+        if share_type_id:
+            share_type = share_types.get_share_type(context, share_type_id)
+
+        snapshot_support = strutils.bool_from_string(
+            share_type.get('extra_specs', {}).get(
+                'snapshot_support', True) if share_type else True,
+            strict=True)
 
         share_data.update({
             'user_id': context.user_id,
             'project_id': context.project_id,
             'status': constants.STATUS_MANAGING,
             'scheduled_at': timeutils.utcnow(),
+            'snapshot_support': snapshot_support,
         })
 
-        LOG.debug("Manage: Found shares %s" % len(shares))
+        LOG.debug("Manage: Found shares %s.", len(shares))
 
         retry_states = (constants.STATUS_MANAGE_ERROR,)
 
@@ -380,8 +542,60 @@ class API(base.Base):
         self.db.share_export_locations_update(context, share.instance['id'],
                                               export_location)
 
-        self.share_rpcapi.manage_share(context, share, driver_options)
+        request_spec = self._get_request_spec_dict(share, share_type, size=0)
+
+        try:
+            self.scheduler_rpcapi.manage_share(context, share['id'],
+                                               driver_options, request_spec)
+        except Exception:
+            msg = _('Host %(host)s did not pass validation for managing of '
+                    'share %(share)s with type %(type)s.') % {
+                'host': share['host'],
+                'share': share['id'],
+                'type': share['share_type_id']}
+            raise exception.InvalidHost(reason=msg)
         return self.db.share_get(context, share['id'])
+
+    def _get_request_spec_dict(self, share, share_type, **kwargs):
+        share_instance = share['instance']
+
+        share_properties = {
+            'size': kwargs.get('size', share['size']),
+            'user_id': kwargs.get('user_id', share['user_id']),
+            'project_id': kwargs.get('project_id', share['project_id']),
+            'snapshot_support': kwargs.get(
+                'snapshot_support',
+                share_type['extra_specs']['snapshot_support']),
+            'share_proto': kwargs.get('share_proto', share['share_proto']),
+            'share_type_id': kwargs.get('share_type_id',
+                                        share['share_type_id']),
+            'is_public': kwargs.get('is_public', share['is_public']),
+            'consistency_group_id': kwargs.get('consistency_group_id',
+                                               share['consistency_group_id']),
+            'source_cgsnapshot_member_id': kwargs.get(
+                'source_cgsnapshot_member_id',
+                share['source_cgsnapshot_member_id']),
+            'snapshot_id': kwargs.get('snapshot_id', share['snapshot_id']),
+        }
+        share_instance_properties = {
+            'availability_zone_id': kwargs.get(
+                'availability_zone_id',
+                share_instance['availability_zone_id']),
+            'share_network_id': kwargs.get('share_network_id',
+                                           share_instance['share_network_id']),
+            'share_server_id': kwargs.get('share_server_id',
+                                          share_instance['share_server_id']),
+            'share_id': kwargs.get('share_id', share_instance['share_id']),
+            'host': kwargs.get('host', share_instance['host']),
+            'status': kwargs.get('status', share_instance['status']),
+        }
+        request_spec = {
+            'share_properties': share_properties,
+            'share_instance_properties': share_instance_properties,
+            'share_type': share_type,
+            'share_id': share['id']
+        }
+        return request_spec
 
     def unmanage(self, context, share):
         policy.check_policy(context, 'share', 'unmanage')
@@ -397,6 +611,53 @@ class API(base.Base):
         # NOTE(u_glide): We should update 'updated_at' timestamp of
         # share server here, when manage/unmanage operations will be supported
         # for driver_handles_share_servers=True mode
+
+    def manage_snapshot(self, context, snapshot_data, driver_options):
+        try:
+            share = self.db.share_get(context, snapshot_data['share_id'])
+        except exception.NotFound:
+            raise exception.ShareNotFound(share_id=snapshot_data['share_id'])
+
+        existing_snapshots = self.db.share_snapshot_get_all_for_share(
+            context, snapshot_data['share_id'])
+
+        for existing_snap in existing_snapshots:
+            for inst in existing_snap.get('instances'):
+                if (snapshot_data['provider_location'] ==
+                        inst['provider_location']):
+                    msg = _("A share snapshot %(share_snapshot_id)s is "
+                            "already managed for provider location "
+                            "%(provider_location)s.") % {
+                        'share_snapshot_id': existing_snap['id'],
+                        'provider_location':
+                            snapshot_data['provider_location'],
+                    }
+                    raise exception.ManageInvalidShareSnapshot(
+                        reason=msg)
+
+        snapshot_data.update({
+            'user_id': context.user_id,
+            'project_id': context.project_id,
+            'status': constants.STATUS_MANAGING,
+            'share_size': share['size'],
+            'progress': '0%',
+            'share_proto': share['share_proto']
+        })
+
+        snapshot = self.db.share_snapshot_create(context, snapshot_data)
+
+        self.share_rpcapi.manage_snapshot(context, snapshot, share['host'],
+                                          driver_options)
+        return snapshot
+
+    def unmanage_snapshot(self, context, snapshot, host):
+        update_data = {'status': constants.STATUS_UNMANAGING,
+                       'terminated_at': timeutils.utcnow()}
+        snapshot_ref = self.db.share_snapshot_update(context,
+                                                     snapshot['id'],
+                                                     update_data)
+
+        self.share_rpcapi.unmanage_snapshot(context, snapshot_ref, host)
 
     @policy.wrap_check_policy('share')
     def delete(self, context, share, force=False):
@@ -416,6 +677,13 @@ class API(base.Base):
                 "statuses": statuses}
             raise exception.InvalidShare(reason=msg)
 
+        # NOTE(gouthamr): If the share has more than one replica,
+        # it can't be deleted until the additional replicas are removed.
+        if share.has_replicas:
+            msg = _("Share %s has replicas. Remove the replicas before "
+                    "deleting the share.") % share_id
+            raise exception.Conflict(err=msg)
+
         snapshots = self.db.share_snapshot_get_all_for_share(context, share_id)
         if len(snapshots):
             msg = _("Share still has %d dependent snapshots") % len(snapshots)
@@ -431,10 +699,13 @@ class API(base.Base):
         self._check_is_share_busy(share)
 
         try:
+            # we give the user_id of the share, to update the quota usage
+            # for the user, who created the share
             reservations = QUOTAS.reserve(context,
                                           project_id=project_id,
                                           shares=-1,
-                                          gigabytes=-share['size'])
+                                          gigabytes=-share['size'],
+                                          user_id=share['user_id'])
         except Exception as e:
             reservations = None
             LOG.exception(
@@ -449,7 +720,10 @@ class API(base.Base):
                 self.db.share_instance_delete(context, share_instance['id'])
 
         if reservations:
-            QUOTAS.commit(context, reservations, project_id=project_id)
+            # we give the user_id of the share, to update the quota usage
+            # for the user, who created the share
+            QUOTAS.commit(context, reservations, project_id=project_id,
+                          user_id=share['user_id'])
 
     def delete_instance(self, context, share_instance, force=False):
         policy.check_policy(context, 'share', 'delete')
@@ -467,7 +741,8 @@ class API(base.Base):
              'terminated_at': timeutils.utcnow()}
         )
 
-        self.share_rpcapi.delete_share_instance(context, share_instance)
+        self.share_rpcapi.delete_share_instance(context, share_instance,
+                                                force=force)
 
         # NOTE(u_glide): 'updated_at' timestamp is used to track last usage of
         # share server. This is required for automatic share servers cleanup
@@ -566,16 +841,42 @@ class API(base.Base):
                 finally:
                     QUOTAS.rollback(context, reservations)
 
-        self.share_rpcapi.create_snapshot(context, share, snapshot)
+        # If replicated share, create snapshot instances for each replica
+        if share.get('has_replicas'):
+            snapshot = self.db.share_snapshot_get(context, snapshot['id'])
+            share_instance_id = snapshot['instance']['share_instance_id']
+            replicas = self.db.share_replicas_get_all_by_share(
+                context, share['id'])
+            replicas = [r for r in replicas if r['id'] != share_instance_id]
+            snapshot_instance = {
+                'status': constants.STATUS_CREATING,
+                'progress': '0%',
+            }
+            for replica in replicas:
+                snapshot_instance.update({'share_instance_id': replica['id']})
+                self.db.share_snapshot_instance_create(
+                    context, snapshot['id'], snapshot_instance)
+            self.share_rpcapi.create_replicated_snapshot(
+                context, share, snapshot)
+
+        else:
+            self.share_rpcapi.create_snapshot(context, share, snapshot)
+
         return snapshot
 
-    @policy.wrap_check_policy('share')
-    def migrate_share(self, context, share, host, force_host_copy):
+    def migration_start(self, context, share, host, force_host_copy,
+                        notify=True):
         """Migrates share to a new host."""
 
-        policy.check_policy(context, 'share', 'migrate')
-
         share_instance = share.instance
+
+        # NOTE(gouthamr): Ensure share does not have replicas.
+        # Currently share migrations are disallowed for replicated shares.
+        if share.has_replicas:
+            msg = _('Share %s has replicas. Remove the replicas before '
+                    'attempting to migrate the share.') % share['id']
+            LOG.error(msg)
+            raise exception.Conflict(err=msg)
 
         # We only handle "available" share for now
         if share_instance['status'] != constants.STATUS_AVAILABLE:
@@ -612,62 +913,131 @@ class API(base.Base):
         # is made
         self.update(
             context, share,
-            {'task_state': constants.STATUS_TASK_STATE_MIGRATION_STARTING})
+            {'task_state': constants.TASK_STATE_MIGRATION_STARTING})
 
         share_type = {}
         share_type_id = share['share_type_id']
         if share_type_id:
             share_type = share_types.get_share_type(context, share_type_id)
 
-        share_properties = {
-            'size': share['size'],
-            'user_id': share['user_id'],
-            'project_id': share['project_id'],
-            'share_server_id': share['share_server_id'],
-            'snapshot_support': share['snapshot_support'],
-            'share_proto': share['share_proto'],
-            'share_type_id': share['share_type_id'],
-            'is_public': share['is_public'],
-            'consistency_group_id': share['consistency_group_id'],
-            'source_cgsnapshot_member_id': share[
-                'source_cgsnapshot_member_id'],
-            'snapshot_id': share['snapshot_id'],
-        }
-        share_instance_properties = {
-            'availability_zone_id': share_instance['availability_zone_id'],
-            'share_network_id': share_instance['share_network_id'],
-            'share_server_id': share_instance['share_server_id'],
-            'share_id': share_instance['share_id'],
-            'host': share_instance['host'],
-            'status': share_instance['status'],
-        }
-        request_spec = {'share_properties': share_properties,
-                        'share_instance_properties': share_instance_properties,
-                        'share_type': share_type,
-                        'share_id': share['id']}
+        request_spec = self._get_request_spec_dict(share, share_type)
 
         try:
             self.scheduler_rpcapi.migrate_share_to_host(context, share['id'],
                                                         host, force_host_copy,
-                                                        request_spec)
+                                                        notify, request_spec)
         except Exception:
-            self.update(
-                context, share,
-                {'task_state': constants.STATUS_TASK_STATE_MIGRATION_ERROR})
-            raise
+            msg = _('Destination host %(dest_host)s did not pass validation '
+                    'for migration of share %(share)s.') % {
+                'dest_host': host,
+                'share': share['id']}
+            raise exception.InvalidHost(reason=msg)
+
+    def migration_complete(self, context, share):
+
+        if share['task_state'] not in (
+                constants.TASK_STATE_DATA_COPYING_COMPLETED,
+                constants.TASK_STATE_MIGRATION_DRIVER_PHASE1_DONE):
+            msg = _("First migration phase of share %s not completed"
+                    " yet.") % share['id']
+            LOG.error(msg)
+            raise exception.InvalidShare(reason=msg)
+
+        share_instance_id = None
+        new_share_instance_id = None
+
+        if share['task_state'] == (
+                constants.TASK_STATE_DATA_COPYING_COMPLETED):
+
+            for instance in share.instances:
+                if instance['status'] == constants.STATUS_MIGRATING:
+                    share_instance_id = instance['id']
+                if instance['status'] == constants.STATUS_MIGRATING_TO:
+                    new_share_instance_id = instance['id']
+
+            if None in (share_instance_id, new_share_instance_id):
+                msg = _("Share instances %(instance_id)s and "
+                        "%(new_instance_id)s in inconsistent states, cannot"
+                        " continue share migration for share %(share_id)s"
+                        ".") % {'instance_id': share_instance_id,
+                                'new_instance_id': new_share_instance_id,
+                                'share_id': share['id']}
+                raise exception.ShareMigrationFailed(reason=msg)
+
+        share_rpc = share_rpcapi.ShareAPI()
+        share_rpc.migration_complete(context, share, share_instance_id,
+                                     new_share_instance_id)
+
+    def migration_get_progress(self, context, share):
+
+        if share['task_state'] == (
+                constants.TASK_STATE_MIGRATION_DRIVER_IN_PROGRESS):
+
+            share_rpc = share_rpcapi.ShareAPI()
+            return share_rpc.migration_get_progress(context, share)
+
+        elif share['task_state'] == (
+                constants.TASK_STATE_DATA_COPYING_IN_PROGRESS):
+            data_rpc = data_rpcapi.DataAPI()
+            LOG.info(_LI("Sending request to get share migration information"
+                     " of share %s.") % share['id'])
+            return data_rpc.data_copy_get_progress(context, share['id'])
+
+        else:
+            msg = _("Migration of share %s data copy progress cannot be "
+                    "obtained at this moment.") % share['id']
+            LOG.error(msg)
+            raise exception.InvalidShare(reason=msg)
+
+    def migration_cancel(self, context, share):
+
+        if share['task_state'] == (
+                constants.TASK_STATE_MIGRATION_DRIVER_IN_PROGRESS):
+
+            share_rpc = share_rpcapi.ShareAPI()
+            share_rpc.migration_cancel(context, share)
+
+        elif share['task_state'] == (
+                constants.TASK_STATE_DATA_COPYING_IN_PROGRESS):
+
+            data_rpc = data_rpcapi.DataAPI()
+            LOG.info(_LI("Sending request to cancel migration of "
+                         "share %s.") % share['id'])
+            data_rpc.data_copy_cancel(context, share['id'])
+
+        else:
+            msg = _("Data copy for migration of share %s cannot be cancelled"
+                    " at this moment.") % share['id']
+            LOG.error(msg)
+            raise exception.InvalidShare(reason=msg)
 
     @policy.wrap_check_policy('share')
     def delete_snapshot(self, context, snapshot, force=False):
         statuses = (constants.STATUS_AVAILABLE, constants.STATUS_ERROR)
-        if not (force or snapshot['status'] in statuses):
+        if not (force or snapshot['aggregate_status'] in statuses):
             msg = _("Share Snapshot status must be one of %(statuses)s.") % {
                 "statuses": statuses}
             raise exception.InvalidShareSnapshot(reason=msg)
 
-        self.db.share_snapshot_update(context, snapshot['id'],
-                                      {'status': constants.STATUS_DELETING})
         share = self.db.share_get(context, snapshot['share_id'])
-        self.share_rpcapi.delete_snapshot(context, snapshot, share['host'])
+
+        snapshot_instances = (
+            self.db.share_snapshot_instance_get_all_with_filters(
+                context, {'snapshot_ids': snapshot['id']})
+        )
+
+        for snapshot_instance in snapshot_instances:
+            self.db.share_snapshot_instance_update(
+                context, snapshot_instance['id'],
+                {'status': constants.STATUS_DELETING})
+
+        if share['has_replicas']:
+            self.share_rpcapi.delete_replicated_snapshot(
+                context, snapshot, share['instance']['host'],
+                share_id=share['id'], force=force)
+        else:
+            self.share_rpcapi.delete_snapshot(context, snapshot,
+                                              share['instance']['host'])
 
     @policy.wrap_check_policy('share')
     def update(self, context, share, fields):
@@ -756,8 +1126,7 @@ class API(base.Base):
 
     def get_snapshot(self, context, snapshot_id):
         policy.check_policy(context, 'share_snapshot', 'get_snapshot')
-        rv = self.db.share_snapshot_get(context, snapshot_id)
-        return dict(six.iteritems(rv))
+        return self.db.share_snapshot_get(context, snapshot_id)
 
     def get_all_snapshots(self, context, search_opts=None,
                           sort_key='share_id', sort_dir='desc'):
@@ -793,7 +1162,7 @@ class API(base.Base):
             results = []
             not_found = object()
             for snapshot in snapshots:
-                for opt, value in six.iteritems(search_opts):
+                for opt, value in search_opts.items():
                     if snapshot.get(opt, not_found) != value:
                         break
                 else:
@@ -815,11 +1184,14 @@ class API(base.Base):
             'access_to': access_to,
             'access_level': access_level,
         }
-        for access in self.db.share_access_get_all_by_type_and_access(
-                ctx, share['id'], access_type, access_to):
-            if access['state'] != constants.STATUS_ERROR:
+
+        share_access_list = self.db.share_access_get_all_by_type_and_access(
+            ctx, share['id'], access_type, access_to)
+
+        if len(share_access_list) > 0:
                 raise exception.ShareAccessExists(access_type=access_type,
                                                   access=access_to)
+
         if access_level not in constants.ACCESS_LEVELS + (None, ):
             msg = _("Invalid share access level: %s.") % access_level
             raise exception.InvalidShareAccess(reason=msg)
@@ -827,6 +1199,10 @@ class API(base.Base):
 
         for share_instance in share.instances:
             self.allow_access_to_instance(ctx, share_instance, access)
+
+        # NOTE(tpsilva): refreshing share_access model
+        access = self.db.share_access_get(ctx, access['id'])
+
         return {
             'id': access['id'],
             'share_id': access['share_id'],
@@ -843,7 +1219,32 @@ class API(base.Base):
             msg = _("Invalid share instance host: %s") % share_instance['host']
             raise exception.InvalidShareInstance(reason=msg)
 
-        self.share_rpcapi.allow_access(context, share_instance, access)
+        status = share_instance['access_rules_status']
+
+        if status == constants.STATUS_ERROR:
+            values = {
+                'instance_id': share_instance['id'],
+                'status': status,
+                'valid_status': constants.STATUS_ACTIVE
+            }
+            msg = _("Share instance %(instance_id)s access rules status is: "
+                    "%(status)s. Please remove any incorrect rules to get it "
+                    "back to %(valid_status)s.") % values
+
+            raise exception.InvalidShareInstance(reason=msg)
+        else:
+            if status == constants.STATUS_ACTIVE:
+                self.db.share_instance_update_access_status(
+                    context, share_instance['id'],
+                    constants.STATUS_OUT_OF_SYNC
+                )
+            elif status == constants.STATUS_UPDATING:
+                self.db.share_instance_update_access_status(
+                    context, share_instance['id'],
+                    constants.STATUS_UPDATING_MULTIPLE
+                )
+
+            self.share_rpcapi.allow_access(context, share_instance, access)
 
     def deny_access(self, ctx, share, access):
         """Deny access to share."""
@@ -857,27 +1258,14 @@ class API(base.Base):
             msg = _("Share status must be %s") % constants.STATUS_AVAILABLE
             raise exception.InvalidShare(reason=msg)
 
-        # Then check state of the access rule
-        if (access['state'] == constants.STATUS_ERROR and not
-                self.db.share_instance_access_get_all(ctx, access['id'])):
-            self.db.share_access_delete(ctx, access["id"])
-
-        elif access['state'] in [constants.STATUS_ACTIVE,
-                                 constants.STATUS_ERROR]:
-            for share_instance in share.instances:
-                try:
-                    self.deny_access_to_instance(ctx, share_instance, access)
-                except exception.NotFound:
-                    LOG.warning(_LW("Access rule %(access_id)s not found "
-                                    "for instance %(instance_id)s.") % {
-                                'access_id': access['id'],
-                                'instance_id': share_instance['id']})
-        else:
-            msg = _("Access policy should be %(active)s or in %(error)s "
-                    "state") % {"active": constants.STATUS_ACTIVE,
-                                "error": constants.STATUS_ERROR}
-            raise exception.InvalidShareAccess(reason=msg)
-            # update share state and send message to manager
+        for share_instance in share.instances:
+            try:
+                self.deny_access_to_instance(ctx, share_instance, access)
+            except exception.NotFound:
+                LOG.warning(_LW("Access rule %(access_id)s not found "
+                                "for instance %(instance_id)s.") % {
+                    'access_id': access['id'],
+                    'instance_id': share_instance['id']})
 
     def deny_access_to_instance(self, context, share_instance, access):
         policy.check_policy(context, 'share', 'deny_access')
@@ -886,11 +1274,17 @@ class API(base.Base):
             msg = _("Invalid share instance host: %s") % share_instance['host']
             raise exception.InvalidShareInstance(reason=msg)
 
-        access_mapping = self.db.share_instance_access_get(
-            context, access['id'], share_instance['id'])
-        self.db.share_instance_access_update_state(
-            context, access_mapping['id'],
-            access_mapping.STATE_DELETING)
+        status = share_instance['access_rules_status']
+
+        if status != constants.STATUS_ERROR:
+            new_status = constants.STATUS_OUT_OF_SYNC
+
+            if status in constants.UPDATING_RULES_STATUSES:
+                new_status = constants.STATUS_UPDATING_MULTIPLE
+
+            self.db.share_instance_update_access_status(
+                context, share_instance['id'],
+                new_status)
 
         self.share_rpcapi.deny_access(context, share_instance, access)
 
@@ -902,7 +1296,8 @@ class API(base.Base):
                  'access_type': rule.access_type,
                  'access_to': rule.access_to,
                  'access_level': rule.access_level,
-                 'state': rule.state} for rule in rules]
+                 'state': rule.state,
+                 } for rule in rules]
 
     def access_get(self, context, access_id):
         """Returns access rule with the id."""
@@ -914,7 +1309,7 @@ class API(base.Base):
     def get_share_metadata(self, context, share):
         """Get all metadata associated with a share."""
         rv = self.db.share_metadata_get(context, share['id'])
-        return dict(six.iteritems(rv))
+        return dict(rv.items())
 
     @policy.wrap_check_policy('share')
     def delete_share_metadata(self, context, share, key):
@@ -935,7 +1330,7 @@ class API(base.Base):
         if not metadata:
             metadata = {}
 
-        for k, v in six.iteritems(metadata):
+        for k, v in metadata.items():
             if not k:
                 msg = _("Metadata property key is blank.")
                 LOG.warning(msg)
@@ -1004,9 +1399,13 @@ class API(base.Base):
             raise exception.InvalidInput(reason=msg)
 
         try:
+            # we give the user_id of the share, to update the quota usage
+            # for the user, who created the share, because on share delete
+            # only this quota will be decreased
             reservations = QUOTAS.reserve(context,
                                           project_id=share['project_id'],
-                                          gigabytes=size_increase)
+                                          gigabytes=size_increase,
+                                          user_id=share['user_id'])
         except exception.OverQuota as exc:
             usages = exc.kwargs['usages']
             quotas = exc.kwargs['quotas']

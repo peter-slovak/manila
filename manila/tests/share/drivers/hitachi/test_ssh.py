@@ -96,7 +96,7 @@ File system fake_fs successfully mounted."""
 
 HNAS_RESULT_quota = """Type            : Explicit
 Target          : ViVol: vvol_test
-Usage           : 0 B
+Usage           : 1 GB
   Limit         : 5 GB (Hard)
   Warning       : Unset
   Critical      : Unset
@@ -112,7 +112,7 @@ Last modified   : 2015-06-23 22:37:17.363660800+00:00 """
 
 HNAS_RESULT_quota_tb = """Type            : Explicit
 Target          : ViVol: vvol_test
-Usage           : 0 B
+Usage           : 1 TB
   Limit         : 1 TB (Hard)
   Warning       : Unset
   Critical      : Unset
@@ -128,7 +128,7 @@ Last modified   : 2015-06-23 22:37:17.363660800+00:00  """
 
 HNAS_RESULT_quota_mb = """Type            : Explicit
 Target          : ViVol: vvol_test
-Usage           : 0 B
+Usage           : 20 MB
   Limit         : 500 MB (Hard)
   Warning       : Unset
   Critical      : Unset
@@ -780,7 +780,7 @@ class HNASSSHTestCase(test.TestCase):
 
         result = self._driver_ssh.get_share_quota("vvol_test")
 
-        self.assertEqual(None, result)
+        self.assertIsNone(result)
 
     def test_get_share_quota_tb(self):
         self.mock_object(ssh.HNASSSHBackend, "_execute", mock.Mock(
@@ -797,6 +797,32 @@ class HNASSSHTestCase(test.TestCase):
         self.assertRaises(exception.HNASBackendException,
                           self._driver_ssh.get_share_quota, "vvol_test")
 
+    def test_get_share_usage(self):
+        self.mock_object(ssh.HNASSSHBackend, "_execute", mock.Mock(
+            return_value=(HNAS_RESULT_quota, '')))
+
+        self.assertEqual(1, self._driver_ssh.get_share_usage("vvol_test"))
+
+    def test_get_share_usage_error(self):
+        self.mock_object(ssh.HNASSSHBackend, "_execute", mock.Mock(
+            return_value=(HNAS_RESULT_quota_err, '')))
+
+        self.assertRaises(exception.HNASItemNotFoundException,
+                          self._driver_ssh.get_share_usage, "vvol_test")
+
+    def test_get_share_usage_mb(self):
+        self.mock_object(ssh.HNASSSHBackend, "_execute", mock.Mock(
+            return_value=(HNAS_RESULT_quota_mb, '')))
+
+        self.assertEqual(0.01953125, self._driver_ssh.get_share_usage(
+            "vvol_test"))
+
+    def test_get_share_usage_tb(self):
+        self.mock_object(ssh.HNASSSHBackend, "_execute", mock.Mock(
+            return_value=(HNAS_RESULT_quota_tb, '')))
+
+        self.assertEqual(1024, self._driver_ssh.get_share_usage("vvol_test"))
+
     def test__get_share_export(self):
         self.mock_object(ssh.HNASSSHBackend, '_execute',
                          mock.Mock(return_value=[HNAS_RESULT_export_ip, '']))
@@ -808,13 +834,23 @@ class HNASSSHTestCase(test.TestCase):
         self.assertEqual('fake_fs', export_list[0].file_system_label)
         self.assertEqual('Yes', export_list[0].mounted)
 
-    def test__get_share_export_exception(self):
-        output_msg = 'No exports are currently configured'
+    def test__get_share_export_exception_not_found(self):
 
-        self.mock_object(ssh.HNASSSHBackend, '_execute',
-                         mock.Mock(return_value=[output_msg, '']))
+        self.mock_object(ssh.HNASSSHBackend, "_execute", mock.Mock(
+            side_effect=putils.ProcessExecutionError(
+                stderr="NFS Export List: Export 'id' does not exist.")
+        ))
 
         self.assertRaises(exception.HNASItemNotFoundException,
+                          self._driver_ssh._get_share_export, 'fake_id')
+
+    def test__get_share_export_exception_error(self):
+
+        self.mock_object(ssh.HNASSSHBackend, "_execute", mock.Mock(
+            side_effect=putils.ProcessExecutionError(stderr="Some error.")
+        ))
+
+        self.assertRaises(putils.ProcessExecutionError,
                           self._driver_ssh._get_share_export, 'fake_id')
 
     def test__get_filesystem_list(self):
@@ -858,6 +894,7 @@ class HNASSSHTestCase(test.TestCase):
                           'tree-clone-job-submit -e /src /dst')
         msg = 'Failed to establish SSC connection'
 
+        self.mock_object(time, "sleep", mock.Mock())
         self.mock_object(paramiko.SSHClient, 'connect')
         self.mock_object(putils, 'ssh_execute',
                          mock.Mock(side_effect=[
@@ -872,6 +909,7 @@ class HNASSSHTestCase(test.TestCase):
 
         putils.ssh_execute.assert_called_with(mock.ANY, concat_command,
                                               check_exit_code=True)
+
         self.assertTrue(self.mock_log.debug.called)
         self.assertTrue(self.mock_log.error.called)
 
@@ -906,7 +944,7 @@ class HNASSSHTestCase(test.TestCase):
         self.assertTrue(self.mock_log.debug.called)
 
     def test__locked_selectfs_delete_exception(self):
-        msg = 'rmdir: cannot remove \'/path\': NotFound'
+        msg = 'rmdir: cannot remove \'/path\''
 
         self.mock_object(ssh.HNASSSHBackend, '_execute', mock.Mock(
             side_effect=[putils.ProcessExecutionError(stderr=msg)]))

@@ -146,6 +146,14 @@ def get_fake_collated_cg_snap_info():
     return fake_collated_cg_snap_info
 
 
+def get_fake_access_rule(access_to, access_level, access_type='ip'):
+    return {
+        'access_type': access_type,
+        'access_to': access_to,
+        'access_level': access_level,
+    }
+
+
 @ddt.ddt
 class GenericShareDriverTestCase(test.TestCase):
     """Tests GenericShareDriver."""
@@ -305,29 +313,6 @@ class GenericShareDriverTestCase(test.TestCase):
         self.assertRaises(exception.ManilaException,
                           self._driver._setup_helpers)
 
-    def test__get_access_rule_for_data_copy_dhss_true(self):
-        get_access_return = {
-            'access_level': 'rw',
-            'access_to': 'fake_ip',
-            'access_type': 'ip'
-        }
-
-        result = self._driver._get_access_rule_for_data_copy(
-            self._context, self.share, self.server)
-        self.assertEqual(get_access_return, result)
-
-    def test__get_access_rule_for_data_copy_dhss_false(self):
-        get_access_return = {
-            'access_level': 'rw',
-            'access_to': 'fake_ip',
-            'access_type': 'ip'
-        }
-        CONF.set_default('driver_handles_share_servers', False)
-        CONF.set_default('migration_data_copy_node_ip', 'fake_ip')
-        result = self._driver._get_access_rule_for_data_copy(
-            self._context, self.share, self.server)
-        self.assertEqual(get_access_return, result)
-
     def test_create_share(self):
         volume = 'fake_volume'
         volume2 = 'fake_volume2'
@@ -338,11 +323,11 @@ class GenericShareDriverTestCase(test.TestCase):
                          mock.Mock(return_value=volume2))
         self.mock_object(self._driver, '_format_device')
         self.mock_object(self._driver, '_mount_device')
-        expected_el = {
+        expected_el = [{
             'is_admin_only': False,
             'path': 'fakelocation',
             'metadata': {'export_location_metadata_example': 'example'},
-        }
+        }]
 
         result = self._driver.create_share(
             self._context, self.share, share_server=self.server)
@@ -369,11 +354,26 @@ class GenericShareDriverTestCase(test.TestCase):
         self.assertRaises(exception.InvalidShare, self._driver.create_share,
                           self._context, self.share, share_server=self.server)
 
+    def test_is_device_file_available(self):
+        volume = {'mountpoint': 'fake_mount_point'}
+        self.mock_object(self._driver, '_ssh_exec',
+                         mock.Mock(return_value=None))
+
+        self._driver._is_device_file_available(self.server, volume)
+
+        self._driver._ssh_exec.assert_called_once_with(
+            self.server, ['sudo', 'test', '-b', volume['mountpoint']])
+
     def test_format_device(self):
         volume = {'mountpoint': 'fake_mount_point'}
         self.mock_object(self._driver, '_ssh_exec',
                          mock.Mock(return_value=('', '')))
+        self.mock_object(self._driver, '_is_device_file_available')
+
         self._driver._format_device(self.server, volume)
+
+        self._driver._is_device_file_available.assert_called_once_with(
+            self.server, volume)
         self._driver._ssh_exec.assert_called_once_with(
             self.server,
             ['sudo', 'mkfs.%s' % self.fake_conf.share_volume_fstype,
@@ -976,6 +976,11 @@ class GenericShareDriverTestCase(test.TestCase):
         vol1 = 'fake_vol1'
         vol2 = 'fake_vol2'
         self._helper_nfs.create_export.return_value = 'fakelocation'
+        expected_el = [{
+            'is_admin_only': False,
+            'path': 'fakelocation',
+            'metadata': {'export_location_metadata_example': 'example'},
+        }]
         self.mock_object(self._driver, '_allocate_container',
                          mock.Mock(return_value=vol1))
         self.mock_object(self._driver, '_attach_volume',
@@ -988,7 +993,7 @@ class GenericShareDriverTestCase(test.TestCase):
             self.snapshot,
             share_server=self.server)
 
-        self.assertEqual('fakelocation', result)
+        self.assertEqual(expected_el, result)
         self._driver._allocate_container.assert_called_once_with(
             self._driver.admin_context, self.share, self.snapshot)
         self._driver._attach_volume.assert_called_once_with(
@@ -1193,38 +1198,25 @@ class GenericShareDriverTestCase(test.TestCase):
                           self._context, self.share, share_server=self.server)
 
     @ddt.data(const.ACCESS_LEVEL_RW, const.ACCESS_LEVEL_RO)
-    def test_allow_access(self, access_level):
-        access = {
-            'access_type': 'ip',
-            'access_to': 'fake_dest',
-            'access_level': access_level,
-        }
-        self._driver.allow_access(
-            self._context, self.share, access, share_server=self.server)
+    def test_update_access(self, access_level):
+
+        # fakes
+        access_rules = [get_fake_access_rule('1.1.1.1', access_level),
+                        get_fake_access_rule('2.2.2.2', access_level)]
+        add_rules = [get_fake_access_rule('2.2.2.2', access_level), ]
+        delete_rules = [get_fake_access_rule('3.3.3.3', access_level), ]
+
+        # run
+        self._driver.update_access(self._context, self.share, access_rules,
+                                   add_rules=add_rules,
+                                   delete_rules=delete_rules,
+                                   share_server=self.server)
+
+        # asserts
         self._driver._helpers[self.share['share_proto']].\
-            allow_access.assert_called_once_with(
+            update_access.assert_called_once_with(
                 self.server['backend_details'], self.share['name'],
-                access['access_type'], access['access_level'],
-                access['access_to'])
-
-    def test_allow_access_unsupported(self):
-        access = {
-            'access_type': 'ip',
-            'access_to': 'fake_dest',
-            'access_level': 'fakefoobar',
-        }
-        self.assertRaises(
-            exception.InvalidShareAccessLevel,
-            self._driver.allow_access,
-            self._context, self.share, access, share_server=self.server)
-
-    def test_deny_access(self):
-        access = 'fake_access'
-        self._driver.deny_access(
-            self._context, self.share, access, share_server=self.server)
-        self._driver._helpers[
-            self.share['share_proto']].deny_access.assert_called_once_with(
-                self.server['backend_details'], self.share['name'], access)
+                access_rules, add_rules=add_rules, delete_rules=delete_rules)
 
     @ddt.data(fake_share.fake_share(),
               fake_share.fake_share(share_proto='NFSBOGUS'),
@@ -1291,7 +1283,8 @@ class GenericShareDriverTestCase(test.TestCase):
             self.server['ip'], 22, ssh_conn_timeout, self.server['username'],
             self.server['password'], self.server['pk_path'], max_size=1)
         ssh_pool.create.assert_called_once_with()
-        processutils.ssh_execute.assert_called_once_with(ssh, 'fake command')
+        processutils.ssh_execute.assert_called_once_with(
+            ssh, 'fake command', check_exit_code=True)
         ssh.get_transport().is_active.assert_called_once_with()
         self.assertEqual(
             self._driver.ssh_connections,
@@ -1314,7 +1307,8 @@ class GenericShareDriverTestCase(test.TestCase):
 
         result = self._driver._ssh_exec(self.server, cmd)
 
-        processutils.ssh_execute.assert_called_once_with(ssh, 'fake command')
+        processutils.ssh_execute.assert_called_once_with(
+            ssh, 'fake command', check_exit_code=True)
         ssh.get_transport().is_active.assert_called_once_with()
         self.assertEqual(
             self._driver.ssh_connections,
@@ -1339,7 +1333,8 @@ class GenericShareDriverTestCase(test.TestCase):
 
         result = self._driver._ssh_exec(self.server, cmd)
 
-        processutils.ssh_execute.assert_called_once_with(ssh, 'fake command')
+        processutils.ssh_execute.assert_called_once_with(
+            ssh, 'fake command', check_exit_code=True)
         ssh.get_transport().is_active.assert_called_once_with()
         ssh_pool.create.assert_called_once_with()
         ssh_pool.remove.assert_called_once_with(ssh)
@@ -1997,6 +1992,46 @@ class GenericShareDriverTestCase(test.TestCase):
             FAKE_CG_DICT, FAKE_CGSNAP_DICT)
 
         self.assertEqual(FAKE_COLLATED_INFO, result)
+
+    def test_manage_snapshot_not_found(self):
+        snapshot_instance = {'id': 'snap_instance_id',
+                             'provider_location': 'vol_snap_id'}
+        driver_options = {}
+        self.mock_object(
+            self._driver.volume_api, 'get_snapshot',
+            mock.Mock(side_effect=exception.VolumeSnapshotNotFound(
+                      snapshot_id='vol_snap_id')))
+
+        self.assertRaises(exception.ManageInvalidShareSnapshot,
+                          self._driver.manage_existing_snapshot,
+                          snapshot_instance,
+                          driver_options)
+        self._driver.volume_api.get_snapshot.assert_called_once_with(
+            self._context, 'vol_snap_id')
+
+    def test_manage_snapshot_valid(self):
+        snapshot_instance = {'id': 'snap_instance_id',
+                             'provider_location': 'vol_snap_id'}
+        volume_snapshot = {'id': 'vol_snap_id', 'size': 1}
+        self.mock_object(self._driver.volume_api, 'get_snapshot',
+                         mock.Mock(return_value=volume_snapshot))
+        ret_manage = self._driver.manage_existing_snapshot(
+            snapshot_instance, {})
+
+        self.assertEqual({'provider_location': 'vol_snap_id',
+                          'size': 1}, ret_manage)
+
+        self._driver.volume_api.get_snapshot.assert_called_once_with(
+            self._context, 'vol_snap_id')
+
+    def test_unmanage_snapshot(self):
+        snapshot_instance = {'id': 'snap_instance_id',
+                             'provider_location': 'vol_snap_id'}
+        self.mock_object(self._driver.private_storage, 'delete')
+        self._driver.unmanage_snapshot(snapshot_instance)
+
+        self._driver.private_storage.delete.assert_called_once_with(
+            'snap_instance_id')
 
 
 @generic.ensure_server

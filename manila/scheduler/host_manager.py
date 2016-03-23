@@ -46,6 +46,7 @@ host_manager_opts = [
                     'CapacityFilter',
                     'CapabilitiesFilter',
                     'ConsistencyGroupFilter',
+                    'ShareReplicationFilter',
                 ],
                 help='Which filter class names to use for filtering hosts '
                      'when not specified in the request.'),
@@ -127,6 +128,8 @@ class HostState(object):
         self.consistency_group_support = False
         self.dedupe = False
         self.compression = False
+        self.replication_type = None
+        self.replication_domain = None
 
         # PoolState for all pools
         self.pools = {}
@@ -292,6 +295,12 @@ class HostState(object):
         if 'compression' not in pool_cap:
             pool_cap['compression'] = self.compression
 
+        if not pool_cap.get('replication_type'):
+            pool_cap['replication_type'] = self.replication_type
+
+        if not pool_cap.get('replication_domain'):
+            pool_cap['replication_domain'] = self.replication_domain
+
     def update_backend(self, capability):
         self.share_backend_name = capability.get('share_backend_name')
         self.vendor_name = capability.get('vendor_name')
@@ -303,6 +312,8 @@ class HostState(object):
         self.consistency_group_support = capability.get(
             'consistency_group_support', False)
         self.updated = capability['timestamp']
+        self.replication_type = capability.get('replication_type')
+        self.replication_domain = capability.get('replication_domain')
 
     def consume_from_share(self, share):
         """Incrementally update host state from an share."""
@@ -365,6 +376,10 @@ class PoolState(HostState):
                 'dedupe', False)
             self.compression = capability.get(
                 'compression', False)
+            self.replication_type = capability.get(
+                'replication_type', self.replication_type)
+            self.replication_domain = capability.get(
+                'replication_domain')
 
     def update_pools(self, capability):
         # Do nothing, since we don't have pools within pool, yet
@@ -487,15 +502,13 @@ class HostManager(object):
         topic = CONF.share_topic
         share_services = db.service_get_all_by_topic(context, topic)
 
+        active_hosts = set()
         for service in share_services:
             host = service['host']
 
             # Warn about down services and remove them from host_state_map
             if not utils.service_is_up(service) or service['disabled']:
                 LOG.warning(_LW("Share service is down. (host: %s).") % host)
-                if self.host_state_map.pop(host, None):
-                    LOG.info(_LI("Removing non-active host: %s from "
-                                 "scheduler cache.") % host)
                 continue
 
             # Create and register host_state if not in host_state_map
@@ -505,12 +518,20 @@ class HostManager(object):
                 host_state = self.host_state_cls(
                     host,
                     capabilities=capabilities,
-                    service=dict(six.iteritems(service)))
+                    service=dict(service.items()))
                 self.host_state_map[host] = host_state
 
             # Update capabilities and attributes in host_state
             host_state.update_from_share_capability(
-                capabilities, service=dict(six.iteritems(service)))
+                capabilities, service=dict(service.items()))
+            active_hosts.add(host)
+
+        # remove non-active hosts from host_state_map
+        nonactive_hosts = set(self.host_state_map.keys()) - active_hosts
+        for host in nonactive_hosts:
+            LOG.info(_LI("Removing non-active host: %(host)s from"
+                         "scheduler cache."), {'host': host})
+            self.host_state_map.pop(host, None)
 
     def get_all_host_states_share(self, context):
         """Returns a dict of all the hosts the HostManager knows about.
@@ -579,7 +600,7 @@ class HostManager(object):
         if not filter_dict:
             return True
 
-        for filter_key, filter_value in six.iteritems(filter_dict):
+        for filter_key, filter_value in filter_dict.items():
             if filter_key not in dict_to_check:
                 return False
             if not re.match(filter_value, dict_to_check.get(filter_key)):

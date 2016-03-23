@@ -103,10 +103,27 @@ class SchedulerRpcAPITestCase(test.TestCase):
 
     def test_migrate_share_to_host(self):
         self._test_scheduler_api('migrate_share_to_host',
-                                 rpc_method='cast',
+                                 rpc_method='call',
                                  share_id='share_id',
                                  host='host',
                                  force_host_copy=True,
+                                 notify=True,
                                  request_spec='fake_request_spec',
                                  filter_properties='filter_properties',
                                  version='1.4')
+
+    def test_create_share_replica(self):
+        self._test_scheduler_api('create_share_replica',
+                                 rpc_method='cast',
+                                 request_spec='fake_request_spec',
+                                 filter_properties='filter_properties',
+                                 version='1.5')
+
+    def test_manage_share(self):
+        self._test_scheduler_api('manage_share',
+                                 rpc_method='call',
+                                 share_id='share_id',
+                                 driver_options='fake_driver_options',
+                                 request_spec='fake_request_spec',
+                                 filter_properties='filter_properties',
+                                 version='1.6')

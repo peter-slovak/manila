@@ -75,3 +75,135 @@ class ShareTestCase(test.TestCase):
         share = db_utils.create_share(status=constants.STATUS_CREATING)
 
         self.assertEqual(constants.STATUS_CREATING, share.instance['status'])
+
+    @ddt.data(constants.STATUS_AVAILABLE, constants.STATUS_ERROR,
+              constants.STATUS_CREATING)
+    def test_share_instance_replication_change(self, status):
+
+        instance_list = [
+            db_utils.create_share_instance(
+                status=constants.STATUS_REPLICATION_CHANGE,
+                share_id='fake_id'),
+            db_utils.create_share_instance(
+                status=status, share_id='fake_id'),
+            db_utils.create_share_instance(
+                status=constants.STATUS_ERROR_DELETING, share_id='fake_id')
+        ]
+
+        share1 = db_utils.create_share(instances=instance_list)
+        share2 = db_utils.create_share(instances=list(reversed(instance_list)))
+
+        self.assertEqual(
+            constants.STATUS_REPLICATION_CHANGE, share1.instance['status'])
+        self.assertEqual(
+            constants.STATUS_REPLICATION_CHANGE, share2.instance['status'])
+
+    def test_share_instance_prefer_active_instance(self):
+
+        instance_list = [
+            db_utils.create_share_instance(
+                status=constants.STATUS_AVAILABLE,
+                share_id='fake_id',
+                replica_state=constants.REPLICA_STATE_IN_SYNC),
+            db_utils.create_share_instance(
+                status=constants.STATUS_CREATING,
+                share_id='fake_id',
+                replica_state=constants.REPLICA_STATE_OUT_OF_SYNC),
+            db_utils.create_share_instance(
+                status=constants.STATUS_ERROR, share_id='fake_id',
+                replica_state=constants.REPLICA_STATE_ACTIVE),
+            db_utils.create_share_instance(
+                status=constants.STATUS_MANAGING, share_id='fake_id',
+                replica_state=constants.REPLICA_STATE_ACTIVE),
+        ]
+
+        share1 = db_utils.create_share(instances=instance_list)
+        share2 = db_utils.create_share(instances=list(reversed(instance_list)))
+
+        self.assertEqual(
+            constants.STATUS_ERROR, share1.instance['status'])
+        self.assertEqual(
+            constants.STATUS_ERROR, share2.instance['status'])
+
+    def test_access_rules_status_no_instances(self):
+        share = db_utils.create_share(instances=[])
+
+        self.assertEqual(constants.STATUS_ACTIVE, share.access_rules_status)
+
+    @ddt.data(constants.STATUS_ACTIVE, constants.STATUS_OUT_OF_SYNC,
+              constants.STATUS_ERROR)
+    def test_access_rules_status(self, access_status):
+        instances = [
+            db_utils.create_share_instance(
+                share_id='fake_id', status=constants.STATUS_ERROR,
+                access_rules_status=constants.STATUS_ACTIVE),
+            db_utils.create_share_instance(
+                share_id='fake_id', status=constants.STATUS_AVAILABLE,
+                access_rules_status=constants.STATUS_ACTIVE),
+            db_utils.create_share_instance(
+                share_id='fake_id', status=constants.STATUS_AVAILABLE,
+                access_rules_status=access_status),
+        ]
+
+        share = db_utils.create_share(instances=instances)
+
+        self.assertEqual(access_status, share.access_rules_status)
+
+
+@ddt.ddt
+class ShareSnapshotTestCase(test.TestCase):
+    """Testing of SQLAlchemy ShareSnapshot model class."""
+
+    def test_instance_and_proxified_properties(self):
+
+        in_sync_replica_instance = db_utils.create_share_instance(
+            status=constants.STATUS_AVAILABLE, share_id='fake_id',
+            replica_state=constants.REPLICA_STATE_IN_SYNC)
+        active_replica_instance = db_utils.create_share_instance(
+            status=constants.STATUS_AVAILABLE, share_id='fake_id',
+            replica_state=constants.REPLICA_STATE_ACTIVE)
+        out_of_sync_replica_instance = db_utils.create_share_instance(
+            status=constants.STATUS_ERROR, share_id='fake_id',
+            replica_state=constants.REPLICA_STATE_OUT_OF_SYNC)
+        non_replica_instance = db_utils.create_share_instance(
+            status=constants.STATUS_CREATING, share_id='fake_id')
+        share_instances = [
+            in_sync_replica_instance, active_replica_instance,
+            out_of_sync_replica_instance, non_replica_instance,
+        ]
+        share = db_utils.create_share(instances=share_instances)
+        snapshot_instance_list = [
+            db_utils.create_snapshot_instance(
+                'fake_snapshot_id',
+                status=constants.STATUS_CREATING,
+                share_instance_id=out_of_sync_replica_instance['id']),
+            db_utils.create_snapshot_instance(
+                'fake_snapshot_id',
+                status=constants.STATUS_ERROR,
+                share_instance_id=in_sync_replica_instance['id']),
+            db_utils.create_snapshot_instance(
+                'fake_snapshot_id',
+                status=constants.STATUS_AVAILABLE,
+                provider_location='hogsmeade:snapshot1',
+                progress='87%',
+                share_instance_id=active_replica_instance['id']),
+            db_utils.create_snapshot_instance(
+                'fake_snapshot_id',
+                status=constants.STATUS_MANAGING,
+                share_instance_id=non_replica_instance['id']),
+        ]
+        snapshot = db_utils.create_snapshot(
+            id='fake_snapshot_id', share_id=share['id'],
+            instances=snapshot_instance_list)
+
+        # Proxified properties
+        self.assertEqual(constants.STATUS_AVAILABLE, snapshot['status'])
+        self.assertEqual(constants.STATUS_ERROR, snapshot['aggregate_status'])
+        self.assertEqual('hogsmeade:snapshot1', snapshot['provider_location'])
+        self.assertEqual('87%', snapshot['progress'])
+
+        # Snapshot properties
+        expected_share_name = '-'.join(['share', share['id']])
+        self.assertEqual(expected_share_name, snapshot['share_name'])
+        self.assertEqual(active_replica_instance['id'],
+                         snapshot['instance']['share_instance_id'])

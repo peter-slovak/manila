@@ -50,6 +50,7 @@ import manila.scheduler.weighers.pool
 import manila.service
 import manila.share.api
 import manila.share.driver
+import manila.share.drivers.cephfs.cephfs_native
 import manila.share.drivers.emc.driver
 import manila.share.drivers.emc.plugins.isilon.isilon
 import manila.share.drivers.generic
@@ -66,8 +67,10 @@ import manila.share.drivers.ibm.gpfs
 import manila.share.drivers.netapp.options
 import manila.share.drivers.quobyte.quobyte
 import manila.share.drivers.service_instance
+import manila.share.drivers.tegile.tegile
 import manila.share.drivers.windows.service_instance
 import manila.share.drivers.windows.winrm_helper
+import manila.share.drivers.zfsonlinux.driver
 import manila.share.drivers.zfssa.zfssashare
 import manila.share.drivers_private_data
 import manila.share.hook
@@ -112,6 +115,7 @@ _global_opt_lists = [
     manila.share.driver.share_opts,
     manila.share.driver.ssh_opts,
     manila.share.drivers_private_data.private_data_opts,
+    manila.share.drivers.cephfs.cephfs_native.cephfs_native_opts,
     manila.share.drivers.emc.driver.EMC_NAS_OPTS,
     manila.share.drivers.generic.share_opts,
     manila.share.drivers.glusterfs.common.glusterfs_common_opts,
@@ -130,12 +134,15 @@ _global_opt_lists = [
     manila.share.drivers.netapp.options.netapp_transport_opts,
     manila.share.drivers.netapp.options.netapp_basicauth_opts,
     manila.share.drivers.netapp.options.netapp_provisioning_opts,
+    manila.share.drivers.netapp.options.netapp_replication_opts,
     manila.share.drivers.quobyte.quobyte.quobyte_manila_share_opts,
     manila.share.drivers.service_instance.common_opts,
     manila.share.drivers.service_instance.no_share_servers_handling_mode_opts,
     manila.share.drivers.service_instance.share_servers_handling_mode_opts,
+    manila.share.drivers.tegile.tegile.tegile_opts,
     manila.share.drivers.windows.service_instance.windows_share_server_opts,
     manila.share.drivers.windows.winrm_helper.winrm_opts,
+    manila.share.drivers.zfsonlinux.driver.zfsonlinux_opts,
     manila.share.drivers.zfssa.zfssashare.ZFSSA_OPTS,
     manila.share.hook.hook_options,
     manila.share.manager.share_manager_opts,
@@ -153,6 +160,9 @@ _opts.extend(oslo_concurrency.opts.list_opts())
 _opts.extend(oslo_log._options.list_opts())
 _opts.extend(oslo_middleware.opts.list_opts())
 _opts.extend(oslo_policy.opts.list_opts())
+_opts.extend(manila.network.neutron.api.list_opts())
+_opts.extend(manila.compute.nova.list_opts())
+_opts.extend(manila.volume.cinder.list_opts())
 
 
 def list_opts():

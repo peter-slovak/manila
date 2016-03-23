@@ -15,6 +15,7 @@
 
 from oslo_concurrency import processutils
 from oslo_log import log
+from oslo_utils import strutils
 from oslo_utils import units
 import paramiko
 import six
@@ -232,7 +233,7 @@ class HNASSSHBackend(object):
         except processutils.ProcessExecutionError as e:
             if 'Source path: Cannot access' in e.stderr:
                 LOG.debug("Share %(shr)s does not exist.",
-                          {'shr': six.text_type(vvol_name)})
+                          {'shr': vvol_name})
             else:
                 msg = six.text_type(e)
                 LOG.exception(msg)
@@ -280,7 +281,7 @@ class HNASSSHBackend(object):
             raise exception.HNASItemNotFoundException(msg=msg)
 
     def get_share_quota(self, share_id):
-        command = ['quota', 'list', self.fs_name, six.text_type(share_id)]
+        command = ['quota', 'list', self.fs_name, share_id]
         output, err = self._execute(command)
 
         quota = Quota(output)
@@ -297,26 +298,42 @@ class HNASSSHBackend(object):
                      "below 1G.") % share_id)
             raise exception.HNASBackendException(msg=msg)
 
-    def _get_share_export(self, share_id):
-        share_id = '/shares/' + share_id
-        command = ['nfs-export', 'list ', six.text_type(share_id)]
+    def get_share_usage(self, share_id):
+        command = ['quota', 'list', self.fs_name, share_id]
         output, err = self._execute(command)
-        export_list = []
 
-        if 'No exports are currently configured' in output:
-            msg = _("Export %(share)s was not found in EVS "
-                    "%(evs_id)s") % {'share': share_id,
-                                     'evs_id': self.evs_id}
+        quota = Quota(output)
+
+        if quota.usage is None:
+            msg = (_("Virtual volume %s does not have any quota.") % share_id)
             raise exception.HNASItemNotFoundException(msg=msg)
         else:
-            items = output.split('Export name')
+            bytes_usage = strutils.string_to_bytes(six.text_type(quota.usage) +
+                                                   quota.usage_unit)
+            return bytes_usage / units.Gi
 
-            if items[0][0] == '\n':
-                items.pop(0)
+    def _get_share_export(self, share_id):
+        share_id = '/shares/' + share_id
+        command = ['nfs-export', 'list ', share_id]
+        export_list = []
+        try:
+            output, err = self._execute(command)
+        except processutils.ProcessExecutionError as e:
+            if 'does not exist' in e.stderr:
+                msg = _("Export %(share)s was not found in EVS "
+                        "%(evs_id)s") % {'share': share_id,
+                                         'evs_id': self.evs_id}
+                raise exception.HNASItemNotFoundException(msg=msg)
+            else:
+                raise
+        items = output.split('Export name')
 
-            for i in range(0, len(items)):
-                export_list.append(Export(items[i]))
-            return export_list
+        if items[0][0] == '\n':
+            items.pop(0)
+
+        for i in range(0, len(items)):
+            export_list.append(Export(items[i]))
+        return export_list
 
     def _get_filesystem_list(self):
         command = ['filesystem-list', self.fs_name]
@@ -402,6 +419,9 @@ class HNASSSHBackend(object):
                 if 'DirectoryNotEmpty' in e.stderr:
                     LOG.debug("Share %(path)s has more snapshots.",
                               {'path': path})
+                elif 'NotFound' in e.stderr:
+                    LOG.warning(_LW("Attempted to delete path %s but it does "
+                                    "not exist."), path)
                 else:
                     msg = six.text_type(e)
                     LOG.exception(msg)

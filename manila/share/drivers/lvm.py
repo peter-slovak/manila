@@ -35,7 +35,6 @@ from manila.i18n import _LW
 from manila.share import driver
 from manila.share.drivers import generic
 
-
 LOG = log.getLogger(__name__)
 
 share_opts = [
@@ -67,14 +66,15 @@ CONF.register_opts(generic.share_opts)
 class LVMMixin(driver.ExecuteMixin):
     def check_for_setup_error(self):
         """Returns an error if prerequisites aren't met."""
-        out, err = self._execute('sudo', 'vgs', '--noheadings', '-o', 'name')
+        out, err = self._execute('vgs', '--noheadings', '-o', 'name',
+                                 run_as_root=True)
         volume_groups = out.split()
         if self.configuration.lvm_share_volume_group not in volume_groups:
             msg = (_("share volume group %s doesn't exist")
                    % self.configuration.lvm_share_volume_group)
             raise exception.InvalidParameterValue(err=msg)
         if not self.configuration.lvm_share_export_ip:
-            msg = (_("share_export_ip isn't specified"))
+            msg = (_("lvm_share_export_ip isn't specified"))
             raise exception.InvalidParameterValue(err=msg)
 
     def _allocate_container(self, share):
@@ -143,13 +143,15 @@ class LVMShareDriver(LVMMixin, driver.ShareDriver):
         self.share_server = {
             'public_address': self.configuration.lvm_share_export_ip,
             'instance_id': self.backend_name,
+            'lock_name': 'manila_lvm',
         }
 
-    def _ssh_exec_as_root(self, server, command):
+    def _ssh_exec_as_root(self, server, command, check_exit_code=True):
         kwargs = {}
         if 'sudo' in command:
             kwargs['run_as_root'] = True
             command.remove('sudo')
+        kwargs['check_exit_code'] = check_exit_code
         return self._execute(*command, **kwargs)
 
     def do_setup(self, context):
@@ -190,9 +192,10 @@ class LVMShareDriver(LVMMixin, driver.ShareDriver):
         super(LVMShareDriver, self)._update_share_stats(data)
 
     def get_share_server_pools(self, share_server=None):
-        out, err = self._execute('sudo', 'vgs',
+        out, err = self._execute('vgs',
                                  self.configuration.lvm_share_volume_group,
-                                 '--rows')
+                                 '--rows', '--units', 'g',
+                                 run_as_root=True)
         total_size = re.findall("VSize\s[0-9.]+g", out)[0][6:-1]
         free_size = re.findall("VFree\s[0-9.]+g", out)[0][6:-1]
         return [{
@@ -263,17 +266,34 @@ class LVMShareDriver(LVMMixin, driver.ShareDriver):
         except exception.InvalidShare as exc:
             LOG.warning(exc.message)
 
-    def allow_access(self, ctx, share, access, share_server=None):
-        """Allow access to the share."""
-        self._get_helper(share).allow_access(self.share_server, share['name'],
-                                             access['access_type'],
-                                             access['access_level'],
-                                             access['access_to'])
+    def update_access(self, context, share, access_rules, add_rules,
+                      delete_rules, share_server=None):
+        """Update access rules for given share.
 
-    def deny_access(self, ctx, share, access, share_server=None):
-        """Deny access to the share."""
-        self._get_helper(share).deny_access(self.share_server, share['name'],
-                                            access)
+        This driver has two different behaviors according to parameters:
+        1. Recovery after error - 'access_rules' contains all access_rules,
+        'add_rules' and 'delete_rules' shall be empty. Previously existing
+        access rules are cleared and then added back according
+        to 'access_rules'.
+
+        2. Adding/Deleting of several access rules - 'access_rules' contains
+        all access_rules, 'add_rules' and 'delete_rules' contain rules which
+        should be added/deleted. Rules in 'access_rules' are ignored and
+        only rules from 'add_rules' and 'delete_rules' are applied.
+
+        :param context: Current context
+        :param share: Share model with share data.
+        :param access_rules: All access rules for given share
+        :param add_rules: Empty List or List of access rules which should be
+               added. access_rules already contains these rules.
+        :param delete_rules: Empty List or List of access rules which should be
+               removed. access_rules doesn't contain these rules.
+        :param share_server: None or Share server model
+        """
+        self._get_helper(share).update_access(self.share_server,
+                                              share['name'], access_rules,
+                                              add_rules=add_rules,
+                                              delete_rules=delete_rules)
 
     def _get_helper(self, share):
         if share['share_proto'].lower().startswith('nfs'):

@@ -15,6 +15,7 @@
 
 import copy
 
+from manila.common import constants
 import manila.tests.share.drivers.netapp.fakes as na_fakes
 
 
@@ -89,6 +90,7 @@ SHARE = {
     'network_info': {
         'network_allocations': [{'ip_address': 'ip'}]
     },
+    'replica_state': constants.REPLICA_STATE_ACTIVE,
 }
 
 FLEXVOL_TO_MANAGE = {
@@ -209,18 +211,41 @@ REMAPPED_OVERLAPPING_EXTRA_SPEC = {
 EXTRA_SPEC_SHARE = copy.deepcopy(SHARE)
 EXTRA_SPEC_SHARE['share_type_id'] = SHARE_TYPE_ID
 
+USER_NETWORK_ALLOCATIONS = [
+    {
+        'id': '132dbb10-9a36-46f2-8d89-3d909830c356',
+        'ip_address': '10.10.10.10',
+        'cidr': '10.10.10.0/24',
+        'segmentation_id': '1000',
+        'network_type': 'vlan',
+        'label': 'user',
+    },
+    {
+        'id': '7eabdeed-bad2-46ea-bd0f-a33884c869e0',
+        'ip_address': '10.10.10.20',
+        'cidr': '10.10.10.0/24',
+        'segmentation_id': '1000',
+        'network_type': 'vlan',
+        'label': 'user',
+    }
+]
+
+ADMIN_NETWORK_ALLOCATIONS = [
+    {
+        'id': '132dbb10-9a36-46f2-8d89-3d909830c356',
+        'ip_address': '10.10.20.10',
+        'cidr': '10.10.20.0/24',
+        'segmentation_id': None,
+        'network_type': 'flat',
+        'label': 'admin',
+    },
+]
+
 NETWORK_INFO = {
     'server_id': '56aafd02-4d44-43d7-b784-57fc88167224',
-    'cidr': '10.0.0.0/24',
     'security_services': ['fake_ldap', 'fake_kerberos', 'fake_ad', ],
-    'segmentation_id': '1000',
-    'network_type': 'vlan',
-    'network_allocations': [
-        {'id': '132dbb10-9a36-46f2-8d89-3d909830c356',
-         'ip_address': '10.10.10.10'},
-        {'id': '7eabdeed-bad2-46ea-bd0f-a33884c869e0',
-         'ip_address': '10.10.10.20'}
-    ],
+    'network_allocations': USER_NETWORK_ALLOCATIONS,
+    'admin_network_allocations': ADMIN_NETWORK_ALLOCATIONS,
     'neutron_subnet_id': '62bf1c2c-18eb-421b-8983-48a6d39aafe0',
 }
 NETWORK_INFO_NETMASK = '255.255.255.0'
@@ -229,13 +254,17 @@ SHARE_SERVER = {
     'share_network_id': 'c5b3a865-56d0-4d88-abe5-879965e099c9',
     'backend_details': {
         'vserver_name': VSERVER1
-    }
+    },
+    'network_allocations': (USER_NETWORK_ALLOCATIONS +
+                            ADMIN_NETWORK_ALLOCATIONS),
 }
 
 SNAPSHOT = {
     'id': SNAPSHOT_ID,
     'project_id': TENANT_ID,
-    'share_id': PARENT_SHARE_ID
+    'share_id': PARENT_SHARE_ID,
+    'status': constants.STATUS_CREATING,
+    'provider_location': None,
 }
 
 CDOT_SNAPSHOT = {
@@ -252,11 +281,25 @@ CDOT_SNAPSHOT_BUSY_VOLUME_CLONE = {
     'owners': {'volume clone'},
 }
 
+CDOT_SNAPSHOT_BUSY_SNAPMIRROR = {
+    'name': SNAPSHOT_NAME,
+    'volume': SHARE_NAME,
+    'busy': True,
+    'owners': {'snapmirror'},
+}
+
+CDOT_CLONE_CHILD_1 = 'fake_child_1'
+CDOT_CLONE_CHILD_2 = 'fake_child_2'
+CDOT_CLONE_CHILDREN = [
+    {'name': CDOT_CLONE_CHILD_1},
+    {'name': CDOT_CLONE_CHILD_2},
+]
+
 SHARE_FOR_CG1 = {
     'id': SHARE_ID,
     'host': '%(host)s@%(backend)s#%(pool)s' % {
         'host': HOST_NAME, 'backend': BACKEND_NAME, 'pool': POOL_NAME},
-    'name': 'share1',
+    'name': 'share_1',
     'share_proto': 'NFS',
     'source_cgsnapshot_member_id': None,
 }
@@ -265,7 +308,7 @@ SHARE_FOR_CG2 = {
     'id': SHARE_ID2,
     'host': '%(host)s@%(backend)s#%(pool)s' % {
         'host': HOST_NAME, 'backend': BACKEND_NAME, 'pool': POOL_NAME},
-    'name': 'share2',
+    'name': 'share_2',
     'share_proto': 'NFS',
     'source_cgsnapshot_member_id': None,
 }
@@ -380,8 +423,33 @@ LIFS = (
      },
 )
 
-NFS_EXPORTS = [':'.join([LIF_ADDRESSES[0], 'fake_export_path']),
-               ':'.join([LIF_ADDRESSES[1], 'fake_export_path'])]
+INTERFACE_ADDRESSES_WITH_METADATA = {
+    LIF_ADDRESSES[0]: {
+        'is_admin_only': False,
+        'preferred': True,
+    },
+    LIF_ADDRESSES[1]: {
+        'is_admin_only': True,
+        'preferred': False,
+    },
+}
+
+NFS_EXPORTS = [
+    {
+        'path': ':'.join([LIF_ADDRESSES[0], 'fake_export_path']),
+        'is_admin_only': False,
+        'metadata': {
+            'preferred': True,
+        },
+    },
+    {
+        'path': ':'.join([LIF_ADDRESSES[1], 'fake_export_path']),
+        'is_admin_only': True,
+        'metadata': {
+            'preferred': False,
+        },
+    },
+]
 
 SHARE_ACCESS = {
     'access_type': 'user',
@@ -512,4 +580,5 @@ def get_config_cmode():
     config.netapp_root_volume = ROOT_VOLUME
     config.netapp_lif_name_template = LIF_NAME_TEMPLATE
     config.netapp_volume_snapshot_reserve_percent = 8
+    config.netapp_vserver = VSERVER1
     return config

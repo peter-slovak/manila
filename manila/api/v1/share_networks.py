@@ -97,13 +97,14 @@ class ShareNetworkController(wsgi.Controller):
         try:
             reservations = QUOTAS.reserve(
                 context, project_id=share_network['project_id'],
-                share_networks=-1)
+                share_networks=-1, user_id=share_network['user_id'])
         except Exception:
             LOG.exception(_LE("Failed to update usages deleting "
                               "share-network."))
         else:
             QUOTAS.commit(context, reservations,
-                          project_id=share_network['project_id'])
+                          project_id=share_network['project_id'],
+                          user_id=share_network['user_id'])
         return webob.Response(status_int=202)
 
     def _get_share_networks(self, req, is_detail=True):
@@ -164,7 +165,7 @@ class ShareNetworkController(wsgi.Controller):
         for opt in opts_to_remove:
             search_opts.pop(opt, None)
         if search_opts:
-            for key, value in six.iteritems(search_opts):
+            for key, value in search_opts.items():
                 if key in ['ip_version', 'segmentation_id']:
                     value = int(value)
                 networks = [network for network in networks
@@ -247,6 +248,7 @@ class ShareNetworkController(wsgi.Controller):
 
         values = body[RESOURCE_NAME]
         values['project_id'] = context.project_id
+        values['user_id'] = context.user_id
         self._verify_no_mutually_exclusive_data(values)
 
         try:
@@ -284,7 +286,7 @@ class ShareNetworkController(wsgi.Controller):
             'add_security_service': self._add_security_service,
             'remove_security_service': self._remove_security_service
         }
-        for action, data in six.iteritems(body):
+        for action, data in body.items():
             try:
                 return _actions[action](req, id, data)
             except KeyError:

@@ -105,7 +105,7 @@ def _conf2json(conf):
             js_token_list.append(word)
     js_token_list.append("}")
 
-    # group quouted strings
+    # group quoted strings
     token_grp_list = []
     for tok in js_token_list:
         if tok[0] == '"':
@@ -128,7 +128,7 @@ def _conf2json(conf):
 def _dump_to_conf(confdict, out=sys.stdout, indent=0):
     """Output confdict in Ganesha config format."""
     if isinstance(confdict, dict):
-        for k, v in six.iteritems(confdict):
+        for k, v in confdict.items():
             if v is None:
                 continue
             out.write(' ' * (indent * IWIDTH) + k + ' ')
@@ -212,7 +212,7 @@ class GaneshaManager(object):
                      '100);', run_as_root=False, check_exit_code=False)
         self.get_export_id(bump=False)
         # Starting from empty state. State will be rebuilt in a later
-        # stage of service initalization.
+        # stage of service initialization.
         self.reset_exports()
         self.restart_service()
 

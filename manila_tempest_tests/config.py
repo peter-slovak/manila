@@ -36,7 +36,7 @@ ShareGroup = [
                help="The minimum api microversion is configured to be the "
                     "value of the minimum microversion supported by Manila."),
     cfg.StrOpt("max_api_microversion",
-               default="2.9",
+               default="2.15",
                help="The maximum api microversion is configured to be the "
                     "value of the latest microversion supported by Manila."),
     cfg.StrOpt("region",
@@ -73,6 +73,9 @@ ShareGroup = [
     cfg.ListOpt("enable_cert_rules_for_protocols",
                 default=["glusterfs", ],
                 help="Protocols that should be covered with cert rule tests."),
+    cfg.ListOpt("enable_cephx_rules_for_protocols",
+                default=["cephfs", ],
+                help="Protocols to be covered with cephx rule tests."),
     cfg.StrOpt("username_for_user_rules",
                default="Administrator",
                help="Username, that will be used in user tests."),
@@ -128,13 +131,11 @@ ShareGroup = [
                 help="Whether to suppress errors with clean up operation "
                      "or not. There are cases when we may want to skip "
                      "such errors and catch only test errors."),
-    cfg.BoolOpt("run_manage_unmanage_tests",
-                default=False,
-                help="Defines whether to run manage/unmanage tests or not. "
-                     "These test may leave orphaned resources, so be careful "
-                     "enabling this opt."),
 
     # Switching ON/OFF test suites filtered by features
+    cfg.BoolOpt("run_quota_tests",
+                default=True,
+                help="Defines whether to run quota tests or not."),
     cfg.BoolOpt("run_extend_tests",
                 default=True,
                 help="Defines whether to run share extend tests or not. "
@@ -155,9 +156,24 @@ ShareGroup = [
                 help="Defines whether to run consistency group tests or not. "
                      "Disable this feature if used driver doesn't support "
                      "it."),
+    cfg.BoolOpt("run_replication_tests",
+                default=False,
+                help="Defines whether to run replication tests or not. "
+                     "Enable this feature if the driver is configured "
+                     "for replication."),
     cfg.BoolOpt("run_migration_tests",
                 default=False,
                 help="Enable or disable migration tests."),
+    cfg.BoolOpt("run_manage_unmanage_tests",
+                default=False,
+                help="Defines whether to run manage/unmanage tests or not. "
+                     "These test may leave orphaned resources, so be careful "
+                     "enabling this opt."),
+    cfg.BoolOpt("run_manage_unmanage_snapshot_tests",
+                default=False,
+                help="Defines whether to run manage/unmanage snapshot tests "
+                     "or not. These tests may leave orphaned resources, so be "
+                     "careful enabling this opt."),
 
     cfg.StrOpt("image_with_share_tools",
                default="manila-service-image",
@@ -172,9 +188,13 @@ ShareGroup = [
                default="100",
                help="Flavor used for client vm in scenario tests."),
     cfg.IntOpt("migration_timeout",
-               default=1200,
+               default=1500,
                help="Time to wait for share migration before "
                     "timing out (seconds)."),
     cfg.StrOpt("default_share_type_name",
                help="Default share type name to use in tempest tests."),
+    cfg.StrOpt("backend_replication_type",
+               default='none',
+               choices=['none', 'writable', 'readable', 'dr'],
+               help="Specify the replication type supported by the backend."),
 ]

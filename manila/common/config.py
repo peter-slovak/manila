@@ -28,6 +28,7 @@ import socket
 
 from oslo_config import cfg
 from oslo_log import log
+from oslo_middleware import cors
 from oslo_utils import netutils
 import six
 
@@ -45,7 +46,10 @@ core_opts = [
                help='File name for the paste.deploy config for manila-api.'),
     cfg.StrOpt('state_path',
                default='/var/lib/manila',
-               help="Top-level directory for maintaining manila's state."), ]
+               help="Top-level directory for maintaining manila's state."),
+    cfg.StrOpt('os_region_name',
+               help='Region name of this node.'),
+]
 
 debug_opts = [
 ]
@@ -63,6 +67,9 @@ global_opts = [
     cfg.StrOpt('share_topic',
                default='manila-share',
                help='The topic share nodes listen on.'),
+    cfg.StrOpt('data_topic',
+               default='manila-data',
+               help='The topic data nodes listen on.'),
     cfg.BoolOpt('enable_v1_api',
                 default=False,
                 help=_('Deploy v1 of the Manila API. This option is '
@@ -81,9 +88,9 @@ global_opts = [
                 help='Specify list of extensions to load when using osapi_'
                      'share_extension option with manila.api.contrib.'
                      'select_extensions.'),
-    cfg.MultiStrOpt('osapi_share_extension',
-                    default=['manila.api.contrib.standard_extensions'],
-                    help='The osapi share extension to load.'),
+    cfg.ListOpt('osapi_share_extension',
+                default=['manila.api.contrib.standard_extensions'],
+                help='The osapi share extensions to load.'),
     cfg.StrOpt('sqlite_db',
                default='manila.sqlite',
                help='The filename to use with sqlite.'),
@@ -106,6 +113,9 @@ global_opts = [
     cfg.StrOpt('share_manager',
                default='manila.share.manager.ShareManager',
                help='Full class name for the share manager.'),
+    cfg.StrOpt('data_manager',
+               default='manila.data.manager.DataManager',
+               help='Full class name for the data manager.'),
     cfg.StrOpt('host',
                default=socket.gethostname(),
                help='Name of this node.  This can be an opaque identifier.  '
@@ -182,3 +192,31 @@ def verify_share_protocols():
         # because of 'lazy' translations.
         msg = six.text_type(_(msg) % data)  # noqa H701
         raise exception.ManilaException(message=msg)
+
+
+def set_middleware_defaults():
+    """Update default configuration options for oslo.middleware."""
+    # CORS Defaults
+    # TODO(krotscheck): Update with https://review.openstack.org/#/c/285368/
+    cfg.set_defaults(cors.CORS_OPTS,
+                     allow_headers=['X-Auth-Token',
+                                    'X-OpenStack-Request-ID',
+                                    'X-Openstack-Manila-Api-Version',
+                                    'X-OpenStack-Manila-API-Experimental',
+                                    'X-Identity-Status',
+                                    'X-Roles',
+                                    'X-Service-Catalog',
+                                    'X-User-Id',
+                                    'X-Tenant-Id'],
+                     expose_headers=['X-Auth-Token',
+                                     'X-OpenStack-Request-ID',
+                                     'X-Openstack-Manila-Api-Version',
+                                     'X-OpenStack-Manila-API-Experimental',
+                                     'X-Subject-Token',
+                                     'X-Service-Token'],
+                     allow_methods=['GET',
+                                    'PUT',
+                                    'POST',
+                                    'DELETE',
+                                    'PATCH']
+                     )

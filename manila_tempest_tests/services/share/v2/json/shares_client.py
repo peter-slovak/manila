@@ -18,9 +18,10 @@ import time
 
 from six.moves.urllib import parse as urlparse
 from tempest import config
-from tempest_lib.common.utils import data_utils
-from tempest_lib import exceptions
+from tempest.lib.common.utils import data_utils
+from tempest.lib import exceptions
 
+from manila_tempest_tests.common import constants
 from manila_tempest_tests.services.share.json import shares_client
 from manila_tempest_tests import share_exceptions
 from manila_tempest_tests import utils
@@ -177,6 +178,9 @@ class SharesV2Client(shares_client.SharesClient):
         elif "cgsnapshot_id" in kwargs:
             return self._is_resource_deleted(
                 self.get_cgsnapshot, kwargs.get("cgsnapshot_id"))
+        elif "replica_id" in kwargs:
+            return self._is_resource_deleted(
+                self.get_share_replica, kwargs.get("replica_id"))
         else:
             return super(SharesV2Client, self).is_resource_deleted(
                 *args, **kwargs)
@@ -187,7 +191,8 @@ class SharesV2Client(shares_client.SharesClient):
                      name=None, snapshot_id=None, description=None,
                      metadata=None, share_network_id=None,
                      share_type_id=None, is_public=False,
-                     consistency_group_id=None, version=LATEST_MICROVERSION):
+                     consistency_group_id=None, availability_zone=None,
+                     version=LATEST_MICROVERSION):
         metadata = metadata or {}
         if name is None:
             name = data_utils.rand_name("tempest-created-share")
@@ -208,6 +213,8 @@ class SharesV2Client(shares_client.SharesClient):
                 "is_public": is_public,
             }
         }
+        if availability_zone:
+            post_body["share"]["availability_zone"] = availability_zone
         if share_network_id:
             post_body["share"]["share_network_id"] = share_network_id
         if share_type_id:
@@ -323,6 +330,30 @@ class SharesV2Client(shares_client.SharesClient):
                            (instance_id, status, self.build_timeout))
                 raise exceptions.TimeoutException(message)
 
+    def wait_for_share_status(self, share_id, status, status_attr='status',
+                              version=LATEST_MICROVERSION):
+        """Waits for a share to reach a given status."""
+        body = self.get_share(share_id, version=version)
+        share_status = body[status_attr]
+        start = int(time.time())
+
+        while share_status != status:
+            time.sleep(self.build_interval)
+            body = self.get_share(share_id, version=version)
+            share_status = body[status_attr]
+            if share_status == status:
+                return
+            elif 'error' in share_status.lower():
+                raise share_exceptions.ShareBuildErrorException(
+                    share_id=share_id)
+
+            if int(time.time()) - start >= self.build_timeout:
+                message = ("Share's %(status_attr)s failed to transition to "
+                           "%(status)s within the required time %(seconds)s." %
+                           {"status_attr": status_attr, "status": status,
+                            "seconds": self.build_timeout})
+                raise exceptions.TimeoutException(message)
+
 ###############
 
     def extend_share(self, share_id, new_size, version=LATEST_MICROVERSION,
@@ -405,6 +436,113 @@ class SharesV2Client(shares_client.SharesClient):
         resp, body = self.post(
             "%(url)s/%(share_id)s/%(action_name)s" % {
                 'url': url, 'share_id': share_id, 'action_name': action_name},
+            body,
+            version=version)
+        self.expected_success(202, resp.status)
+        return body
+
+###############
+
+    def create_snapshot(self, share_id, name=None, description=None,
+                        force=False, version=LATEST_MICROVERSION):
+        if name is None:
+            name = data_utils.rand_name("tempest-created-share-snap")
+        if description is None:
+            description = data_utils.rand_name(
+                "tempest-created-share-snap-desc")
+        post_body = {
+            "snapshot": {
+                "name": name,
+                "force": force,
+                "description": description,
+                "share_id": share_id,
+            }
+        }
+        body = json.dumps(post_body)
+        resp, body = self.post("snapshots", body, version=version)
+        self.expected_success(202, resp.status)
+        return self._parse_resp(body)
+
+    def get_snapshot(self, snapshot_id, version=LATEST_MICROVERSION):
+        resp, body = self.get("snapshots/%s" % snapshot_id, version=version)
+        self.expected_success(200, resp.status)
+        return self._parse_resp(body)
+
+    def list_snapshots(self, detailed=False, params=None,
+                       version=LATEST_MICROVERSION):
+        """Get list of share snapshots w/o filters."""
+        uri = 'snapshots/detail' if detailed else 'snapshots'
+        uri += '?%s' % urlparse.urlencode(params) if params else ''
+        resp, body = self.get(uri, version=version)
+        self.expected_success(200, resp.status)
+        return self._parse_resp(body)
+
+    def list_snapshots_with_detail(self, params=None,
+                                   version=LATEST_MICROVERSION):
+        """Get detailed list of share snapshots w/o filters."""
+        return self.list_snapshots(detailed=True, params=params,
+                                   version=version)
+
+    def delete_snapshot(self, snap_id, version=LATEST_MICROVERSION):
+        resp, body = self.delete("snapshots/%s" % snap_id, version=version)
+        self.expected_success(202, resp.status)
+        return body
+
+    def wait_for_snapshot_status(self, snapshot_id, status,
+                                 version=LATEST_MICROVERSION):
+        """Waits for a snapshot to reach a given status."""
+        body = self.get_snapshot(snapshot_id, version=version)
+        snapshot_name = body['name']
+        snapshot_status = body['status']
+        start = int(time.time())
+
+        while snapshot_status != status:
+            time.sleep(self.build_interval)
+            body = self.get_snapshot(snapshot_id, version=version)
+            snapshot_status = body['status']
+            if 'error' in snapshot_status:
+                raise (share_exceptions.
+                       SnapshotBuildErrorException(snapshot_id=snapshot_id))
+
+            if int(time.time()) - start >= self.build_timeout:
+                message = ('Share Snapshot %s failed to reach %s status '
+                           'within the required time (%s s).' %
+                           (snapshot_name, status, self.build_timeout))
+                raise exceptions.TimeoutException(message)
+
+    def manage_snapshot(self, share_id, provider_location,
+                        name=None, description=None,
+                        version=LATEST_MICROVERSION,
+                        driver_options=None):
+        if name is None:
+            name = data_utils.rand_name("tempest-manage-snapshot")
+        if description is None:
+            description = data_utils.rand_name("tempest-manage-snapshot-desc")
+        post_body = {
+            "snapshot": {
+                "share_id": share_id,
+                "provider_location": provider_location,
+                "name": name,
+                "description": description,
+                "driver_options": driver_options if driver_options else {},
+            }
+        }
+        url = 'snapshots/manage'
+        body = json.dumps(post_body)
+        resp, body = self.post(url, body, version=version)
+        self.expected_success(202, resp.status)
+        return self._parse_resp(body)
+
+    def unmanage_snapshot(self, snapshot_id, version=LATEST_MICROVERSION,
+                          body=None):
+        url = 'snapshots'
+        action_name = 'action'
+        if body is None:
+            body = json.dumps({'unmanage': {}})
+        resp, body = self.post(
+            "%(url)s/%(snapshot_id)s/%(action_name)s" % {
+                'url': url, 'snapshot_id': snapshot_id,
+                'action_name': action_name},
             body,
             version=version)
         self.expected_success(202, resp.status)
@@ -698,10 +836,15 @@ class SharesV2Client(shares_client.SharesClient):
                     consistency_group_id=consistency_group_id)
 
             if int(time.time()) - start >= self.build_timeout:
+                consistency_group_name = (
+                    consistency_group_name if consistency_group_name else
+                    consistency_group_id
+                )
                 message = ('Consistency Group %s failed to reach %s status '
-                           'within the required time (%s s).' %
+                           'within the required time (%s s). '
+                           'Current status: %s' %
                            (consistency_group_name, status,
-                            self.build_timeout))
+                            self.build_timeout, consistency_group_status))
                 raise exceptions.TimeoutException(message)
 
 ###############
@@ -806,16 +949,19 @@ class SharesV2Client(shares_client.SharesClient):
 
 ###############
 
-    def migrate_share(self, share_id, host, version=LATEST_MICROVERSION,
-                      action_name=None):
+    def migrate_share(self, share_id, host, notify,
+                      version=LATEST_MICROVERSION, action_name=None):
         if action_name is None:
-            if utils.is_microversion_gt(version, "2.6"):
+            if utils.is_microversion_lt(version, "2.7"):
+                action_name = 'os-migrate_share'
+            elif utils.is_microversion_lt(version, "2.15"):
                 action_name = 'migrate_share'
             else:
-                action_name = 'os-migrate_share'
+                action_name = 'migration_start'
         post_body = {
             action_name: {
                 'host': host,
+                'notify': notify,
             }
         }
         body = json.dumps(post_body)
@@ -823,27 +969,242 @@ class SharesV2Client(shares_client.SharesClient):
                          headers=EXPERIMENTAL, extra_headers=True,
                          version=version)
 
-    def wait_for_migration_completed(self, share_id, dest_host,
-                                     version=LATEST_MICROVERSION):
+    def migration_complete(self, share_id, version=LATEST_MICROVERSION,
+                           action_name='migration_complete'):
+        post_body = {
+            action_name: None,
+        }
+        body = json.dumps(post_body)
+        return self.post('shares/%s/action' % share_id, body,
+                         headers=EXPERIMENTAL, extra_headers=True,
+                         version=version)
+
+    def migration_cancel(self, share_id, version=LATEST_MICROVERSION,
+                         action_name='migration_cancel'):
+        post_body = {
+            action_name: None,
+        }
+        body = json.dumps(post_body)
+        return self.post('shares/%s/action' % share_id, body,
+                         headers=EXPERIMENTAL, extra_headers=True,
+                         version=version)
+
+    def migration_get_progress(self, share_id, version=LATEST_MICROVERSION,
+                               action_name='migration_get_progress'):
+        post_body = {
+            action_name: None,
+        }
+        body = json.dumps(post_body)
+        return self.post('shares/%s/action' % share_id, body,
+                         headers=EXPERIMENTAL, extra_headers=True,
+                         version=version)
+
+    def reset_task_state(
+            self, share_id, task_state, version=LATEST_MICROVERSION,
+            action_name='reset_task_state'):
+        post_body = {
+            action_name: {
+                'task_state': task_state,
+            }
+        }
+        body = json.dumps(post_body)
+        return self.post('shares/%s/action' % share_id, body,
+                         headers=EXPERIMENTAL, extra_headers=True,
+                         version=version)
+
+    def wait_for_migration_status(self, share_id, dest_host, status,
+                                  version=LATEST_MICROVERSION):
         """Waits for a share to migrate to a certain host."""
         share = self.get_share(share_id, version=version)
         migration_timeout = CONF.share.migration_timeout
         start = int(time.time())
-        while share['task_state'] != 'migration_success':
+        while share['task_state'] != status:
             time.sleep(self.build_interval)
             share = self.get_share(share_id, version=version)
-            if share['task_state'] == 'migration_success':
+            if share['task_state'] == status:
                 return share
             elif share['task_state'] == 'migration_error':
                 raise share_exceptions.ShareMigrationException(
                     share_id=share['id'], src=share['host'], dest=dest_host)
             elif int(time.time()) - start >= migration_timeout:
-                message = ('Share %(share_id)s failed to migrate from '
-                           'host %(src)s to host %(dest)s within the required '
-                           'time %(timeout)s.' % {
+                message = ('Share %(share_id)s failed to reach status '
+                           '%(status)s when migrating from host %(src)s to '
+                           'host %(dest)s within the required time '
+                           '%(timeout)s.' % {
                                'src': share['host'],
                                'dest': dest_host,
                                'share_id': share['id'],
-                               'timeout': self.build_timeout
+                               'timeout': self.build_timeout,
+                               'status': status,
                            })
                 raise exceptions.TimeoutException(message)
+
+################
+
+    def create_share_replica(self, share_id, availability_zone=None,
+                             version=LATEST_MICROVERSION):
+        """Add a share replica of an existing share."""
+        uri = "share-replicas"
+        post_body = {
+            'share_id': share_id,
+            'availability_zone': availability_zone,
+        }
+
+        body = json.dumps({'share_replica': post_body})
+        resp, body = self.post(uri, body,
+                               headers=EXPERIMENTAL,
+                               extra_headers=True,
+                               version=version)
+        self.expected_success(202, resp.status)
+        return self._parse_resp(body)
+
+    def get_share_replica(self, replica_id, version=LATEST_MICROVERSION):
+        """Get the details of share_replica."""
+        resp, body = self.get("share-replicas/%s" % replica_id,
+                              headers=EXPERIMENTAL,
+                              extra_headers=True,
+                              version=version)
+        self.expected_success(200, resp.status)
+        return self._parse_resp(body)
+
+    def list_share_replicas(self, share_id=None, version=LATEST_MICROVERSION):
+        """Get list of replicas."""
+        uri = "share-replicas/detail"
+        uri += ("?share_id=%s" % share_id) if share_id is not None else ''
+        resp, body = self.get(uri, headers=EXPERIMENTAL,
+                              extra_headers=True, version=version)
+        self.expected_success(200, resp.status)
+        return self._parse_resp(body)
+
+    def list_share_replicas_summary(self, share_id=None,
+                                    version=LATEST_MICROVERSION):
+        """Get summary list of replicas."""
+        uri = "share-replicas"
+        uri += ("?share_id=%s" % share_id) if share_id is not None else ''
+        resp, body = self.get(uri, headers=EXPERIMENTAL,
+                              extra_headers=True, version=version)
+        self.expected_success(200, resp.status)
+        return self._parse_resp(body)
+
+    def delete_share_replica(self, replica_id, version=LATEST_MICROVERSION):
+        """Delete share_replica."""
+        uri = "share-replicas/%s" % replica_id
+        resp, body = self.delete(uri,
+                                 headers=EXPERIMENTAL,
+                                 extra_headers=True,
+                                 version=version)
+        self.expected_success(202, resp.status)
+        return body
+
+    def promote_share_replica(self, replica_id, expected_status=202,
+                              version=LATEST_MICROVERSION):
+        """Promote a share replica to active state."""
+        uri = "share-replicas/%s/action" % replica_id
+        post_body = {
+            'promote': None,
+        }
+        body = json.dumps(post_body)
+        resp, body = self.post(uri, body,
+                               headers=EXPERIMENTAL,
+                               extra_headers=True,
+                               version=version)
+        self.expected_success(expected_status, resp.status)
+        return self._parse_resp(body)
+
+    def wait_for_share_replica_status(self, replica_id, expected_status,
+                                      status_attr='status'):
+        """Waits for a replica's status_attr to reach a given status."""
+        body = self.get_share_replica(replica_id)
+        replica_status = body[status_attr]
+        start = int(time.time())
+
+        while replica_status != expected_status:
+            time.sleep(self.build_interval)
+            body = self.get_share_replica(replica_id)
+            replica_status = body[status_attr]
+            if replica_status == expected_status:
+                return
+            if ('error' in replica_status
+                    and expected_status != constants.STATUS_ERROR):
+                raise share_exceptions.ShareInstanceBuildErrorException(
+                    id=replica_id)
+
+            if int(time.time()) - start >= self.build_timeout:
+                message = ('The %(status_attr)s of Replica %(id)s failed to '
+                           'reach %(expected_status)s status within the '
+                           'required time (%(time)ss). Current '
+                           '%(status_attr)s: %(current_status)s.' %
+                           {
+                               'status_attr': status_attr,
+                               'expected_status': expected_status,
+                               'time': self.build_timeout,
+                               'id': replica_id,
+                               'current_status': replica_status,
+                           })
+                raise exceptions.TimeoutException(message)
+
+    def reset_share_replica_status(self, replica_id,
+                                   status=constants.STATUS_AVAILABLE,
+                                   version=LATEST_MICROVERSION):
+        """Reset the status."""
+        uri = 'share-replicas/%s/action' % replica_id
+        post_body = {
+            'reset_status': {
+                'status': status
+            }
+        }
+        body = json.dumps(post_body)
+        resp, body = self.post(uri, body,
+                               headers=EXPERIMENTAL,
+                               extra_headers=True,
+                               version=version)
+        self.expected_success(202, resp.status)
+        return self._parse_resp(body)
+
+    def reset_share_replica_state(self, replica_id,
+                                  state=constants.REPLICATION_STATE_ACTIVE,
+                                  version=LATEST_MICROVERSION):
+        """Reset the replication state of a replica."""
+        uri = 'share-replicas/%s/action' % replica_id
+        post_body = {
+            'reset_replica_state': {
+                'replica_state': state
+            }
+        }
+        body = json.dumps(post_body)
+        resp, body = self.post(uri, body,
+                               headers=EXPERIMENTAL,
+                               extra_headers=True,
+                               version=version)
+        self.expected_success(202, resp.status)
+        return self._parse_resp(body)
+
+    def resync_share_replica(self, replica_id, expected_result=202,
+                             version=LATEST_MICROVERSION):
+        """Force an immediate resync of the replica."""
+        uri = 'share-replicas/%s/action' % replica_id
+        post_body = {
+            'resync': None
+        }
+        body = json.dumps(post_body)
+        resp, body = self.post(uri, body,
+                               headers=EXPERIMENTAL,
+                               extra_headers=True,
+                               version=version)
+        self.expected_success(expected_result, resp.status)
+        return self._parse_resp(body)
+
+    def force_delete_share_replica(self, replica_id,
+                                   version=LATEST_MICROVERSION):
+        """Force delete a replica."""
+        uri = 'share-replicas/%s/action' % replica_id
+        post_body = {
+            'force_delete': None
+        }
+        body = json.dumps(post_body)
+        resp, body = self.post(uri, body,
+                               headers=EXPERIMENTAL,
+                               extra_headers=True,
+                               version=version)
+        self.expected_success(202, resp.status)
+        return self._parse_resp(body)

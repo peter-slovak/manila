@@ -33,7 +33,6 @@ from oslo_config import fixture as config_fixture
 import oslo_i18n
 from oslo_messaging import conffixture as messaging_conffixture
 import oslotest.base as base_test
-import six
 
 from manila.db import migration
 from manila.db.sqlalchemy import api as db_api
@@ -141,6 +140,8 @@ class TestCase(base_test.BaseTestCase):
         self.useFixture(self.messaging_conf)
         rpc.init(CONF)
 
+        mock.patch('keystoneauth1.loading.load_auth_from_conf_options').start()
+
         fake_notifier.stub_notifier(self)
 
     def tearDown(self):
@@ -171,7 +172,7 @@ class TestCase(base_test.BaseTestCase):
 
     def flags(self, **kw):
         """Override flag variables for a test."""
-        for k, v in six.iteritems(kw):
+        for k, v in kw.items():
             CONF.set_override(k, v)
 
     def start_service(self, name, host=None, **kwargs):
@@ -249,7 +250,7 @@ class TestCase(base_test.BaseTestCase):
                 error = abs(float(d1value) - float(d2value))
                 within_tolerance = error <= tolerance
             except (ValueError, TypeError):
-                # If both values aren't convertable to float, just ignore
+                # If both values aren't convertible to float, just ignore
                 # ValueError if arg is a str, TypeError if it's something else
                 # (like None)
                 within_tolerance = False

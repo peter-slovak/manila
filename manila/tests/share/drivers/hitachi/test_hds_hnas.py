@@ -140,116 +140,69 @@ class HDSHNASTestCase(test.TestCase):
         self.assertRaises(exception.InvalidParameterValue,
                           self._driver.__init__)
 
-    def test_allow_access(self):
-        self.mock_object(hds_hnas.HDSHNASDriver, "_get_hnas_share_id",
-                         mock.Mock(return_value=share['id']))
-        self.mock_object(hds_hnas.HDSHNASDriver, "_ensure_share", mock.Mock())
-        self.mock_object(ssh.HNASSSHBackend, "get_host_list", mock.Mock(
-            return_value=['127.0.0.1 (rw)']))
-        self.mock_object(ssh.HNASSSHBackend, "update_access_rule", mock.Mock())
+    def test_update_access(self):
+        access1 = {
+            'access_type': 'ip',
+            'access_to': '172.24.10.10',
+            'access_level': 'rw'
+        }
+        access2 = {
+            'access_type': 'ip',
+            'access_to': '188.100.20.10',
+            'access_level': 'ro'
+        }
+        access_list = [access1, access2]
 
-        self._driver.allow_access('context', share, access)
+        self.mock_object(self._driver, '_ensure_share')
+        self.mock_object(ssh.HNASSSHBackend, "update_access_rule",
+                         mock.Mock())
+        self._driver.update_access('context', share, access_list, [], [])
 
         ssh.HNASSSHBackend.update_access_rule.assert_called_once_with(
-            share['id'], ['127.0.0.1 (rw)', access['access_to'] + '(' +
-                          access['access_level'] + ')'])
-        ssh.HNASSSHBackend.get_host_list.assert_called_once_with(share['id'])
-        self.assertTrue(self.mock_log.info.called)
-
-    def test_allow_access_wrong_permission(self):
-        self.mock_object(hds_hnas.HDSHNASDriver, "_get_hnas_share_id",
-                         mock.Mock(return_value=share['id']))
-        self.mock_object(hds_hnas.HDSHNASDriver, "_ensure_share", mock.Mock())
-        self.mock_object(ssh.HNASSSHBackend, "get_host_list", mock.Mock(
-            return_value=['127.0.0.1 (rw)']))
-
-        self.assertRaises(exception.HNASBackendException,
-                          self._driver.allow_access, 'context', share,
-                          invalid_access_level)
-        ssh.HNASSSHBackend.get_host_list.assert_called_once_with(share['id'])
-
-    def test_allow_access_host_allowed(self):
-        self.mock_object(hds_hnas.HDSHNASDriver, "_get_hnas_share_id",
-                         mock.Mock(return_value=share['id']))
-        self.mock_object(hds_hnas.HDSHNASDriver, "_ensure_share", mock.Mock())
-        self.mock_object(ssh.HNASSSHBackend, "get_host_list", mock.Mock(
-            return_value=['172.24.44.200(rw)']))
-
-        self._driver.allow_access('context', share, access)
-
-        ssh.HNASSSHBackend.get_host_list.assert_called_once_with(share['id'])
+            share['id'], [access1['access_to'] + '('
+                          + access1['access_level'] + ',norootsquash)',
+                          access2['access_to'] + '('
+                          + access2['access_level'] + ')'])
         self.assertTrue(self.mock_log.debug.called)
 
-    def test_allow_access_host_allowed_different_permission(self):
-        self.mock_object(hds_hnas.HDSHNASDriver, "_get_hnas_share_id",
-                         mock.Mock(return_value=share['id']))
-        self.mock_object(hds_hnas.HDSHNASDriver, "_ensure_share", mock.Mock())
-        self.mock_object(ssh.HNASSSHBackend, "get_host_list", mock.Mock(
-            return_value=['172.24.44.200(ro)']))
-        self.mock_object(ssh.HNASSSHBackend, "update_access_rule", mock.Mock())
+    def test_update_access_ip_exception(self):
+        access1 = {
+            'access_type': 'ip',
+            'access_to': '188.100.20.10',
+            'access_level': 'ro'
+        }
+        access2 = {
+            'access_type': 'something',
+            'access_to': '172.24.10.10',
+            'access_level': 'rw'
+        }
+        access_list = [access1, access2]
 
-        self._driver.allow_access('context', share, access)
-
-        ssh.HNASSSHBackend.get_host_list.assert_called_once_with(share['id'])
-        ssh.HNASSSHBackend.update_access_rule.assert_called_once_with(
-            share['id'], [access['access_to'] + '(' + access['access_level']
-                          + ')'])
-
-    def test_allow_access_invalid_access_type(self):
-        self.mock_object(hds_hnas.HDSHNASDriver, "_get_hnas_share_id",
-                         mock.Mock(return_value=share['id']))
-        self.mock_object(hds_hnas.HDSHNASDriver, "_allow_access", mock.Mock())
+        self.mock_object(self._driver, '_ensure_share')
 
         self.assertRaises(exception.InvalidShareAccess,
-                          self._driver.allow_access, 'context', invalid_share,
-                          invalid_access_type)
+                          self._driver.update_access, 'context', share,
+                          access_list, [], [])
 
-    def test_deny_access(self):
-        self.mock_object(hds_hnas.HDSHNASDriver, "_get_hnas_share_id",
-                         mock.Mock(return_value=share['id']))
-        self.mock_object(hds_hnas.HDSHNASDriver, "_ensure_share", mock.Mock())
-        self.mock_object(ssh.HNASSSHBackend, "get_host_list", mock.Mock(
-            return_value=['172.24.44.200(rw)']))
-        self.mock_object(ssh.HNASSSHBackend, "update_access_rule", mock.Mock())
+    def test_update_access_not_found_exception(self):
+        access1 = {
+            'access_type': 'ip',
+            'access_to': '188.100.20.10',
+            'access_level': 'ro'
+        }
+        access2 = {
+            'access_type': 'something',
+            'access_to': '172.24.10.10',
+            'access_level': 'rw'
+        }
+        access_list = [access1, access2]
 
-        self._driver.deny_access('context', share, access)
+        self.mock_object(self._driver, '_ensure_share', mock.Mock(
+            side_effect=exception.HNASItemNotFoundException(msg='fake')))
 
-        ssh.HNASSSHBackend.get_host_list.assert_called_once_with(share['id'])
-        ssh.HNASSSHBackend.update_access_rule.assert_called_once_with(
-            share['id'], [])
-
-    def test_deny_access_already_not_allowed(self):
-        self.mock_object(hds_hnas.HDSHNASDriver, "_get_hnas_share_id",
-                         mock.Mock(return_value=share['id']))
-        self.mock_object(hds_hnas.HDSHNASDriver, "_ensure_share", mock.Mock())
-        self.mock_object(ssh.HNASSSHBackend, "get_host_list", mock.Mock(
-            return_value=[]))
-
-        self._driver.deny_access('context', share, access)
-
-        ssh.HNASSSHBackend.get_host_list.assert_called_once_with(share['id'])
-        self.assertTrue(self.mock_log.debug.called)
-
-    def test_deny_access_invalid_access_level(self):
-        self.mock_object(hds_hnas.HDSHNASDriver, "_get_hnas_share_id",
-                         mock.Mock(return_value=share['id']))
-        self.mock_object(hds_hnas.HDSHNASDriver, "_ensure_share", mock.Mock())
-        self.mock_object(ssh.HNASSSHBackend, "get_host_list", mock.Mock(
-            return_value=[]))
-
-        self.assertRaises(exception.HNASBackendException,
-                          self._driver.deny_access, 'context', share,
-                          invalid_access_level)
-        ssh.HNASSSHBackend.get_host_list.assert_called_once_with(share['id'])
-
-    def test_deny_access_invalid_access_type(self):
-        self.mock_object(hds_hnas.HDSHNASDriver, "_get_hnas_share_id",
-                         mock.Mock(return_value=share['id']))
-        self.mock_object(hds_hnas.HDSHNASDriver, "_deny_access", mock.Mock())
-
-        self.assertRaises(exception.InvalidShareAccess,
-                          self._driver.deny_access, 'context', invalid_share,
-                          invalid_access_type)
+        self.assertRaises(exception.ShareResourceNotFound,
+                          self._driver.update_access, 'context', share,
+                          access_list, add_rules=[], delete_rules=[])
 
     def test_create_share(self):
         self.mock_object(hds_hnas.HDSHNASDriver, "_check_fs_mounted",
@@ -309,6 +262,7 @@ class HDSHNASTestCase(test.TestCase):
         ssh.HNASSSHBackend.vvol_delete.assert_called_once_with(share['id'])
 
     def test_create_snapshot(self):
+        self.mock_object(hds_hnas.HDSHNASDriver, "_ensure_share")
         self.mock_object(hds_hnas.HDSHNASDriver, "_get_hnas_share_id",
                          mock.Mock(return_value=share['id']))
         self.mock_object(ssh.HNASSSHBackend, "get_host_list", mock.Mock(
@@ -328,6 +282,7 @@ class HDSHNASTestCase(test.TestCase):
                                       snapshot['id'])
 
     def test_create_snapshot_first_snapshot(self):
+        self.mock_object(hds_hnas.HDSHNASDriver, "_ensure_share")
         self.mock_object(hds_hnas.HDSHNASDriver, "_get_hnas_share_id",
                          mock.Mock(return_value=share['id']))
         self.mock_object(ssh.HNASSSHBackend, "get_host_list", mock.Mock(
@@ -378,6 +333,31 @@ class HDSHNASTestCase(test.TestCase):
         ssh.HNASSSHBackend.check_vvol.assert_called_once_with(share['id'])
         ssh.HNASSSHBackend.check_quota.assert_called_once_with(share['id'])
         ssh.HNASSSHBackend.check_export.assert_called_once_with(share['id'])
+
+    def test_shrink_share(self):
+        self.mock_object(hds_hnas.HDSHNASDriver, "_get_hnas_share_id",
+                         mock.Mock(return_value=share['id']))
+        self.mock_object(hds_hnas.HDSHNASDriver, "_ensure_share", mock.Mock())
+        self.mock_object(ssh.HNASSSHBackend, "get_share_usage", mock.Mock(
+            return_value=10))
+        self.mock_object(ssh.HNASSSHBackend, "modify_quota", mock.Mock())
+
+        self._driver.shrink_share(share, 11)
+
+        ssh.HNASSSHBackend.get_share_usage.assert_called_once_with(share['id'])
+        ssh.HNASSSHBackend.modify_quota.assert_called_once_with(share['id'],
+                                                                11)
+
+    def test_shrink_share_new_size_lower_than_usage(self):
+        self.mock_object(hds_hnas.HDSHNASDriver, "_get_hnas_share_id",
+                         mock.Mock(return_value=share['id']))
+        self.mock_object(hds_hnas.HDSHNASDriver, "_ensure_share", mock.Mock())
+        self.mock_object(ssh.HNASSSHBackend, "get_share_usage", mock.Mock(
+            return_value=10))
+
+        self.assertRaises(exception.ShareShrinkingPossibleDataLoss,
+                          self._driver.shrink_share, share, 9)
+        ssh.HNASSSHBackend.get_share_usage.assert_called_once_with(share['id'])
 
     def test_extend_share(self):
         self.mock_object(hds_hnas.HDSHNASDriver, "_get_hnas_share_id",
@@ -532,16 +512,19 @@ class HDSHNASTestCase(test.TestCase):
             'driver_handles_share_servers':
                 self._driver.driver_handles_share_servers,
             'vendor_name': 'HDS',
-            'driver_version': '1.0',
+            'driver_version': '2.0.0',
             'storage_protocol': 'NFS',
             'total_capacity_gb': 1000,
             'free_capacity_gb': 200,
             'reserved_percentage': hds_hnas.CONF.reserved_share_percentage,
             'qos': False,
+            'thin_provisioning': True,
         }
 
         self.mock_object(ssh.HNASSSHBackend, 'get_stats', mock.Mock(
             return_value=(1000, 200)))
+        self.mock_object(hds_hnas.HDSHNASDriver, "_check_fs_mounted",
+                         mock.Mock())
         self.mock_object(manila.share.driver.ShareDriver,
                          '_update_share_stats', mock.Mock())
 
