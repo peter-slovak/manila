@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import netaddr
 from oslo_log import log
 
 from manila import exception
@@ -263,7 +264,9 @@ class NexentaNasDriver(driver.ShareDriver):
         ls = [{"allow": True, "etype": "network", "entity": address}]
         if len(address_mask) == 2:
             try:
-                ls[0]['mask'] = int(address_mask[1])
+                mask = int(address_mask[1])
+                if mask != 32:
+                    ls[0]['mask'] = mask
             except:
                 raise exception.InvalidInput('<{}> is not a valid access parameter'.format(access['access_to']))
 
@@ -297,6 +300,7 @@ class NexentaNasDriver(driver.ShareDriver):
         address_mask = access['access_to'].strip().split('/')
         address = address_mask[0]
         mask = int(address_mask[1]) if len(address_mask) > 1 else None
+        if mask == 32: mask = None
 
         url = 'nas/nfs/' + PATH_DELIMITER.join((self.pool_name, self.fs_prefix, share['name']))
         res = self.nef.get(url)
