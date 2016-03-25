@@ -40,7 +40,7 @@ class TestNexentaNasDriver(test.TestCase):
         self.cfg.nexenta_host = '1.1.1.1'
         self.cfg.nexenta_rest_port = 8080
         self.cfg.nexenta_rest_protocol = 'auto'
-        self.cfg.nexenta_volume = 'pool1'
+        self.cfg.nexenta_pool = 'pool1'
         self.cfg.nexenta_nfs_share = 'nfs_share'
         self.cfg.nexenta_user = 'user'
         self.cfg.nexenta_password = 'password'
@@ -55,7 +55,7 @@ class TestNexentaNasDriver(test.TestCase):
         self.drv = NexentaNasDriver(configuration=self.cfg)
         self.drv.do_setup(self.ctx)
 
-        self.pool_name = self.cfg.nexenta_volume
+        self.pool_name = self.cfg.nexenta_pool
         self.fs_prefix = self.cfg.nexenta_nfs_share
 
     @patch(PATH_TO_RPC)
@@ -67,7 +67,7 @@ class TestNexentaNasDriver(test.TestCase):
     def test_create_share(self, m):
         share = {'name': 'share', 'size': 1}
         self.assertEqual('{}:/{}/{}/{}'.format(
-            self.cfg.nexenta_host, self.cfg.nexenta_volume, self.cfg.nexenta_nfs_share, share['name']),
+            self.cfg.nexenta_host, self.pool_name, self.fs_prefix, share['name']),
             self.drv.create_share(self.ctx, share))
 
     @patch('manila.share.drivers.nexenta.ns5.nexenta_nas.NexentaNasDriver._add_permission')
@@ -77,7 +77,7 @@ class TestNexentaNasDriver(test.TestCase):
         add_permission_mock.side_effect = LookupError('An error occurred while adding permission')
         self.assertRaises(Exception, self.drv.create_share, self.ctx, share)
         url = 'storage/pools/{}/filesystems/{}'.format(
-            self.cfg.nexenta_volume, '%2F'.join([self.cfg.nexenta_nfs_share, share['name']]))
+            self.pool_name, '%2F'.join([self.fs_prefix, share['name']]))
         self.drv.nef.delete.assert_called_with(url)
 
     def test_create_share_from_snapshot(self):
@@ -88,8 +88,8 @@ class TestNexentaNasDriver(test.TestCase):
         share = {'name': 'share'}
         self.drv.delete_share(self.ctx, share)
         url = ('storage/pools/%(pool)s/filesystems/%(fs)s') % {
-            'pool': self.cfg.nexenta_volume,
-            'fs': PATH_DELIMITER.join([self.cfg.nexenta_nfs_share, share['name']])
+            'pool': self.pool_name,
+            'fs': PATH_DELIMITER.join([self.fs_prefix, share['name']])
         }
         url += '?snapshots=true'
         self.drv.nef.delete.assert_called_with(url)
