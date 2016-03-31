@@ -44,10 +44,11 @@ def str2size(s, scale=1024):
     for i, t in enumerate(types):
         if suffix == t:
             n = value * pow(scale, i)
-            print n
+            print(n)
             p = int(value * pow(scale, i))
-            print p
+            print(p)
             return int(value * pow(scale, i))
+
 
 def str2gib_size(s):
     """Covert size-string to size in gigabytes."""

@@ -13,17 +13,17 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from oslo_log import log
 from manila import exception
-from manila.i18n import _, _LI, _LE
+from manila.i18n import _, _LI
 from manila.share.drivers.nexenta import jsonrpc
-import utils
+from oslo_log import log
 
+import utils
 
 LOG = log.getLogger(__name__)
 
 
-class RestHelper():
+class RestHelper(object):
 
     def __init__(self, configuration):
         self.configuration = configuration
@@ -126,8 +126,8 @@ class RestHelper():
             'anonymous_rw': 'true',
         }
         LOG.debug('Sharing folder on Nexenta Store')
-        self.nms.netstorsvc.share_folder(
-            'svc:/network/nfs/server:default', path, share_opts)        
+        self.nms.netstorsvc.share_folder('svc:/network/nfs/server:default',
+                                         path, share_opts)
 
     def _set_quota(self, share_name, new_size):
         if self.configuration.nexenta_thin_provisioning:
@@ -139,19 +139,7 @@ class RestHelper():
     def _get_location_path(self, path, protocol):
         location = None
         if protocol == 'NFS':
-            # /volumes/DemoVol1/share_16a6d104_3e56_4c04_b2fc_5fa3ed3c9d5d
-            # 10.141.67.225:/volumes/DemoVol1/share_16a6d104_3e56_4c04_b2fc_5fa3ed3c9d5d
-            # path = path.replace("-", "_")
             location = '%s:/volumes/%s' % (self.nms_host, path)
-        # elif protocol == 'CIFS':
-            # CIFS location needed is
-            # \\10.141.67.225\demovol1_share_712d7b3a_420a_4ebd_8e42_f97e42b712e3
-            # complete share name is -
-            # DemoVol1/share_712d7b3a_420a_4ebd_8e42_f97e42b712e3@ \
-            # share_snapshot_f502ba94_e880_4c04_85b8_53cc5cc3e663
-            # path = path.replace("-", "_")
-            # path = path.replace("/", "_")
-            # location = '\\\\%s\\%s' % (self.nms_host, path)
         else:
             raise exception.InvalidShare(
                 reason=(_('Invalid NAS protocol supplied: %s.')
@@ -207,10 +195,11 @@ class RestHelper():
                 return
 
     def _create_share_from_snapshot(self, share, snapshot):
-        snapshot_name = '%s/%s/%s@%s' % (self.volume,
-            self.share, snapshot['share_name'], snapshot['name'])
-        self.nms.folder.clone(snapshot_name, '%s/%s/%s' % (
-            self.volume, self.share, share['name']))
+        snapshot_name = '%s/%s/%s@%s' % (
+            self.volume, self.share, snapshot['share_name'], snapshot['name'])
+        self.nms.folder.clone(
+            snapshot_name,
+            '%s/%s/%s' % (self.volume, self.share, share['name']))
         path = self._get_share_path(share['name'])
         self._share_folder(path)
         return self._get_location_path(path, share['share_proto'])
@@ -270,7 +259,8 @@ class RestHelper():
                 }
                 result = self.nms.netstorsvc.share_folder(
                     'svc:/network/nfs/server:default',
-                    self._get_share_path(share_name), share_opts) 
+                    self._get_share_path(share_name),
+                    share_opts)
             else:
                 return None
         else:

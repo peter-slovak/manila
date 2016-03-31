@@ -29,12 +29,10 @@ PATH_TO_RPC = 'manila.share.drivers.nexenta.ns5.jsonrpc.NexentaJSONProxy'
 class TestNexentaNasDriver(test.TestCase):
 
     def setUp(self):
-        super(TestNexentaNasDriver, self).setUp()
-        self.ctx = context.get_admin_context()
-
         def _safe_get(opt):
             return getattr(self.cfg, opt)
-
+        super(TestNexentaNasDriver, self).setUp()
+        self.ctx = context.get_admin_context()
         self.cfg = mock.Mock(spec=conf.Configuration)
         self.cfg.safe_get = mock.Mock(side_effect=_safe_get)
         self.cfg.nexenta_host = '1.1.1.1'
@@ -50,6 +48,8 @@ class TestNexentaNasDriver(test.TestCase):
         self.cfg.nexenta_dataset_compression = 'on'
 
         self.cfg.network_config_group = 'DEFAULT'
+        self.cfg.admin_network_config_group = (
+            'fake_admin_network_config_group')
         self.cfg.driver_handles_share_servers = False
 
         self.drv = NexentaNasDriver(configuration=self.cfg)

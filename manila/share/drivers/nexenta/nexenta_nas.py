@@ -28,9 +28,9 @@ LOG = log.getLogger(__name__)
 
 class NexentaNasDriver(driver.ShareDriver):
     """Nexenta Share Driver.
+
     Executes commands relating to Shares.
     API version history:
-
         1.0 - Initial version.
     """
 

@@ -23,6 +23,7 @@ import socket
 
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
+
 import requests
 
 from manila.exception import NexentaException

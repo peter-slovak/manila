@@ -25,6 +25,7 @@ import time
 
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
+
 import requests
 
 from manila.exception import NexentaException
@@ -37,7 +38,6 @@ class HTTP404Exception(Exception):
 
 
 class NexentaJSONProxy(object):
-
     def __init__(self, scheme, host, port, user,
                  password, auto=False, method=None):
         self.scheme = scheme
@@ -79,7 +79,8 @@ class NexentaJSONProxy(object):
         LOG.debug('Sending JSON to url: %s, data: %s, method: %s',
                   path, data, self.method)
 
-        response = getattr(requests, self.method)(url, data=data, headers=headers)
+        response = getattr(requests, self.method)(
+            url, data=data, headers=headers)
         self.checkError(response)
         content = json.loads(response.content) if response.content else None
         LOG.debug("Got response: %s %s", response.status_code, response.reason)
@@ -92,8 +93,10 @@ class NexentaJSONProxy(object):
                 time.sleep(1)
                 response = requests.get(url)
                 self.checkError(response)
-                LOG.debug("Got response: %s %s", response.status_code, response.reason)
-                content = json.loads(response.content) if response.content else None
+                LOG.debug("Got response: %s %s", response.status_code,
+                          response.reason)
+                content = json.loads(
+                    response.content) if response.content else None
                 keep_going = response.status_code == 202
                 response.close()
         return content
@@ -102,9 +105,12 @@ class NexentaJSONProxy(object):
         code = response.status_code
         if code not in (200, 201, 202):
             reason = response.reason
-            content = json.loads(response.content) if response.content else None
+            content = json.loads(
+                response.content) if response.content else None
             response.close()
             if content and 'code' in content:
-                message = content.get('message', 'Message is not specified by Nexenta REST')
+                message = content.get(
+                    'message', 'Message is not specified by Nexenta REST')
                 raise NexentaException(message, code=content['code'])
-            raise Exception('Got bad response: {} {} {}'.format(code, reason, content))
+            raise Exception(
+                'Got bad response: {} {} {}'.format(code, reason, content))

@@ -47,11 +47,11 @@ NEXENTA_CONNECTION_OPTS = [
                default='pool1',
                help='pool name on NexentaStor'),
     cfg.StrOpt('nexenta_nfs',
-                default='on',
-                help=('on if share over NFS is enabled')),
+               default='on',
+               help=('on if share over NFS is enabled')),
     cfg.StrOpt('nexenta_smb',
-                default='off',
-                help=('on if share over SMB is enabled'))
+               default='off',
+               help=('on if share over SMB is enabled'))
 ]
 
 NEXENTA_NFS_OPTS = [

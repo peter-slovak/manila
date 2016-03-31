@@ -13,15 +13,15 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from oslo_utils import units
 from oslo_log import log
+from oslo_utils import units
 
 from manila import exception
-from manila.i18n import _, _LI, _LW
+from manila.i18n import _, _LW
 from manila.share import driver
+from manila.share.drivers.nexenta.ns5 import jsonrpc
 from manila.share.drivers.nexenta import options
 from manila.share.drivers.nexenta import utils
-from manila.share.drivers.nexenta.ns5 import jsonrpc
 
 PATH_DELIMITER = '%2F'
 VERSION = '1.0'
@@ -30,9 +30,9 @@ LOG = log.getLogger(__name__)
 
 class NexentaNasDriver(driver.ShareDriver):
     """Nexenta Share Driver.
+
     Executes commands relating to Shares.
     API version history:
-
         1.0 - Initial version.
     """
 
@@ -65,7 +65,8 @@ class NexentaNasDriver(driver.ShareDriver):
 
         self.storage_protocol = 'NFS'
         self.nfs_mount_point_base = self.configuration.nexenta_mount_point_base
-        self.dataset_compression = self.configuration.nexenta_dataset_compression
+        self.dataset_compression = \
+            self.configuration.nexenta_dataset_compression
 
     @property
     def backend_name(self):
@@ -93,10 +94,15 @@ class NexentaNasDriver(driver.ShareDriver):
         """
         url = 'storage/pools/{}'.format(self.pool_name)
         if not self.nef.get(url):
-            raise LookupError(_("Pool {} does not exist in Nexenta Store appliance").format(self.pool_name))
-        url = 'storage/pools/{}/filesystems/{}'.format(self.pool_name, self.fs_prefix)
+            raise LookupError(
+                _("Pool {} does not exist in Nexenta Store appliance").format(
+                    self.pool_name))
+        url = 'storage/pools/{}/filesystems/{}'.format(self.pool_name,
+                                                       self.fs_prefix)
         if not self.nef.get(url):
-            raise LookupError(_("filesystem {} does not exist in Nexenta Store appliance").format(self.fs_prefix))
+            raise LookupError(
+                _("filesystem {} does not exist in Nexenta Store "
+                  "appliance").format(self.fs_prefix))
 
         path = '/'.join((self.pool_name, self.fs_prefix))
         shared = False
@@ -106,7 +112,9 @@ class NexentaNasDriver(driver.ShareDriver):
                 shared = True
                 break
         if not shared:
-            raise LookupError(_("Dataset {} is not shared in Nexenta Store appliance").format(path))
+            raise LookupError(_(
+                "Dataset {} is not shared in Nexenta Store appliance").format(
+                path))
 
     def create_share(self, context, share, share_server=None):
         """Create a share."""
@@ -121,18 +129,22 @@ class NexentaNasDriver(driver.ShareDriver):
 
         url = 'storage/pools/{}/filesystems'.format(self.pool_name)
         self.nef.post(url, data)
-        location = '{}:/{}/{}/{}'.format(self.nef_host, self.pool_name, self.fs_prefix, share['name'])
+        location = '{}:/{}/{}/{}'.format(self.nef_host, self.pool_name,
+                                         self.fs_prefix, share['name'])
 
         try:
             self._add_permission(share['name'])
-        except:
+        except Exception:
             try:
                 url = 'storage/pools/{}/filesystems/{}'.format(
-                    self.pool_name, PATH_DELIMITER.join([self.fs_prefix, share['name']]))
+                    self.pool_name,
+                    PATH_DELIMITER.join([self.fs_prefix, share['name']]))
                 self.nef.delete(url)
-            except:
-                LOG.warning(_LW("Cannot destroy created filesystem: %(vol)s/%(folder)s"),
-                            {'vol': self.pool_name, 'folder': '/'.join([self.fs_prefix, share['name']])})
+            except Exception:
+                LOG.warning(_LW(
+                    "Cannot destroy created filesystem: %(vol)s/%(folder)s"),
+                    {'vol': self.pool_name, 'folder': '/'.join(
+                        [self.fs_prefix, share['name']])})
             raise
         return location
 
@@ -148,32 +160,34 @@ class NexentaNasDriver(driver.ShareDriver):
         url = ('storage/pools/%(pool)s/'
                'filesystems/%(fs)s/snapshots/%(snap)s/clone') % {
             'pool': self.pool_name,
-            'fs': PATH_DELIMITER.join([self.fs_prefix, snapshot['share_name']]),
-            'snap': snapshot['name']
-        }
-        location = '{}:/{}/{}/{}'.format(self.nef_host, self.pool_name, self.fs_prefix, share['name'])
+            'fs': PATH_DELIMITER.join(
+                [self.fs_prefix, snapshot['share_name']]),
+            'snap': snapshot['name']}
+        location = '{}:/{}/{}/{}'.format(self.nef_host, self.pool_name,
+                                         self.fs_prefix, share['name'])
         path = '/'.join([self.pool_name, self.fs_prefix, share['name']])
         data = {'targetPath': path}
         self.nef.post(url, data)
 
-        url = 'storage/filesystems/{}/promote'.format(path.replace('/', PATH_DELIMITER))
+        url = 'storage/filesystems/{}/promote'.format(
+            path.replace('/', PATH_DELIMITER))
         self.nef.post(url)
 
         try:
             self._add_permission(share['name'])
         except exception.NexentaException:
             try:
-                url = ('storage/pools/%(pool)s/'
-                       'filesystems/%(fs)s') % {
+                url = ('storage/pools/%(pool)s/filesystems/%(fs)s') % {
                     'pool': self.pool_name,
-                    'fs': PATH_DELIMITER.join((self.fs_prefix, share['name']))
-                }
+                    'fs': PATH_DELIMITER.join(
+                        (self.fs_prefix, share['name']))}
                 self.nef.delete(url)
             except exception.NexentaException:
                 LOG.warning(_LW("Cannot destroy cloned filesystem: "
                                 "%(vol)s/%(filesystem)s"),
                             {'vol': self.pool_name,
-                            'filesystem': '/'.join((self.fs_prefix, share['name']))})
+                             'filesystem': '/'.join(
+                                 (self.fs_prefix, share['name']))})
             raise
 
         return location
@@ -186,8 +200,6 @@ class NexentaNasDriver(driver.ShareDriver):
             'pool': self.pool_name,
             'fs': PATH_DELIMITER.join([self.fs_prefix, share['name']])
         }
-        origin = self.nef.get(url).get('originalSnapshot')
-
         url += '?snapshots=true'
         try:
             self.nef.delete(url)
@@ -196,22 +208,6 @@ class NexentaNasDriver(driver.ShareDriver):
                 LOG.debug('Snapshot has dependent clones, skipping')
             else:
                 raise
-
-        try:
-            if origin:
-                path, snap = origin.split('@')
-                pool, fs = path.split('/', 1)
-                snap_url = 'storage/pools/%(pool)s/filesystems/%(fs)s/snapshots/%(snap)s' % {
-                    'pool': pool,
-                    'fs': fs,
-                    'snap': snap
-                }
-                self.nef.delete(snap_url)
-        except exception.NexentaException as e:
-            if 'does not exist' in e.msg:
-                LOG.debug(
-                    'Volume %s does not exist on appliance', '/'.join(
-                        [self.pool_name, self.fs_prefix]))
 
     def extend_share(self, share, new_size, share_server=None):
         """Extends a share."""
@@ -229,7 +225,8 @@ class NexentaNasDriver(driver.ShareDriver):
 
         url = 'storage/pools/%(pool)s/filesystems/%(fs)s/snapshots' % {
             'pool': self.pool_name,
-            'fs': PATH_DELIMITER.join([self.fs_prefix, snapshot['share_name']]),
+            'fs': PATH_DELIMITER.join(
+                [self.fs_prefix, snapshot['share_name']]),
         }
         data = {'name': snapshot['name']}
         self.nef.post(url, data)
@@ -239,11 +236,11 @@ class NexentaNasDriver(driver.ShareDriver):
         LOG.debug('Deleting a snapshot: %s.' % '@'.join(
             [snapshot['share_name'], snapshot['name']]))
 
-        url = 'storage/pools/%(pool)s/filesystems/%(fs)s/snapshots/%(snap)s' % {
-            'pool': self.pool_name,
-            'fs': PATH_DELIMITER.join([self.fs_prefix, snapshot['share_name']]),
-            'snap': snapshot['name']
-        }
+        url = 'storage/pools/%(pool)s/filesystems/%(fs)s/snapshots/' \
+              '%(snap)s' % {'pool': self.pool_name,
+                            'fs': PATH_DELIMITER.join(
+                                [self.fs_prefix, snapshot['share_name']]),
+                            'snap': snapshot['name']}
         try:
             self.nef.delete(url)
         except exception.NexentaException as e:
@@ -258,7 +255,8 @@ class NexentaNasDriver(driver.ShareDriver):
 
         access_type = access['access_type'].strip()
         if access_type != 'ip':
-            err_msg = 'Access type <{}> not allowed. Allowed type is <ip>'.format(access_type)
+            err_msg = 'Access type <{}> not allowed. ' \
+                      'Allowed type is <ip>'.format(access_type)
             raise exception.InvalidInput(err_msg)
 
         address_mask = access['access_to'].strip().split('/', 1)
@@ -269,10 +267,13 @@ class NexentaNasDriver(driver.ShareDriver):
                 mask = int(address_mask[1])
                 if mask != 32:
                     ls[0]['mask'] = mask
-            except:
-                raise exception.InvalidInput('<{}> is not a valid access parameter'.format(access['access_to']))
+            except Exception:
+                raise exception.InvalidInput(
+                    '<{}> is not a valid access parameter'.format(
+                        access['access_to']))
 
-        url = 'nas/nfs/' + PATH_DELIMITER.join((self.pool_name, self.fs_prefix, share['name']))
+        url = 'nas/nfs/' + PATH_DELIMITER.join(
+            (self.pool_name, self.fs_prefix, share['name']))
         res = self.nef.get(url)
 
         security_contexts = res.get('securityContexts', [])
@@ -289,8 +290,8 @@ class NexentaNasDriver(driver.ShareDriver):
             new_sc['readOnlyList'] = ls
         else:
             raise exception.InvalidInput(_(
-                            'Access level %s is not allowed in '
-                            'Nexenta Store appliance'), access_level)
+                'Access level %s is not allowed in '
+                'Nexenta Store appliance'), access_level)
         security_contexts.append(new_sc)
         data = {"securityContexts": security_contexts}
         self.nef.put(url, data)
@@ -302,9 +303,11 @@ class NexentaNasDriver(driver.ShareDriver):
         address_mask = access['access_to'].strip().split('/')
         address = address_mask[0]
         mask = int(address_mask[1]) if len(address_mask) > 1 else None
-        if mask == 32: mask = None
+        if mask == 32:
+            mask = None
 
-        url = 'nas/nfs/' + PATH_DELIMITER.join((self.pool_name, self.fs_prefix, share['name']))
+        url = 'nas/nfs/' + PATH_DELIMITER.join(
+            (self.pool_name, self.fs_prefix, share['name']))
         res = self.nef.get(url)
         security_contexts = res.get('securityContexts', [])
         for i in xrange(len(security_contexts)):
@@ -321,12 +324,14 @@ class NexentaNasDriver(driver.ShareDriver):
             return
         if isinstance(new_size, basestring):
             new_size = int(new_size)
-        quota = new_size * 1024*1024*1024
+        quota = new_size * 1024 * 1024 * 1024
         data = {
-            #'quotaSize': quota,
+            # 'quotaSize': quota,
             'reservationSize': quota
         }
-        url = 'storage/pools/{}/filesystems/{}%2F{}'.format(self.pool_name, self.fs_prefix, share_name)
+        url = 'storage/pools/{}/filesystems/{}%2F{}'.format(self.pool_name,
+                                                            self.fs_prefix,
+                                                            share_name)
         self.nef.put(url, data)
 
     def _update_share_stats(self, data=None):
@@ -353,7 +358,8 @@ class NexentaNasDriver(driver.ShareDriver):
 
         :param path: example pool/nfs
         """
-        url = 'storage/pools/{}/filesystems/{}'.format(self.pool_name, self.fs_prefix)
+        url = 'storage/pools/{}/filesystems/{}'.format(self.pool_name,
+                                                       self.fs_prefix)
         data = self.nef.get(url)
         total = utils.str2size(data['bytesAvailable'])
         allocated = utils.str2size(data['bytesUsed'])
@@ -363,13 +369,15 @@ class NexentaNasDriver(driver.ShareDriver):
     def _manage_share_access(self, share_name, access, type_):
         access_type = access['access_type'].strip()
         if access_type != 'ip':
-            err_msg = (_('Access type %s is not allowed in Nexenta Store appliance'), access_type)
+            err_msg = (
+                _('Access type %s is not allowed in Nexenta Store appliance'),
+                access_type)
             raise exception.InvalidInput(err_msg)
 
         access_to = access['access_to'].strip()
         ls = [{"allow": True,
-          "etype": "network",
-          "entity": access_to}]
+               "etype": "network",
+               "entity": access_to}]
         data = {
             "securityContexts": [
                 {
@@ -386,9 +394,10 @@ class NexentaNasDriver(driver.ShareDriver):
             data['securityContexts'][0]['readOnlyList'] = ls
         else:
             raise exception.InvalidInput(_(
-                            'Access level  %s is not allowed in '
-                            'Nexenta Store appliance'), access_level)
-        url = 'nas/nfs/' + PATH_DELIMITER.join((self.pool_name, self.fs_prefix, share_name))
+                'Access level  %s is not allowed in '
+                'Nexenta Store appliance'), access_level)
+        url = 'nas/nfs/' + PATH_DELIMITER.join(
+            (self.pool_name, self.fs_prefix, share_name))
         self.nef.put(url, data)
 
     def _add_permission(self, share_name):
@@ -396,7 +405,9 @@ class NexentaNasDriver(driver.ShareDriver):
 
         :param share_name: relative filesystem name to be shared
         """
-        LOG.debug('Creating RW ACE for filesystem everyone on Nexenta Store for <%s> filesystem', share_name)
+        LOG.debug(
+            'Creating RW ACE for filesystem everyone on Nexenta Store '
+            'for <%s> filesystem', share_name)
         url = 'storage/pools/{}/filesystems/{}/acl'.format(
             self.pool_name, PATH_DELIMITER.join((self.fs_prefix, share_name)))
         data = {
@@ -428,4 +439,6 @@ class NexentaNasDriver(driver.ShareDriver):
         }
         self.nef.post(url, data)
 
-        LOG.debug('RW ACE for filesystem <%s> on Nexenta Store has been successfully created', share_name)
+        LOG.debug(
+            'RW ACE for filesystem <%s> on Nexenta Store has been '
+            'successfully created', share_name)
