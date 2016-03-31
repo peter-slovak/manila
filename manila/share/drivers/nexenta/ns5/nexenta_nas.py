@@ -310,7 +310,7 @@ class NexentaNasDriver(driver.ShareDriver):
             (self.pool_name, self.fs_prefix, share['name']))
         res = self.nef.get(url)
         security_contexts = res.get('securityContexts', [])
-        for i in xrange(len(security_contexts)):
+        for i in range(len(security_contexts)):
             address_ = security_contexts[i]['root'][0]['entity']
             mask_ = security_contexts[i]['root'][0].get('mask')
             if address == address_ and mask == mask_:
@@ -322,11 +322,10 @@ class NexentaNasDriver(driver.ShareDriver):
     def _set_quota(self, share_name, new_size):
         if self.configuration.nexenta_thin_provisioning:
             return
-        if isinstance(new_size, basestring):
-            new_size = int(new_size)
+        #if isinstance(new_size, basestring):
+        #    new_size = int(new_size)
         quota = new_size * 1024 * 1024 * 1024
         data = {
-            # 'quotaSize': quota,
             'reservationSize': quota
         }
         url = 'storage/pools/{}/filesystems/{}%2F{}'.format(self.pool_name,
