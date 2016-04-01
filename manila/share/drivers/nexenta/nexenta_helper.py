@@ -86,8 +86,6 @@ class RestHelper(object):
                 self.volume, self.share, create_folder_props)
             path = '%s/%s' % (self.volume, self.share)
             self._share_folder(path)
-            # raise LookupError(_("Folder %s does not exist in Nexenta"
-            #                     "Stor appliance"), folder)
 
     def _get_cifs_service_status(self):
         LOG.debug("Check CIFS Service status - NOT YET IMPLEMENED.")
@@ -131,10 +129,9 @@ class RestHelper(object):
 
     def _set_quota(self, share_name, new_size):
         if self.configuration.nexenta_thin_provisioning:
-            return
-        quota = '%sG' % new_size
-        self.nms.folder.set_child_prop(
-            self._get_share_path(share_name), 'quota', quota)
+            quota = '%sG' % new_size
+            self.nms.folder.set_child_prop(
+                self._get_share_path(share_name), 'quota', quota)
 
     def _get_location_path(self, path, protocol):
         location = None

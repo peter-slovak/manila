@@ -94,11 +94,6 @@ class NexentaNasDriver(driver.ShareDriver):
         LOG.debug('Extending share: %s to %sG.' % (share['name'], new_size))
         self.helper._set_quota(share['name'], new_size)
 
-    def shrink_share(self, share, new_size, share_server=None):
-        """Shrinks size of existing share."""
-        LOG.debug('Shrinking share: %s to %sG.' % (share['name'], new_size))
-        self.helper._set_quota(share['name'], new_size)
-
     def create_snapshot(self, context, snapshot, share_server=None):
         """Create a snapshot."""
         LOG.debug('Creating a snapshot of share: %s.' % snapshot['share_name'])
