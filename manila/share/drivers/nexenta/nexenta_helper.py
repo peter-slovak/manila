@@ -16,9 +16,8 @@
 from manila import exception
 from manila.i18n import _, _LI
 from manila.share.drivers.nexenta import jsonrpc
+from manila.share.drivers.nexenta import utils
 from oslo_log import log
-
-import utils
 
 LOG = log.getLogger(__name__)
 
