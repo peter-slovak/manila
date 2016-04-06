@@ -1,0 +1,536 @@
+# Copyright 2016 Nexenta Systems, Inc.
+# All Rights Reserved.
+#
+#    Licensed under the Apache License, Version 2.0 (the "License"); you may
+#    not use this file except in compliance with the License. You may obtain
+#    a copy of the License at
+#
+#         http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+#    License for the specific language governing permissions and limitations
+#    under the License.
+
+import mock
+from mock import patch
+
+from manila import test
+from manila import context
+from manila.share import configuration as conf
+from manila.share.drivers.nexenta.nexenta_nas import NexentaNasDriver
+from manila import exception
+from oslo_utils import units
+from oslo_serialization import jsonutils
+
+PATH_TO_RPC = 'requests.post'
+
+
+class FakeResponse(object):
+
+    def __init__(self, response={}):
+        self.response = response
+        super(FakeResponse, self).__init__()
+
+    def json(self):
+        return self.response
+
+    def close(self):
+        pass
+
+
+class RequestParams(object):
+    def __init__(self, scheme, host, port, path, user, password):
+        self.scheme = scheme.lower()
+        self.host = host
+        self.port = port
+        self.path = path
+        self.user = user
+        self.password = password
+
+    @property
+    def url(self):
+        return '%s://%s:%s%s' % (self.scheme, self.host, self.port, self.path)
+
+    @property
+    def headers(self):
+        auth = ('%s:%s' % (self.user, self.password)).encode('base64')[:-1]
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': 'Basic %s' % auth
+        }
+        return headers
+
+    def build_post_args(self, obj, method, *args):
+        data = jsonutils.dumps({
+            'object': obj,
+            'method': method,
+            'params': args
+        })
+        return data
+
+
+class TestNexentaNasDriver(test.TestCase):
+
+    def _get_share_path(self, share_name):
+        return '%s/%s/%s' % (self.volume, self.share, share_name)
+
+    def setUp(self):
+        def _safe_get(opt):
+            return getattr(self.cfg, opt)
+        super(TestNexentaNasDriver, self).setUp()
+
+        self.ctx = context.get_admin_context()
+        self.cfg = mock.Mock(spec=conf.Configuration)
+        self.cfg.safe_get = mock.Mock(side_effect=_safe_get)
+
+        self.cfg.nexenta_host = '1.1.1.1'
+        self.cfg.nexenta_rest_port = 1000
+        self.cfg.nexenta_rest_protocol = 'auto'
+        self.cfg.nexenta_volume = 'volume'
+        self.cfg.nexenta_nfs_share = 'nfs_share'
+        self.cfg.nexenta_user = 'user'
+        self.cfg.nexenta_password = 'password'
+        self.cfg.nexenta_thin_provisioning = False
+        self.cfg.enabled_share_protocols = 'NFS'
+        self.cfg.nexenta_mount_point_base = '$state_path/mnt'
+        self.cfg.nexenta_dataset_compression = 'on'
+        self.cfg.nexenta_smb = 'on'
+        self.cfg.nexenta_nfs = 'on'
+        self.cfg.nexenta_dataset_dedup = 'on'
+
+        self.cfg.network_config_group = 'DEFAULT'
+        self.cfg.admin_network_config_group = (
+            'fake_admin_network_config_group')
+        self.cfg.driver_handles_share_servers = False
+
+        self.request_params = RequestParams(
+            'http', self.cfg.nexenta_host, self.cfg.nexenta_rest_port,
+            '/rest/nms/', self.cfg.nexenta_user, self.cfg.nexenta_password)
+
+        self.drv = NexentaNasDriver(configuration=self.cfg)
+        self.drv.do_setup(self.ctx)
+
+        self.volume = self.cfg.nexenta_volume
+        self.share = self.cfg.nexenta_nfs_share
+
+    @patch(PATH_TO_RPC)
+    def test_check_for_setup_error__volume_doesnt_exist(self, post):
+        post.return_value = FakeResponse()
+        self.assertRaises(LookupError, self.drv.check_for_setup_error)
+
+    @patch(PATH_TO_RPC)
+    def test_check_for_setup_error__folder_doesnt_exist(self, post):
+        folder = '%s/%s' % (self.volume, self.share)
+
+        create_folder_props = {
+            'recordsize': '4K',
+            'quota': 'none',
+            'compression': self.cfg.nexenta_dataset_compression,
+            'sharesmb': self.cfg.nexenta_smb,
+            'sharenfs': self.cfg.nexenta_nfs,
+        }
+
+        share_opts = {
+            'read_write': '*',
+            'read_only': '',
+            'root': 'nobody',
+            'extra_options': 'anon=0',
+            'recursive': 'true',
+            'anonymous_rw': 'true',
+        }
+
+        def my_side_effect(*args, **kwargs):
+            if kwargs['data'] == self.request_params.build_post_args(
+                    'volume', 'object_exists', self.volume):
+                return FakeResponse({'result': 'OK'})
+            elif kwargs['data'] == self.request_params.build_post_args(
+                    'folder', 'object_exists', folder):
+                return FakeResponse()
+            elif kwargs['data'] == self.request_params.build_post_args(
+                    'folder', 'create_with_props', self.volume, self.share,
+                    create_folder_props):
+                return FakeResponse()
+            elif kwargs['data'] == self.request_params.build_post_args(
+                    'netstorsvc', 'share_folder',
+                    'svc:/network/nfs/server:default', folder, share_opts):
+                return FakeResponse()
+            else:
+                raise Exception('Unexpected request')
+
+        post.side_effect = my_side_effect
+        self.drv.check_for_setup_error()
+        post.assert_any_call(
+            self.request_params.url, data=self.request_params.build_post_args(
+                'volume', 'object_exists', self.volume),
+            headers=self.request_params.headers)
+        post.assert_any_call(
+            self.request_params.url, data=self.request_params.build_post_args(
+                'folder', 'object_exists', folder),
+            headers=self.request_params.headers)
+        post.assert_any_call(
+            self.request_params.url, data=self.request_params.build_post_args(
+                'folder', 'create_with_props', self.volume, self.share,
+                create_folder_props),
+            headers=self.request_params.headers)
+        post.assert_any_call(
+            self.request_params.url, data=self.request_params.build_post_args(
+                'netstorsvc', 'share_folder',
+                'svc:/network/nfs/server:default', folder, share_opts),
+            headers=self.request_params.headers)
+
+    @patch(PATH_TO_RPC)
+    def test_create_share(self, post):
+        share = {'name': 'share', 'size': 1,
+                 'share_proto': self.cfg.enabled_share_protocols}
+        post.return_value = FakeResponse()
+        self.cfg.nexenta_thin_provisioning = False
+        path = '%s/%s/%s' % (self.volume, self.share, share['name'])
+        location = '%s:/volumes/%s' % (self.cfg.nexenta_host, path)
+        self.assertEqual(location,
+            self.drv.create_share(self.ctx, share))
+
+    @patch(PATH_TO_RPC)
+    def test_create_share__wrong_proto(self, post):
+        share = {'name': 'share', 'size': 1,
+                 'share_proto': 'A_VERY_WRONG_PROTO'}
+        post.return_value = FakeResponse()
+        self.assertRaises(exception.InvalidShare, self.drv.create_share,
+                          self.ctx, share)
+
+    @patch(PATH_TO_RPC)
+    def test_create_share__thin_provisioning(self, post):
+        share = {'name': 'share', 'size': 1,
+                 'share_proto': self.cfg.enabled_share_protocols}
+        quota = 'none'
+        create_folder_props = {
+            'recordsize': '4K',
+            'quota': quota,
+            'reservation': quota,
+            'compression': self.cfg.nexenta_dataset_compression,
+            'sharesmb': self.cfg.nexenta_smb,
+            'sharenfs': self.cfg.nexenta_nfs,
+        }
+        parent_path = '%s/%s' % (self.volume, self.share)
+        post.return_value = FakeResponse()
+        self.cfg.nexenta_thin_provisioning = True
+        self.drv.create_share(self.ctx, share)
+        post.assert_called_with(
+            self.request_params.url, data=self.request_params.build_post_args(
+                'folder', 'create_with_props', parent_path, share['name'],
+                create_folder_props),
+            headers=self.request_params.headers)
+
+    @patch(PATH_TO_RPC)
+    def test_create_share__thick_provisioning(self, post):
+        share = {'name': 'share', 'size': 1,
+                 'share_proto': self.cfg.enabled_share_protocols}
+        quota = '%sG' % share['size']
+        create_folder_props = {
+            'recordsize': '4K',
+            'quota': quota,
+            'reservation': quota,
+            'compression': self.cfg.nexenta_dataset_compression,
+            'sharesmb': self.cfg.nexenta_smb,
+            'sharenfs': self.cfg.nexenta_nfs,
+        }
+        parent_path = '%s/%s' % (self.volume, self.share)
+        post.return_value = FakeResponse()
+        self.cfg.nexenta_thin_provisioning = False
+        self.drv.create_share(self.ctx, share)
+        post.assert_any_call(
+            self.request_params.url, data=self.request_params.build_post_args(
+                'folder', 'create_with_props', parent_path, share['name'],
+                create_folder_props),
+            headers=self.request_params.headers)
+
+    @patch(PATH_TO_RPC)
+    def test_create_share_from_snapshot(self, post):
+        share = {'name': 'share', 'size': 1,
+                 'share_proto': self.cfg.enabled_share_protocols}
+        snapshot = {'name': 'sn1', 'share_name': share['name']}
+        post.return_value = FakeResponse()
+        path = '%s/%s/%s' % (self.volume, self.share, share['name'])
+        location = '%s:/volumes/%s' % (self.cfg.nexenta_host, path)
+        self.assertEqual(location, self.drv.create_share_from_snapshot(
+            self.ctx, share, snapshot))
+        snapshot_name = '%s/%s/%s@%s' % (
+            self.volume, self.share, snapshot['share_name'], snapshot['name'])
+        post.assert_any_call(
+            self.request_params.url, data=self.request_params.build_post_args(
+                'folder', 'clone', snapshot_name,
+                '%s/%s/%s' % (self.volume, self.share, share['name'])),
+            headers=self.request_params.headers)
+
+    @patch(PATH_TO_RPC)
+    def test_delete_share(self, post):
+        share = {'name': 'share', 'size': 1,
+                 'share_proto': self.cfg.enabled_share_protocols}
+        post.return_value = FakeResponse()
+        self.drv.delete_share(self.ctx, share)
+        folder = '%s/%s/%s' % (self.volume, self.share, share['name'])
+        post.assert_any_call(
+            self.request_params.url, data=self.request_params.build_post_args(
+                'folder', 'destroy', folder.strip(), '-r'),
+            headers=self.request_params.headers)
+
+    @patch(PATH_TO_RPC)
+    def test_delete_share__nexenta_error(self, post):
+        share = {'name': 'share', 'size': 1,
+                 'share_proto': self.cfg.enabled_share_protocols}
+        post.return_value = FakeResponse()
+        post.side_effect = exception.NexentaException('does not exist')
+        self.drv.delete_share(self.ctx, share)
+
+    @patch(PATH_TO_RPC)
+    def test_delete_share__some_error(self, post):
+        share = {'name': 'share', 'size': 1,
+                 'share_proto': self.cfg.enabled_share_protocols}
+        post.return_value = FakeResponse()
+        post.side_effect = Exception('Some error')
+        self.assertRaises(Exception, self.drv.delete_share, self.ctx, share)
+
+    @patch(PATH_TO_RPC)
+    def test_extend_share__thin_provisoning(self, post):
+        share = {'name': 'share', 'size': 1,
+                 'share_proto': self.cfg.enabled_share_protocols}
+        new_size = 5
+        quota = '%sG' % new_size
+        post.return_value = FakeResponse()
+        self.cfg.nexenta_thin_provisioning = True
+        self.drv.extend_share(share, new_size)
+        post.assert_called_with(
+            self.request_params.url, data=self.request_params.build_post_args(
+                'folder', 'set_child_prop',
+                '%s/%s/%s' % (self.volume, self.share, share['name']),
+                'quota', quota),
+            headers=self.request_params.headers)
+
+    @patch(PATH_TO_RPC)
+    def test_extend_share__thick_provisoning(self, post):
+        share = {'name': 'share', 'size': 1,
+                 'share_proto': self.cfg.enabled_share_protocols}
+        new_size = 5
+        post.return_value = FakeResponse()
+        self.cfg.nexenta_thin_provisioning = False
+        self.drv.extend_share(share, new_size)
+        post.assert_not_called()
+
+    @patch(PATH_TO_RPC)
+    def test_create_snapshot(self, post):
+        snapshot = {'share_name': 'share', 'name': 'share@first'}
+        post.return_value = FakeResponse()
+        self.drv.create_snapshot(self.ctx, snapshot)
+        folder = '%s/%s/%s' % (self.volume, self.share, snapshot['share_name'])
+        post.assert_called_with(
+            self.request_params.url, data=self.request_params.build_post_args(
+                'folder', 'create_snapshot', folder, snapshot['name'], '-r'),
+            headers=self.request_params.headers)
+
+    @patch(PATH_TO_RPC)
+    def test_delete_snapshot(self, post):
+        snapshot = {'share_name': 'share', 'name': 'share@first'}
+        post.return_value = FakeResponse()
+        self.drv.delete_snapshot(self.ctx, snapshot)
+        post.assert_called_with(
+            self.request_params.url, data=self.request_params.build_post_args(
+                'snapshot', 'destroy', '%s@%s' % (
+                    self._get_share_path(snapshot['share_name']),
+                    snapshot['name']),
+                ''),
+            headers=self.request_params.headers)
+
+    @patch(PATH_TO_RPC)
+    def test_delete_snapshot__nexenta_error_1(self, post):
+        snapshot = {'share_name': 'share', 'name': 'share@first'}
+        post.return_value = FakeResponse()
+        post.side_effect = exception.NexentaException('does not exist')
+        self.drv.delete_snapshot(self.ctx, snapshot)
+
+    @patch(PATH_TO_RPC)
+    def test_delete_snapshot__nexenta_error_2(self, post):
+        snapshot = {'share_name': 'share', 'name': 'share@first'}
+        post.return_value = FakeResponse()
+        post.side_effect = exception.NexentaException('has dependent clones')
+        self.drv.delete_snapshot(self.ctx, snapshot)
+
+    @patch(PATH_TO_RPC)
+    def test_delete_snapshot__some_error(self, post):
+        snapshot = {'share_name': 'share', 'name': 'share@first'}
+        post.return_value = FakeResponse()
+        post.side_effect = Exception('Some error')
+        self.assertRaises(Exception, self.drv.delete_snapshot,
+                          self.ctx, snapshot)
+
+    @patch(PATH_TO_RPC)
+    def test_allow_access__unsupported_access_type(self, post):
+        share = {'name': 'share',
+                 'share_proto': self.cfg.enabled_share_protocols}
+        access = {
+            'access_type': 'group',
+            'access_to': 'ordinary_users',
+            'access_level': 'rw'
+        }
+        self.assertRaises(exception.InvalidInput, self.drv.allow_access,
+                          self.ctx, share, access)
+
+    @patch(PATH_TO_RPC)
+    def test_allow_access__cidr(self, post):
+        share = {'name': 'share',
+                 'share_proto': self.cfg.enabled_share_protocols}
+        access = {
+            'access_type': 'ip',
+            'access_to': '1.1.1.1/24',
+            'access_level': 'rw'
+        }
+
+        rw_list = '1.2.3.4'
+        share_opts = {
+            'auth_type': 'none',
+            'read_write': rw_list + '%s:' % access['access_to'],
+            'recursive': 'true',
+            'anonymous_rw': 'true',
+            'anonymous': 'true',
+            'extra_options': 'anon=0',
+        }
+
+        def my_side_effect(*args, **kwargs):
+            if kwargs['data'] == self.request_params.build_post_args(
+                    'netstorsvc', 'get_shareopts',
+                    'svc:/network/nfs/server:default',
+                    self._get_share_path(share['name'])):
+                return FakeResponse({'result': {'read_write': rw_list}})
+            elif kwargs['data'] == self.request_params.build_post_args(
+                    'netstorsvc', 'share_folder',
+                    'svc:/network/nfs/server:default',
+                    self._get_share_path(share['name']), share_opts):
+                return FakeResponse()
+            else:
+                raise Exception('Unexpected request')
+
+        post.side_effect = my_side_effect
+        self.drv.allow_access(self.ctx, share, access)
+        post.assert_any_call(
+            self.request_params.url, data=self.request_params.build_post_args(
+                'netstorsvc', 'get_shareopts',
+                'svc:/network/nfs/server:default',
+                self._get_share_path(share['name'])),
+            headers=self.request_params.headers)
+        post.assert_any_call(
+            self.request_params.url, data=self.request_params.build_post_args(
+                'netstorsvc', 'share_folder',
+                'svc:/network/nfs/server:default',
+                self._get_share_path(share['name']), share_opts),
+            headers=self.request_params.headers)
+
+    @patch(PATH_TO_RPC)
+    def test_allow_access__add_one_ip_to_empty_access_list(self, post):
+        share = {'name': 'share',
+                 'share_proto': self.cfg.enabled_share_protocols}
+        access = {
+            'access_type': 'ip',
+            'access_to': '1.1.1.1',
+            'access_level': 'rw'
+        }
+
+        rw_list = None
+        share_opts = {
+            'auth_type': 'none',
+            'read_write': '%s:' % access['access_to'],
+            'recursive': 'true',
+            'anonymous_rw': 'true',
+            'anonymous': 'true',
+            'extra_options': 'anon=0',
+        }
+
+        def my_side_effect(*args, **kwargs):
+            if kwargs['data'] == self.request_params.build_post_args(
+                    'netstorsvc', 'get_shareopts',
+                    'svc:/network/nfs/server:default',
+                    self._get_share_path(share['name'])):
+                return FakeResponse({'result': {'read_write': rw_list}})
+            elif kwargs['data'] == self.request_params.build_post_args(
+                    'netstorsvc', 'share_folder',
+                    'svc:/network/nfs/server:default',
+                    self._get_share_path(share['name']), share_opts):
+                return FakeResponse()
+            else:
+                raise Exception('Unexpected request')
+
+        post.side_effect = my_side_effect
+        self.drv.allow_access(self.ctx, share, access)
+        post.assert_any_call(
+            self.request_params.url, data=self.request_params.build_post_args(
+                'netstorsvc', 'get_shareopts',
+                'svc:/network/nfs/server:default',
+                self._get_share_path(share['name'])),
+            headers=self.request_params.headers)
+        post.assert_any_call(
+            self.request_params.url, data=self.request_params.build_post_args(
+                'netstorsvc', 'share_folder',
+                'svc:/network/nfs/server:default',
+                self._get_share_path(share['name']), share_opts),
+            headers=self.request_params.headers)
+
+    @patch(PATH_TO_RPC)
+    def test_deny_access__ip_in_access_list(self, post):
+        share = {'name': 'share',
+                 'share_proto': self.cfg.enabled_share_protocols}
+        access = {
+            'access_type': 'ip',
+            'access_to': '1.1.1.1',
+            'access_level': 'rw'
+        }
+
+        rw_list = '%s:' % access['access_to'] + '10.10.10.5/24:'
+        share_opts = {
+            'Auth_Type': 'Auth_sys',
+            'read_write': rw_list.replace(('%s:' % access['access_to']), ''),
+            'recursive': 'true',
+            'anonymous_rw': 'true',
+            'anonymous': 'true',
+            'extra_options': 'anon=0'
+        }
+
+        def my_side_effect(*args, **kwargs):
+            if kwargs['data'] == self.request_params.build_post_args(
+                    'netstorsvc', 'get_shareopts',
+                    'svc:/network/nfs/server:default',
+                    self._get_share_path(share['name'])):
+                return FakeResponse({'result': {'read_write': rw_list}})
+            elif kwargs['data'] == self.request_params.build_post_args(
+                    'netstorsvc', 'share_folder',
+                    'svc:/network/nfs/server:default',
+                    self._get_share_path(share['name']), share_opts):
+                return FakeResponse()
+            else:
+                raise Exception(
+                    'Unexpected request:\n{}'.format(kwargs['data']))
+
+        post.side_effect = my_side_effect
+        self.drv.deny_access(self.ctx, share, access)
+        post.assert_any_call(
+            self.request_params.url, data=self.request_params.build_post_args(
+                'netstorsvc', 'get_shareopts',
+                'svc:/network/nfs/server:default',
+                self._get_share_path(share['name'])),
+            headers=self.request_params.headers)
+        post.assert_any_call(
+            self.request_params.url, data=self.request_params.build_post_args(
+                'netstorsvc', 'share_folder',
+                'svc:/network/nfs/server:default',
+                self._get_share_path(share['name']), share_opts),
+            headers=self.request_params.headers)
+
+    @patch(PATH_TO_RPC)
+    def test_deny_access__unsupported_access_type(self, post):
+        share = {'name': 'share',
+                 'share_proto': self.cfg.enabled_share_protocols}
+        access = {
+            'access_type': 'group',
+            'access_to': 'ordinary_users',
+            'access_level': 'rw'
+        }
+        self.assertRaises(exception.InvalidInput, self.drv.deny_access,
+                          self.ctx, share, access)

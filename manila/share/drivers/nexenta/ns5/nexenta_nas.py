@@ -322,7 +322,7 @@ class NexentaNasDriver(driver.ShareDriver):
     def _set_quota(self, share_name, new_size):
         if self.configuration.nexenta_thin_provisioning:
             return
-        quota = new_size * 1024 * 1024 * 1024
+        quota = new_size * units.Gi
         data = {
             'reservationSize': quota
         }

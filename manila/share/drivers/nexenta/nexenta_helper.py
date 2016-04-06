@@ -88,10 +88,10 @@ class RestHelper(object):
             self._share_folder(path)
 
     def _get_cifs_service_status(self):
-        LOG.debug("Check CIFS Service status - NOT YET IMPLEMENED.")
+        LOG.debug("Check CIFS Service status - NOT YET IMPLEMENTED.")
 
     def _start_cifs_service_status(self):
-        LOG.debug("Start CIFS Service - NOT YET IMPLEMENED.")
+        LOG.debug("Start CIFS Service - NOT YET IMPLEMENTED.")
 
     def _create_filesystem(self, share):
         """Create file system."""
@@ -181,7 +181,6 @@ class RestHelper(object):
                              'folder': share_name,
                              'snapshot': snapshot_name,
                 })
-                return
             elif 'has dependent clones' in exc.args[0]:
                 LOG.info(_LI('Snapshot %(folder)s@%(snapshot)s has dependent '
                              'clones, it will be deleted later.'),
@@ -189,7 +188,6 @@ class RestHelper(object):
                              'folder': share_name,
                              'snapshot': snapshot_name,
                 })
-                return
 
     def _create_share_from_snapshot(self, share, snapshot):
         snapshot_name = '%s/%s/%s@%s' % (
@@ -227,16 +225,15 @@ class RestHelper(object):
             result = self.nms.netstorsvc.share_folder(
                 'svc:/network/nfs/server:default',
                 self._get_share_path(share_name), share_opts)
-        else:
-            raise exception.NexentaException(
-                'Unsupported access type: %s' % access_type)
-        return result
+            return result
+        raise exception.InvalidInput(
+            'Unsupported access type: %s' % access_type)
 
     def _deny_access(self, share_name, access, share_proto):
         """Deny access to share."""
         access_type = access['access_type'].strip()
         access_to = access['access_to'].strip()
-        LOG.debug('Dany access to share %s for user %s' % (
+        LOG.debug('Deny access to share %s for user %s' % (
             share_name, access_type))
 
         if access_type == 'ip':
@@ -252,19 +249,15 @@ class RestHelper(object):
                     'recursive': 'true',
                     'anonymous_rw': 'true',
                     'anonymous': 'true',
-                    'extra_options': 'anon=0',
+                    'extra_options': 'anon=0'
                 }
                 result = self.nms.netstorsvc.share_folder(
                     'svc:/network/nfs/server:default',
                     self._get_share_path(share_name),
                     share_opts)
-            else:
-                return None
-        else:
-            raise exception.NexentaException(
-                'Only IP-based access is allowed')
-
-        return result
+                return result
+            return
+        raise exception.InvalidInput('Only IP-based access is allowed')
 
     def _get_capacity_info(self, nfs_share):
         """Calculate available space on the NFS share.
