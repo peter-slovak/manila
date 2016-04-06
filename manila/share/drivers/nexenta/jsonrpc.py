@@ -19,6 +19,7 @@
 .. automodule:: nexenta.jsonrpc
 """
 
+import base64
 import socket
 
 from oslo_log import log as logging
@@ -77,7 +78,8 @@ class NexentaJSONProxy(object):
             'method': self.method,
             'params': args
         })
-        auth = ('%s:%s' % (self.user, self.password)).encode('base64')[:-1]
+        auth = base64.b64encode(
+            ('%s:%s' % (self.user, self.password)).encode('utf-8'))[:-1]
         headers = {
             'Content-Type': 'application/json',
             'Authorization': 'Basic %s' % auth
