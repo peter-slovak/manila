@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import base64
 from manila import exception
 from manila.i18n import _, _LI
 from manila.share.drivers.nexenta import jsonrpc
@@ -26,12 +27,6 @@ class RestHelper(object):
 
     def __init__(self, configuration):
         self.configuration = configuration
-        self.url = None
-        self.headers = {
-            "Connection": "keep-alive",
-            "Content-Type": "application/json",
-            'Authorization': 'Basic %s' % 'admin:nexenta'.encode('base64')[:-1]
-        }
         self.nfs_mount_point_base = (
             self.configuration.nexenta_mount_point_base)
         self.dataset_compression = (
