@@ -66,7 +66,7 @@ class NexentaJSONProxy(object):
 
     def __call__(self, path, data=None):
         auth = base64.b64encode(
-            ('%s:%s' % (self.user, self.password)).encode('utf-8'))[:-1]
+            ('%s:%s' % (self.user, self.password)).encode('utf-8'))
         headers = {
             'Content-Type': 'application/json',
             'Authorization': 'Basic %s' % auth
