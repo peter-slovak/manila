@@ -1,4 +1,4 @@
-# Copyright 2011 Nexenta Systems, Inc.
+# Copyright 2016 Nexenta Systems, Inc.
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -83,7 +83,8 @@ class NexentaJSONProxy(object):
             url, data=data, headers=headers)
         self.checkError(response)
         content = json.loads(response.content) if response.content else None
-        LOG.debug("Got response: %s %s", response.status_code, response.reason)
+        LOG.debug("Got response: %s %s %s",
+                  response.status_code, response.reason, content)
         response.close()
 
         if response.status_code == 202 and content:

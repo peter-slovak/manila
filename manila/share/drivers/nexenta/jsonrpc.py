@@ -19,13 +19,11 @@
 .. automodule:: nexenta.jsonrpc
 """
 
-import base64
+import requests
 import socket
 
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
-
-import requests
 
 from manila.exception import NexentaException
 from manila.utils import retry
@@ -76,19 +74,16 @@ class NexentaJSONProxy(object):
         data = jsonutils.dumps({
             'object': self.obj,
             'method': self.method,
-            'params': args
+            'params': args,
         })
-        auth = base64.b64encode(
-            ('%s:%s' % (self.user, self.password)).encode('utf-8'))
+        auth = ('%s:%s' % (self.user, self.password)).encode('base64')[:-1]
         headers = {
             'Content-Type': 'application/json',
-            'Authorization': 'Basic %s' % auth
+            'Authorization': 'Basic %s' % auth,
         }
         LOG.debug('Sending JSON data: %s', data)
-        req = requests.post(self.url, data=data, headers=headers)
-        response = req.json()
-        req.close()
-
+        r = requests.post(self.url, data=data, headers=headers)
+        response = r.json()
         LOG.debug('Got response: %s', response)
         if response.get('error') is not None:
             message = response['error'].get('message', '')

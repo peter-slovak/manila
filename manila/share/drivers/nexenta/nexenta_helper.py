@@ -13,11 +13,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_log import log
+
 from manila import exception
-from manila.i18n import _, _LI
+from manila.i18n import _
+from manila.i18n import _LI
 from manila.share.drivers.nexenta import jsonrpc
 from manila.share.drivers.nexenta import utils
-from oslo_log import log
 
 LOG = log.getLogger(__name__)
 
@@ -30,7 +32,7 @@ class RestHelper(object):
             self.configuration.nexenta_mount_point_base)
         self.dataset_compression = (
             self.configuration.nexenta_dataset_compression)
-        self.dataset_deduplication = self.configuration.nexenta_dataset_dedup
+        self.dataset_dedupe = self.configuration.nexenta_dataset_dedupe
         self.nms = None
         self.nms_protocol = self.configuration.nexenta_rest_protocol
         self.nms_host = self.configuration.nexenta_host
@@ -38,20 +40,9 @@ class RestHelper(object):
         self.share = self.configuration.nexenta_nfs_share
         self.nms_port = self.configuration.nexenta_rest_port
         self.nms_user = self.configuration.nexenta_user
+        self.nfs = self.configuration.nexenta_nfs
         self.nms_password = self.configuration.nexenta_password
         self.storage_protocol = 'NFS'
-
-    def _check_service(self):
-        LOG.debug('Check service is not implemented')
-
-    @property
-    def backend_name(self):
-        backend_name = None
-        if self.configuration:
-            backend_name = self.configuration.safe_get('volume_backend_name')
-        if not backend_name:
-            backend_name = self.__class__.__name__
-        return backend_name
 
     def do_setup(self):
         if self.nms_protocol == 'auto':
@@ -71,7 +62,6 @@ class RestHelper(object):
         create_folder_props = {'recordsize': '4K',
                                'quota': 'none',
                                'compression': self.dataset_compression,
-                               'sharesmb': self.configuration.nexenta_smb,
                                'sharenfs': self.configuration.nexenta_nfs,
                                }
         if not self.nms.folder.object_exists(folder):
@@ -96,15 +86,14 @@ class RestHelper(object):
                                'quota': quota,
                                'reservation': quota,
                                'compression': self.dataset_compression,
-                               'sharesmb': self.configuration.nexenta_smb,
-                               'sharenfs': self.configuration.nexenta_nfs,
+                               'sharenfs': self.nfs,
                                }
 
         parent_path = '%s/%s' % (self.volume, self.share)
         self.nms.folder.create_with_props(
-            parent_path, share['name'], create_folder_props)
+            parent_path, share['share_id'], create_folder_props)
 
-        path = self._get_share_path(share['name'])
+        path = self._get_share_path(share['share_id'])
         return self._get_location_path(path, share['share_proto'])
 
     def _share_folder(self, path):
@@ -116,7 +105,7 @@ class RestHelper(object):
             'recursive': 'true',
             'anonymous_rw': 'true',
         }
-        LOG.debug('Sharing folder on Nexenta Store')
+        LOG.debug('Sharing folder %s on NexentaStor' % path)
         self.nms.netstorsvc.share_folder('svc:/network/nfs/server:default',
                                          path, share_opts)
 
@@ -136,10 +125,9 @@ class RestHelper(object):
                         % protocol))
         return location
 
-    def _delete_share(self, share_name, share_proto):
+    def _delete_share(self, share_name):
         """Delete share."""
         folder = self._get_share_path(share_name)
-        # Destroy a child object.
         try:
             self.nms.folder.destroy(folder.strip(), '-r')
         except exception.NexentaException as exc:
@@ -187,70 +175,38 @@ class RestHelper(object):
             self.volume, self.share, snapshot['share_name'], snapshot['name'])
         self.nms.folder.clone(
             snapshot_name,
-            '%s/%s/%s' % (self.volume, self.share, share['name']))
-        path = self._get_share_path(share['name'])
+            '%s/%s/%s' % (self.volume, self.share, share['share_id']))
+        path = self._get_share_path(share['share_id'])
         self._share_folder(path)
         return self._get_location_path(path, share['share_proto'])
 
-    def _allow_access(self, share_name, access, share_proto):
+    def _update_access(self, share_id, access_rules):
         """Allow access to the share."""
-        access_to = access['access_to'].strip()
-        access_type = access['access_type'].strip()
-
-        if access_type == 'ip':
-            opts = self.nms.netstorsvc.get_shareopts(
-                'svc:/network/nfs/server:default',
-                self._get_share_path(share_name))
-            rw_list = opts['read_write']
-            if rw_list and rw_list != '*':
-                rw_list += '%s:' % access_to
+        rw_list = []
+        ro_list = []
+        for rule in access_rules:
+            if rule['access_type'].lower() != 'ip':
+                msg = _('Only IP access type is supported.')
+                raise exception.InvalidShareAccess(reason=msg)
             else:
-                rw_list = '%s:' % access_to
+                if rule['access_level'] == 'rw':
+                    rw_list.append(rule['access_to'])
+                else:
+                    ro_list.append(rule['access_to'])
 
-            share_opts = {
-                'auth_type': 'none',
-                'read_write': rw_list,
-                'recursive': 'true',
-                'anonymous_rw': 'true',
-                'anonymous': 'true',
-                'extra_options': 'anon=0',
-            }
-            result = self.nms.netstorsvc.share_folder(
-                'svc:/network/nfs/server:default',
-                self._get_share_path(share_name), share_opts)
-            return result
-        raise exception.InvalidInput(
-            'Unsupported access type: %s' % access_type)
-
-    def _deny_access(self, share_name, access, share_proto):
-        """Deny access to share."""
-        access_type = access['access_type'].strip()
-        access_to = access['access_to'].strip()
-        LOG.debug('Deny access to share %s for user %s' % (
-            share_name, access_type))
-
-        if access_type == 'ip':
-            opts = self.nms.netstorsvc.get_shareopts(
-                'svc:/network/nfs/server:default',
-                self._get_share_path(share_name))
-            rw_list = opts['read_write']
-            if rw_list and (access_to in rw_list):
-                rw_list = rw_list.replace(('%s:' % access_to), '')
-                share_opts = {
-                    'Auth_Type': 'Auth_sys',
-                    'read_write': rw_list,
-                    'recursive': 'true',
-                    'anonymous_rw': 'true',
-                    'anonymous': 'true',
-                    'extra_options': 'anon=0'
-                }
-                result = self.nms.netstorsvc.share_folder(
-                    'svc:/network/nfs/server:default',
-                    self._get_share_path(share_name),
-                    share_opts)
-                return result
-            return
-        raise exception.InvalidInput('Only IP-based access is allowed')
+        share_opts = {
+            'auth_type': 'none',
+            'read_write': ':'.join(rw_list),
+            'read_only': ':'.join(ro_list),
+            'recursive': 'true',
+            'anonymous_rw': 'true',
+            'anonymous': 'true',
+            'extra_options': 'anon=0',
+        }
+        result = self.nms.netstorsvc.share_folder(
+            'svc:/network/nfs/server:default',
+            self._get_share_path(share_id), share_opts)
+        return result
 
     def _get_capacity_info(self, nfs_share):
         """Calculate available space on the NFS share.
@@ -263,7 +219,7 @@ class RestHelper(object):
         allocated = utils.str2gib_size(folder_props['used'])
         return free + allocated, free, allocated
 
-    def _update_volume_stats(self):
+    def _update_share_stats(self):
         total, free, allocated = self._get_capacity_info(self.share)
         return dict(
             vendor_name='Nexenta',
@@ -272,5 +228,10 @@ class RestHelper(object):
             free_capacity_gb=free,
             reserved_percentage=self.configuration.reserved_share_percentage,
             nfs_mount_point_base=self.nfs_mount_point_base,
-            thin_provisioning=self.configuration.nexenta_thin_provisioning
+            thin_provisioning=self.configuration.nexenta_thin_provisioning,
+            max_over_subscription_ratio=(
+                        self.configuration.safe_get(
+                            'max_over_subscription_ratio')),
+            compression=self.dataset_compression,
+            dedupe=self.dataset_dedupe,
         )
