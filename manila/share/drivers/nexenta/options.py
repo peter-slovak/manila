@@ -22,59 +22,59 @@
 
 from oslo_config import cfg
 
-NEXENTA_CONNECTION_OPTS = [
+nexenta_connection_opts = [
     cfg.StrOpt('nexenta_host',
                default='',
-               help='IP address of Nexenta SA'),
+               help='IP address of Nexenta SA.'),
     cfg.IntOpt('nexenta_rest_port',
                default=8457,
-               help='HTTP port to connect to Nexenta REST API server'),
+               help='HTTP port to connect to Nexenta REST API server.'),
     cfg.StrOpt('nexenta_rest_protocol',
                default='auto',
                choices=['http', 'https', 'auto'],
-               help='Use http or https for REST connection (default auto)'),
+               help='Use http or https for REST connection (default auto).'),
     cfg.StrOpt('nexenta_user',
                default='admin',
-               help='User name to connect to Nexenta SA'),
+               help='User name to connect to Nexenta SA.'),
     cfg.StrOpt('nexenta_password',
                default='nexenta',
-               help='Password to connect to Nexenta SA',
+               help='Password to connect to Nexenta S.A',
                secret=True),
     cfg.StrOpt('nexenta_volume',
                default='volume1',
-               help='volume name on NexentaStor'),
+               help='volume name on NexentaStor.'),
     cfg.StrOpt('nexenta_pool',
                default='pool1',
-               help='pool name on NexentaStor'),
+               help='pool name on NexentaStor.'),
     cfg.StrOpt('nexenta_nfs',
                default='on',
-               help=('on if share over NFS is enabled')),
+               help='on if share over NFS is enabled.'),
     cfg.StrOpt('nexenta_smb',
                default='off',
-               help=('on if share over SMB is enabled'))
+               help='on if share over SMB is enabled.')
 ]
 
-NEXENTA_NFS_OPTS = [
+nexenta_nfs_opts = [
     cfg.StrOpt('nexenta_mount_point_base',
                default='$state_path/mnt',
-               help='Base directory that contains NFS share mount points'),
+               help='Base directory that contains NFS share mount points.'),
     cfg.BoolOpt('nexenta_nms_cache_volroot',
                 default=True,
                 help=('If set True cache NexentaStor appliance volroot option '
                       'value.'))
 ]
 
-NEXENTA_DATASET_OPTS = [
+nexenta_dataset_opts = [
     cfg.StrOpt('nexenta_nfs_share',
                default='nfs_share',
-               help='NFS share on NexentaStor'),
+               help='NFS share on NexentaStor.'),
     cfg.StrOpt('nexenta_dataset_compression',
                default='on',
                choices=['on', 'off', 'gzip', 'gzip-1', 'gzip-2', 'gzip-3',
                         'gzip-4', 'gzip-5', 'gzip-6', 'gzip-7', 'gzip-8',
                         'gzip-9', 'lzjb', 'zle', 'lz4'],
                help='Compression value for new ZFS folders.'),
-    cfg.StrOpt('nexenta_dataset_dedup',
+    cfg.StrOpt('nexenta_dataset_dedupe',
                default='off',
                choices=['on', 'off', 'sha256', 'verify', 'sha256, verify'],
                help='Deduplication value for new ZFS folders.'),
@@ -85,6 +85,6 @@ NEXENTA_DATASET_OPTS = [
 ]
 
 CONF = cfg.CONF
-CONF.register_opts(NEXENTA_CONNECTION_OPTS)
-CONF.register_opts(NEXENTA_DATASET_OPTS)
-CONF.register_opts(NEXENTA_NFS_OPTS)
+CONF.register_opts(nexenta_connection_opts)
+CONF.register_opts(nexenta_dataset_opts)
+CONF.register_opts(nexenta_nfs_opts)

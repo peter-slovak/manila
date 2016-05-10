@@ -41,14 +41,15 @@ class NexentaNasDriver(driver.ShareDriver):
         self.configuration = kwargs.get('configuration', None)
         if self.configuration:
             self.configuration.append_config_values(
-                options.NEXENTA_CONNECTION_OPTS)
+                options.nexenta_connection_opts)
             self.configuration.append_config_values(
-                options.NEXENTA_NFS_OPTS)
+                options.nexenta_nfs_opts)
             self.configuration.append_config_values(
-                options.NEXENTA_DATASET_OPTS)
+                options.nexenta_dataset_opts)
             self.helper = nexenta_helper.RestHelper(self.configuration)
         else:
-            raise exception.InvalidShare(_('Nexenta configuration missing.'))
+            raise exception.BadConfigurationException(
+                _('Nexenta configuration missing.'))
 
     @property
     def backend_name(self):
@@ -56,73 +57,74 @@ class NexentaNasDriver(driver.ShareDriver):
         if self.configuration:
             backend_name = self.configuration.safe_get('share_backend_name')
         if not backend_name:
-            backend_name = self.__class__.__name__
+            backend_name = 'NexentaStor4'
         return backend_name
 
     def do_setup(self, context):
         """Any initialization the nexenta nas driver does while starting."""
-        LOG.debug("Do setup the plugin.")
+        LOG.debug('Setting up the plugin.')
         return self.helper.do_setup()
 
     def check_for_setup_error(self):
         """Returns an error if prerequisites aren't met."""
         self.helper.check_for_setup_error()
-        self.helper._check_service()
 
     def create_share(self, context, share, share_server=None):
         """Create a share."""
-        LOG.debug('Creating share: %s.' % share['name'])
+        LOG.debug('Creating share %s.' % share['share_id'])
         return self.helper._create_filesystem(share)
 
-    def create_share_from_snapshot(
-            self,
-            context,
-            share,
-            snapshot,
-            share_server=None):
+    def create_share_from_snapshot(self, context, share, snapshot,
+                                   share_server=None):
         """Is called to create share from snapshot."""
-        LOG.debug('Creating share from snapshot %s', snapshot['name'])
+        LOG.debug('Creating share from snapshot %s.', snapshot['name'])
         return self.helper._create_share_from_snapshot(share, snapshot)
 
     def delete_share(self, context, share, share_server=None):
         """Delete a share."""
-        LOG.debug('Deleting share: %s.' % share['name'])
-        self.helper._delete_share(share['name'], share['share_proto'])
+        LOG.debug('Deleting share %s.' % share['share_id'])
+        self.helper._delete_share(share['share_id'])
 
     def extend_share(self, share, new_size, share_server=None):
         """Extends a share."""
-        LOG.debug('Extending share: %s to %sG.' % (share['name'], new_size))
-        self.helper._set_quota(share['name'], new_size)
+        LOG.debug('Extending share %s to %sG.' % (share['share_id'], new_size))
+        self.helper._set_quota(share['share_id'], new_size)
 
     def create_snapshot(self, context, snapshot, share_server=None):
         """Create a snapshot."""
-        LOG.debug('Creating a snapshot of share: %s.' % snapshot['share_name'])
-
+        LOG.debug('Creating a snapshot of share %s.' % snapshot['share_name'])
         snap_id = self.helper._create_snapshot(
             snapshot['share_name'], snapshot['name'])
-        LOG.info(_LI('Created snapshot id %s.'), snap_id)
+        LOG.info(_LI('Created snapshot %s.'), snap_id)
 
     def delete_snapshot(self, context, snapshot, share_server=None):
         """Delete a snapshot."""
-        LOG.debug('Deleting a snapshot: %s.' % '@'.join(
-            [snapshot['share_name'], snapshot['name']]))
-
+        LOG.debug('Deleting snapshot %s@%s.' % (
+            snapshot['share_name'], snapshot['name']))
         self.helper._delete_snapshot(snapshot['share_name'], snapshot['name'])
-        LOG.info(_LI('Deleted snapshot %s.'), '@'.join(
-            [snapshot['share_name'], snapshot['name']]))
 
-    def allow_access(self, context, share, access, share_server=None):
-        """Allow access to the share."""
-        LOG.debug("Allow access.")
-        self.helper._allow_access(share['name'], access, share['share_proto'])
+    def update_access(self, context, share, access_rules, add_rules,
+                      delete_rules, share_server=None):
+        """Update access rules for given share.
 
-    def deny_access(self, context, share, access, share_server=None):
-        """Deny access to the share."""
-        LOG.debug("Deny access.")
-        self.helper._deny_access(share['name'], access, share['share_proto'])
+        :param context: The `context.RequestContext` object for the request
+        :param share: Share that will have its access rules updated.
+        :param access_rules: All access rules for given share. This list
+        is enough to update the access rules for given share.
+        :param add_rules: Empty List or List of access rules which should be
+        added. access_rules already contains these rules. Not used by this
+        driver.
+        :param delete_rules: Empty List or List of access rules which should be
+        removed. access_rules doesn't contain these rules. Not used by
+        this driver.
+        :param share_server: Data structure with share server information.
+        Not used by this driver.
+        """
+        self.helper._update_access(share['share_id'], access_rules)
 
     def _update_share_stats(self, data=None):
         super(NexentaNasDriver, self)._update_share_stats()
-        data = self.helper._update_volume_stats()
+        data = self.helper._update_share_stats()
         data['driver_version'] = VERSION
+        data['share_backend_name'] = self.share_backend_name
         self._stats.update(data)

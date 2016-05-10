@@ -45,13 +45,14 @@ class NexentaNasDriver(driver.ShareDriver):
         self.configuration = kwargs.get('configuration', None)
         if self.configuration:
             self.configuration.append_config_values(
-                options.NEXENTA_CONNECTION_OPTS)
+                options.nexenta_connection_opts)
             self.configuration.append_config_values(
-                options.NEXENTA_NFS_OPTS)
+                options.nexenta_nfs_opts)
             self.configuration.append_config_values(
-                options.NEXENTA_DATASET_OPTS)
+                options.nexenta_dataset_opts)
         else:
-            raise exception.InvalidShare(_('Nexenta configuration missing.'))
+            raise exception.BadConfigurationException(
+                _('Nexenta configuration missing.'))
 
         self.nef = None
         self.nef_protocol = self.configuration.nexenta_rest_protocol
@@ -65,8 +66,8 @@ class NexentaNasDriver(driver.ShareDriver):
 
         self.storage_protocol = 'NFS'
         self.nfs_mount_point_base = self.configuration.nexenta_mount_point_base
-        self.dataset_compression = \
-            self.configuration.nexenta_dataset_compression
+        self.dataset_compression = (
+            self.configuration.nexenta_dataset_compression)
 
     @property
     def backend_name(self):
@@ -74,7 +75,7 @@ class NexentaNasDriver(driver.ShareDriver):
         if self.configuration:
             backend_name = self.configuration.safe_get('share_backend_name')
         if not backend_name:
-            backend_name = self.__class__.__name__
+            backend_name = 'NexentaStor5'
         return backend_name
 
     def do_setup(self, context):
@@ -118,11 +119,11 @@ class NexentaNasDriver(driver.ShareDriver):
 
     def create_share(self, context, share, share_server=None):
         """Create a share."""
-        LOG.debug('Creating share: %s.' % share['name'])
+        LOG.debug('Creating share: %s.' % share['share_id'])
         data = {
             'recordSize': 4 * units.Ki,
             'compressionMode': self.dataset_compression,
-            'name': '/'.join((self.fs_prefix, share['name']))
+            'name': '/'.join((self.fs_prefix, share['share_id']))
         }
         if not self.configuration.nexenta_thin_provisioning:
             data['reservationSize'] = int(share['size']) * units.Gi
@@ -130,21 +131,21 @@ class NexentaNasDriver(driver.ShareDriver):
         url = 'storage/pools/{}/filesystems'.format(self.pool_name)
         self.nef.post(url, data)
         location = '{}:/{}/{}/{}'.format(self.nef_host, self.pool_name,
-                                         self.fs_prefix, share['name'])
+                                         self.fs_prefix, share['share_id'])
 
         try:
-            self._add_permission(share['name'])
-        except Exception:
+            self._add_permission(share['share_id'])
+        except exception.NexentaException:
             try:
                 url = 'storage/pools/{}/filesystems/{}'.format(
                     self.pool_name,
-                    PATH_DELIMITER.join([self.fs_prefix, share['name']]))
+                    PATH_DELIMITER.join([self.fs_prefix, share['share_id']]))
                 self.nef.delete(url)
-            except Exception:
+            except exception.NexentaException:
                 LOG.warning(_LW(
                     "Cannot destroy created filesystem: %(vol)s/%(folder)s"),
                     {'vol': self.pool_name, 'folder': '/'.join(
-                        [self.fs_prefix, share['name']])})
+                        [self.fs_prefix, share['share_id']])})
             raise
         return location
 
@@ -155,17 +156,17 @@ class NexentaNasDriver(driver.ShareDriver):
             snapshot,
             share_server=None):
         """Is called to create share from snapshot."""
-        LOG.debug('Creating share from snapshot %s', snapshot['name'])
+        LOG.debug('Creating share from snapshot %s.', snapshot['name'])
 
         url = ('storage/pools/%(pool)s/'
                'filesystems/%(fs)s/snapshots/%(snap)s/clone') % {
             'pool': self.pool_name,
             'fs': PATH_DELIMITER.join(
-                [self.fs_prefix, snapshot['share_name']]),
+                [self.fs_prefix, snapshot['share_id']]),
             'snap': snapshot['name']}
         location = '{}:/{}/{}/{}'.format(self.nef_host, self.pool_name,
-                                         self.fs_prefix, share['name'])
-        path = '/'.join([self.pool_name, self.fs_prefix, share['name']])
+                                         self.fs_prefix, share['share_id'])
+        path = '/'.join([self.pool_name, self.fs_prefix, share['share_id']])
         data = {'targetPath': path}
         self.nef.post(url, data)
 
@@ -174,31 +175,31 @@ class NexentaNasDriver(driver.ShareDriver):
         self.nef.post(url)
 
         try:
-            self._add_permission(share['name'])
+            self._add_permission(share['share_id'])
         except exception.NexentaException:
             try:
                 url = ('storage/pools/%(pool)s/filesystems/%(fs)s') % {
                     'pool': self.pool_name,
                     'fs': PATH_DELIMITER.join(
-                        (self.fs_prefix, share['name']))}
+                        (self.fs_prefix, share['share_id']))}
                 self.nef.delete(url)
             except exception.NexentaException:
                 LOG.warning(_LW("Cannot destroy cloned filesystem: "
                                 "%(vol)s/%(filesystem)s"),
                             {'vol': self.pool_name,
                              'filesystem': '/'.join(
-                                 (self.fs_prefix, share['name']))})
+                                 (self.fs_prefix, share['share_id']))})
             raise
 
         return location
 
     def delete_share(self, context, share, share_server=None):
         """Delete a share."""
-        LOG.debug('Deleting share: %s.' % share['name'])
+        LOG.debug('Deleting share: %s.' % share['share_id'])
 
         url = ('storage/pools/%(pool)s/filesystems/%(fs)s') % {
             'pool': self.pool_name,
-            'fs': PATH_DELIMITER.join([self.fs_prefix, share['name']])
+            'fs': PATH_DELIMITER.join([self.fs_prefix, share['share_id']])
         }
         url += '?snapshots=true'
         try:
@@ -211,22 +212,24 @@ class NexentaNasDriver(driver.ShareDriver):
 
     def extend_share(self, share, new_size, share_server=None):
         """Extends a share."""
-        LOG.debug('Extending share: %s to %sG.' % (share['name'], new_size))
-        self._set_quota(share['name'], new_size)
+        LOG.debug(
+            'Extending share: %s to %sG.' % (share['share_id'], new_size))
+        self._set_quota(share['share_id'], new_size)
 
     def shrink_share(self, share, new_size, share_server=None):
         """Shrinks size of existing share."""
-        LOG.debug('Shrinking share: %s to %sG.' % (share['name'], new_size))
-        self._set_quota(share['name'], new_size)
+        LOG.debug(
+            'Shrinking share: %s to %sG.' % (share['share_id'], new_size))
+        self._set_quota(share['share_id'], new_size)
 
     def create_snapshot(self, context, snapshot, share_server=None):
         """Create a snapshot."""
-        LOG.debug('Creating a snapshot of share: %s.' % snapshot['share_name'])
+        LOG.debug('Creating a snapshot of share: %s.' % snapshot['share_id'])
 
         url = 'storage/pools/%(pool)s/filesystems/%(fs)s/snapshots' % {
             'pool': self.pool_name,
             'fs': PATH_DELIMITER.join(
-                [self.fs_prefix, snapshot['share_name']]),
+                [self.fs_prefix, snapshot['share_id']]),
         }
         data = {'name': snapshot['name']}
         self.nef.post(url, data)
@@ -234,13 +237,13 @@ class NexentaNasDriver(driver.ShareDriver):
     def delete_snapshot(self, context, snapshot, share_server=None):
         """Delete a snapshot."""
         LOG.debug('Deleting a snapshot: %s.' % '@'.join(
-            [snapshot['share_name'], snapshot['name']]))
+            [snapshot['share_id'], snapshot['name']]))
 
-        url = 'storage/pools/%(pool)s/filesystems/%(fs)s/snapshots/' \
-              '%(snap)s' % {'pool': self.pool_name,
-                            'fs': PATH_DELIMITER.join(
-                                [self.fs_prefix, snapshot['share_name']]),
-                            'snap': snapshot['name']}
+        url = ('storage/pools/%(pool)s/filesystems/%(fs)s/snapshots/'
+               '%(snap)s') % {'pool': self.pool_name,
+                              'fs': PATH_DELIMITER.join(
+                                  [self.fs_prefix, snapshot['share_id']]),
+                              'snap': snapshot['name']}
         try:
             self.nef.delete(url)
         except exception.NexentaException as e:
@@ -249,74 +252,78 @@ class NexentaNasDriver(driver.ShareDriver):
             else:
                 raise e
 
-    def allow_access(self, context, share, access, share_server=None):
-        """Allow access to the share."""
-        LOG.debug("Allow access.")
+    def update_access(self, context, share, access_rules, add_rules,
+                      delete_rules, share_server=None):
+        """Update access rules for given share.
 
-        access_type = access['access_type'].strip()
-        if access_type != 'ip':
-            err_msg = 'Access type <{}> not allowed. ' \
-                      'Allowed type is <ip>'.format(access_type)
-            raise exception.InvalidInput(err_msg)
+        :param context: The `context.RequestContext` object for the request
+        :param share: Share that will have its access rules updated.
+        :param access_rules: All access rules for given share. This list
+        is enough to update the access rules for given share.
+        :param add_rules: Empty List or List of access rules which should be
+        added. access_rules already contains these rules. Not used by this
+        driver.
+        :param delete_rules: Empty List or List of access rules which should be
+        removed. access_rules doesn't contain these rules. Not used by
+        this driver.
+        :param share_server: Data structure with share server information.
+        Not used by this driver.
+        """
+        LOG.debug('Updating access to share %s.' % share)
+        rw_list = []
+        ro_list = []
+        security_contexts = []
+        for rule in access_rules:
+            if rule['access_type'].lower() != 'ip':
+                msg = _('Only IP access type is supported.')
+                raise exception.InvalidShareAccess(reason=msg)
+            else:
+                if rule['access_level'] == 'rw':
+                    rw_list.append(rule['access_to'])
+                else:
+                    ro_list.append(rule['access_to'])
 
-        address_mask = access['access_to'].strip().split('/', 1)
-        address = address_mask[0]
-        ls = [{"allow": True, "etype": "network", "entity": address}]
-        if len(address_mask) == 2:
-            try:
-                mask = int(address_mask[1])
-                if mask != 32:
-                    ls[0]['mask'] = mask
-            except Exception:
-                raise exception.InvalidInput(
-                    '<{}> is not a valid access parameter'.format(
-                        access['access_to']))
-
-        url = 'nas/nfs/' + PATH_DELIMITER.join(
-            (self.pool_name, self.fs_prefix, share['name']))
-        res = self.nef.get(url)
-
-        security_contexts = res.get('securityContexts', [])
-
-        new_sc = {
-            "root": ls,
-            "securityModes": ["sys"]
-        }
-
-        access_level = access['access_level'].strip()
-        if access_level == 'rw':
+        for addr in rw_list:
+            address_mask = addr.strip().split('/', 1)
+            address = address_mask[0]
+            ls = [{"allow": True, "etype": "network", "entity": address}]
+            if len(address_mask) == 2:
+                try:
+                    mask = int(address_mask[1])
+                    if mask != 32:
+                        ls[0]['mask'] = mask
+                except Exception:
+                    raise exception.InvalidInput(
+                        '<{}> is not a valid access parameter'.format(
+                            addr))
+            new_sc = {
+                "securityModes": ["sys"]
+            }
             new_sc['readWriteList'] = ls
-        elif access_level == 'ro':
+            security_contexts.append(new_sc)
+
+        for addr in ro_list:
+            address_mask = addr.strip().split('/', 1)
+            address = address_mask[0]
+            ls = [{"allow": True, "etype": "network", "entity": address}]
+            if len(address_mask) == 2:
+                try:
+                    mask = int(address_mask[1])
+                    if mask != 32:
+                        ls[0]['mask'] = mask
+                except Exception:
+                    raise exception.InvalidInput(
+                        '<{}> is not a valid access parameter'.format(
+                            addr))
+            new_sc = {
+                "securityModes": ["sys"]
+            }
             new_sc['readOnlyList'] = ls
-        else:
-            raise exception.InvalidInput(_(
-                'Access level %s is not allowed in '
-                'Nexenta Store appliance'), access_level)
-        security_contexts.append(new_sc)
+            security_contexts.append(new_sc)
+
         data = {"securityContexts": security_contexts}
-        self.nef.put(url, data)
-
-    def deny_access(self, context, share, access, share_server=None):
-        """Deny access to the share."""
-        LOG.debug("Deny access.")
-
-        address_mask = access['access_to'].strip().split('/')
-        address = address_mask[0]
-        mask = int(address_mask[1]) if len(address_mask) > 1 else None
-        if mask == 32:
-            mask = None
-
         url = 'nas/nfs/' + PATH_DELIMITER.join(
-            (self.pool_name, self.fs_prefix, share['name']))
-        res = self.nef.get(url)
-        security_contexts = res.get('securityContexts', [])
-        for i in range(len(security_contexts)):
-            address_ = security_contexts[i]['root'][0]['entity']
-            mask_ = security_contexts[i]['root'][0].get('mask')
-            if address == address_ and mask == mask_:
-                del security_contexts[i]
-                break
-        data = {"securityContexts": security_contexts}
+            (self.pool_name, self.fs_prefix, share['share_id']))
         self.nef.put(url, data)
 
     def _set_quota(self, share_name, new_size):
@@ -346,7 +353,8 @@ class NexentaNasDriver(driver.ShareDriver):
             reserved_percentage=self.configuration.reserved_share_percentage,
             nfs_mount_point_base=self.nfs_mount_point_base,
             thin_provisioning=self.configuration.nexenta_thin_provisioning,
-            driver_version=VERSION
+            driver_version=VERSION,
+            share_backend_name=self.backend_name
         )
         self._stats.update(data)
 
@@ -367,7 +375,7 @@ class NexentaNasDriver(driver.ShareDriver):
         access_type = access['access_type'].strip()
         if access_type != 'ip':
             err_msg = (
-                _('Access type %s is not allowed in Nexenta Store appliance'),
+                _('Access type %s is not allowed in Nexenta Store appliance.'),
                 access_type)
             raise exception.InvalidInput(err_msg)
 
@@ -404,7 +412,7 @@ class NexentaNasDriver(driver.ShareDriver):
         """
         LOG.debug(
             'Creating RW ACE for filesystem everyone on Nexenta Store '
-            'for <%s> filesystem', share_name)
+            'for <%s> filesystem.', share_name)
         url = 'storage/pools/{}/filesystems/{}/acl'.format(
             self.pool_name, PATH_DELIMITER.join((self.fs_prefix, share_name)))
         data = {
@@ -438,4 +446,4 @@ class NexentaNasDriver(driver.ShareDriver):
 
         LOG.debug(
             'RW ACE for filesystem <%s> on Nexenta Store has been '
-            'successfully created', share_name)
+            'successfully created.', share_name)
