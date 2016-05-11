@@ -52,13 +52,14 @@ class NexentaNasDriver(driver.ShareDriver):
                 _('Nexenta configuration missing.'))
 
     @property
-    def backend_name(self):
-        backend_name = None
+    def share_backend_name(self):
+        share_backend_name = None
         if self.configuration:
-            backend_name = self.configuration.safe_get('share_backend_name')
-        if not backend_name:
-            backend_name = 'NexentaStor4'
-        return backend_name
+            share_backend_name = self.configuration.safe_get(
+                'share_backend_name')
+        if not share_backend_name:
+            share_backend_name = 'NexentaStor4'
+        return share_backend_name
 
     def do_setup(self, context):
         """Any initialization the nexenta nas driver does while starting."""
@@ -71,7 +72,7 @@ class NexentaNasDriver(driver.ShareDriver):
 
     def create_share(self, context, share, share_server=None):
         """Create a share."""
-        LOG.debug('Creating share %s.' % share['share_id'])
+        LOG.debug('Creating share %s.' % share['name'])
         return self.helper._create_filesystem(share)
 
     def create_share_from_snapshot(self, context, share, snapshot,
@@ -82,13 +83,13 @@ class NexentaNasDriver(driver.ShareDriver):
 
     def delete_share(self, context, share, share_server=None):
         """Delete a share."""
-        LOG.debug('Deleting share %s.' % share['share_id'])
-        self.helper._delete_share(share['share_id'])
+        LOG.debug('Deleting share %s.' % share['name'])
+        self.helper._delete_share(share['name'])
 
     def extend_share(self, share, new_size, share_server=None):
         """Extends a share."""
-        LOG.debug('Extending share %s to %sG.' % (share['share_id'], new_size))
-        self.helper._set_quota(share['share_id'], new_size)
+        LOG.debug('Extending share %s to %sG.' % (share['name'], new_size))
+        self.helper._set_quota(share['name'], new_size)
 
     def create_snapshot(self, context, snapshot, share_server=None):
         """Create a snapshot."""
@@ -120,7 +121,7 @@ class NexentaNasDriver(driver.ShareDriver):
         :param share_server: Data structure with share server information.
         Not used by this driver.
         """
-        self.helper._update_access(share['share_id'], access_rules)
+        self.helper._update_access(share['name'], access_rules)
 
     def _update_share_stats(self, data=None):
         super(NexentaNasDriver, self)._update_share_stats()

@@ -119,11 +119,11 @@ class NexentaNasDriver(driver.ShareDriver):
 
     def create_share(self, context, share, share_server=None):
         """Create a share."""
-        LOG.debug('Creating share: %s.' % share['share_id'])
+        LOG.debug('Creating share: %s.' % share['name'])
         data = {
             'recordSize': 4 * units.Ki,
             'compressionMode': self.dataset_compression,
-            'name': '/'.join((self.fs_prefix, share['share_id']))
+            'name': '/'.join((self.fs_prefix, share['name']))
         }
         if not self.configuration.nexenta_thin_provisioning:
             data['reservationSize'] = int(share['size']) * units.Gi
@@ -131,75 +131,66 @@ class NexentaNasDriver(driver.ShareDriver):
         url = 'storage/pools/{}/filesystems'.format(self.pool_name)
         self.nef.post(url, data)
         location = '{}:/{}/{}/{}'.format(self.nef_host, self.pool_name,
-                                         self.fs_prefix, share['share_id'])
+                                         self.fs_prefix, share['name'])
 
         try:
-            self._add_permission(share['share_id'])
+            self._add_permission(share['name'])
         except exception.NexentaException:
             try:
                 url = 'storage/pools/{}/filesystems/{}'.format(
                     self.pool_name,
-                    PATH_DELIMITER.join([self.fs_prefix, share['share_id']]))
+                    PATH_DELIMITER.join([self.fs_prefix, share['name']]))
                 self.nef.delete(url)
             except exception.NexentaException:
                 LOG.warning(_LW(
                     "Cannot destroy created filesystem: %(vol)s/%(folder)s"),
                     {'vol': self.pool_name, 'folder': '/'.join(
-                        [self.fs_prefix, share['share_id']])})
+                        [self.fs_prefix, share['name']])})
             raise
         return location
 
-    def create_share_from_snapshot(
-            self,
-            context,
-            share,
-            snapshot,
-            share_server=None):
+    def create_share_from_snapshot(self, context, share, snapshot,
+                                   share_server=None):
         """Is called to create share from snapshot."""
         LOG.debug('Creating share from snapshot %s.', snapshot['name'])
-
         url = ('storage/pools/%(pool)s/'
                'filesystems/%(fs)s/snapshots/%(snap)s/clone') % {
             'pool': self.pool_name,
             'fs': PATH_DELIMITER.join(
-                [self.fs_prefix, snapshot['share_id']]),
+                [self.fs_prefix, snapshot['share_name']]),
             'snap': snapshot['name']}
         location = '{}:/{}/{}/{}'.format(self.nef_host, self.pool_name,
-                                         self.fs_prefix, share['share_id'])
-        path = '/'.join([self.pool_name, self.fs_prefix, share['share_id']])
+                                         self.fs_prefix, share['name'])
+        path = '/'.join([self.pool_name, self.fs_prefix, share['name']])
         data = {'targetPath': path}
         self.nef.post(url, data)
 
-        url = 'storage/filesystems/{}/promote'.format(
-            path.replace('/', PATH_DELIMITER))
-        self.nef.post(url)
-
         try:
-            self._add_permission(share['share_id'])
+            self._add_permission(share['name'])
         except exception.NexentaException:
             try:
                 url = ('storage/pools/%(pool)s/filesystems/%(fs)s') % {
                     'pool': self.pool_name,
                     'fs': PATH_DELIMITER.join(
-                        (self.fs_prefix, share['share_id']))}
+                        (self.fs_prefix, share['name']))}
                 self.nef.delete(url)
             except exception.NexentaException:
                 LOG.warning(_LW("Cannot destroy cloned filesystem: "
                                 "%(vol)s/%(filesystem)s"),
                             {'vol': self.pool_name,
                              'filesystem': '/'.join(
-                                 (self.fs_prefix, share['share_id']))})
+                                 (self.fs_prefix, share['name']))})
             raise
 
         return location
 
     def delete_share(self, context, share, share_server=None):
         """Delete a share."""
-        LOG.debug('Deleting share: %s.' % share['share_id'])
+        LOG.debug('Deleting share: %s.' % share['name'])
 
         url = ('storage/pools/%(pool)s/filesystems/%(fs)s') % {
             'pool': self.pool_name,
-            'fs': PATH_DELIMITER.join([self.fs_prefix, share['share_id']])
+            'fs': PATH_DELIMITER.join([self.fs_prefix, share['name']])
         }
         url += '?snapshots=true'
         try:
@@ -213,23 +204,23 @@ class NexentaNasDriver(driver.ShareDriver):
     def extend_share(self, share, new_size, share_server=None):
         """Extends a share."""
         LOG.debug(
-            'Extending share: %s to %sG.' % (share['share_id'], new_size))
-        self._set_quota(share['share_id'], new_size)
+            'Extending share: %s to %sG.' % (share['name'], new_size))
+        self._set_quota(share['name'], new_size)
 
     def shrink_share(self, share, new_size, share_server=None):
         """Shrinks size of existing share."""
         LOG.debug(
-            'Shrinking share: %s to %sG.' % (share['share_id'], new_size))
-        self._set_quota(share['share_id'], new_size)
+            'Shrinking share: %s to %sG.' % (share['name'], new_size))
+        self._set_quota(share['name'], new_size)
 
     def create_snapshot(self, context, snapshot, share_server=None):
         """Create a snapshot."""
-        LOG.debug('Creating a snapshot of share: %s.' % snapshot['share_id'])
-
+        LOG.debug('Creating a snapshot of share: %s.'
+                  % snapshot['share_name'])
         url = 'storage/pools/%(pool)s/filesystems/%(fs)s/snapshots' % {
             'pool': self.pool_name,
             'fs': PATH_DELIMITER.join(
-                [self.fs_prefix, snapshot['share_id']]),
+                [self.fs_prefix, snapshot['share_name']]),
         }
         data = {'name': snapshot['name']}
         self.nef.post(url, data)
@@ -237,12 +228,13 @@ class NexentaNasDriver(driver.ShareDriver):
     def delete_snapshot(self, context, snapshot, share_server=None):
         """Delete a snapshot."""
         LOG.debug('Deleting a snapshot: %s.' % '@'.join(
-            [snapshot['share_id'], snapshot['name']]))
+            [snapshot['share_name'], snapshot['name']]))
 
         url = ('storage/pools/%(pool)s/filesystems/%(fs)s/snapshots/'
                '%(snap)s') % {'pool': self.pool_name,
                               'fs': PATH_DELIMITER.join(
-                                  [self.fs_prefix, snapshot['share_id']]),
+                                  [self.fs_prefix,
+                                   snapshot['share_name']]),
                               'snap': snapshot['name']}
         try:
             self.nef.delete(url)
@@ -323,7 +315,7 @@ class NexentaNasDriver(driver.ShareDriver):
 
         data = {"securityContexts": security_contexts}
         url = 'nas/nfs/' + PATH_DELIMITER.join(
-            (self.pool_name, self.fs_prefix, share['share_id']))
+            (self.pool_name, self.fs_prefix, share['name']))
         self.nef.put(url, data)
 
     def _set_quota(self, share_name, new_size):
@@ -345,17 +337,18 @@ class NexentaNasDriver(driver.ShareDriver):
         total_space = utils.str2gib_size(total)
         free_space = utils.str2gib_size(free)
 
-        data = dict(
-            vendor_name='Nexenta',
-            storage_protocol=self.storage_protocol,
-            total_capacity_gb=total_space,
-            free_capacity_gb=free_space,
-            reserved_percentage=self.configuration.reserved_share_percentage,
-            nfs_mount_point_base=self.nfs_mount_point_base,
-            thin_provisioning=self.configuration.nexenta_thin_provisioning,
-            driver_version=VERSION,
-            share_backend_name=self.backend_name
-        )
+        data = {
+            'vendor_name': 'Nexenta',
+            'storage_protocol': self.storage_protocol,
+            'total_capacity_gb': total_space,
+            'free_capacity_gb': free_space,
+            'reserved_percentage': (
+                self.configuration.reserved_share_percentage),
+            'nfs_mount_point_base': self.nfs_mount_point_base,
+            'thin_provisioning': self.configuration.nexenta_thin_provisioning,
+            'driver_version': VERSION,
+            'share_backend_name': self.backend_name
+        }
         self._stats.update(data)
 
     def _get_capacity_info(self, path):

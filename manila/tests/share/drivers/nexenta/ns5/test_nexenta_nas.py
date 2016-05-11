@@ -66,10 +66,10 @@ class TestNexentaNasDriver(test.TestCase):
 
     @patch(PATH_TO_RPC)
     def test_create_share(self, m):
-        share = {'share_id': 'share', 'size': 1}
+        share = {'name': 'share', 'size': 1}
         self.assertEqual('{}:/{}/{}/{}'.format(
             self.cfg.nexenta_host, self.pool_name,
-            self.fs_prefix, share['share_id']),
+            self.fs_prefix, share['name']),
             self.drv.create_share(self.ctx, share))
 
     @patch('manila.share.drivers.nexenta.ns5.nexenta_nas.NexentaNasDriver.'
@@ -77,7 +77,7 @@ class TestNexentaNasDriver(test.TestCase):
     @patch(PATH_TO_RPC)
     def test_create_share__error_on_add_permission(
             self, m, add_permission_mock):
-        share = {'share_id': 'share', 'size': 1}
+        share = {'name': 'share', 'size': 1}
         add_permission_mock.side_effect = exception.NexentaException(
             'An error occurred while adding permission')
         self.assertRaises(
@@ -85,39 +85,35 @@ class TestNexentaNasDriver(test.TestCase):
         url = 'storage/pools/pool1/filesystems/nfs_share%2Fshare'
         self.drv.nef.delete.assert_called_with(url)
         url = 'storage/pools/{}/filesystems/{}'.format(
-            self.pool_name, '%2F'.join([self.fs_prefix, share['share_id']]))
+            self.pool_name, '%2F'.join([self.fs_prefix, share['name']]))
         self.drv.nef.delete.assert_called_with(url)
 
     @patch(PATH_TO_RPC)
     def test_create_share_from_snapshot(self, m):
-        share = {'share_id': 'share'}
-        snapshot = {'name': 'share@first', 'share_id': 'share'}
+        share = {'name': 'share'}
+        snapshot = {'name': 'share@first', 'share_name': 'share'}
         self.assertEqual('{}:/{}/{}/{}'.format(
             self.cfg.nexenta_host, self.pool_name,
-            self.fs_prefix, share['share_id']),
+            self.fs_prefix, share['name']),
             self.drv.create_share_from_snapshot(self.ctx, share, snapshot))
 
         url = ('storage/pools/%(pool)s/'
                'filesystems/%(fs)s/snapshots/%(snap)s/clone') % {
             'pool': self.pool_name,
             'fs': PATH_DELIMITER.join(
-                [self.fs_prefix, snapshot['share_id']]),
+                [self.fs_prefix, snapshot['share_name']]),
             'snap': snapshot['name']}
-        path = '/'.join([self.pool_name, self.fs_prefix, share['share_id']])
+        path = '/'.join([self.pool_name, self.fs_prefix, share['name']])
         data = {'targetPath': path}
         self.drv.nef.post.assert_any_call(url, data)
-
-        url = 'storage/filesystems/{}/promote'.format(
-            path.replace('/', PATH_DELIMITER))
-        self.drv.nef.post.assert_any_call(url)
 
     @patch('manila.share.drivers.nexenta.ns5.nexenta_nas.NexentaNasDriver.'
            '_add_permission')
     @patch(PATH_TO_RPC)
     def test_create_share_from_snapshot__add_permission_error(
             self, m, add_permission_mock):
-        share = {'share_id': 'share'}
-        snapshot = {'name': 'share', 'share_id': 'share@first'}
+        share = {'name': 'share'}
+        snapshot = {'share_name': 'share', 'name': 'share@first'}
         add_permission_mock.side_effect = exception.NexentaException(
             'Some exception')
         self.assertRaises(
@@ -127,7 +123,7 @@ class TestNexentaNasDriver(test.TestCase):
         url = ('storage/pools/%(pool)s/filesystems/%(fs)s') % {
             'pool': self.pool_name,
             'fs': PATH_DELIMITER.join(
-                (self.fs_prefix, share['share_id']))}
+                (self.fs_prefix, share['name']))}
         self.drv.nef.delete.assert_any_call(url)
 
     @patch('manila.share.drivers.nexenta.ns5.nexenta_nas.NexentaNasDriver.'
@@ -135,8 +131,8 @@ class TestNexentaNasDriver(test.TestCase):
     @patch(PATH_TO_RPC)
     def test_create_share_from_snapshot__add_permission_error_error(
             self, m, add_permission_mock):
-        share = {'share_id': 'share'}
-        snapshot = {'name': 'share', 'share_id': 'share@first'}
+        share = {'name': 'share'}
+        snapshot = {'share_name': 'share', 'name': 'share@first'}
         add_permission_mock.side_effect = exception.NexentaException(
             'Some exception')
         self.drv.nef.delete.side_effect = exception.NexentaException(
@@ -147,18 +143,18 @@ class TestNexentaNasDriver(test.TestCase):
 
     @patch(PATH_TO_RPC)
     def test_delete_share(self, m):
-        share = {'share_id': 'share'}
+        share = {'name': 'share'}
         self.drv.delete_share(self.ctx, share)
         url = 'storage/pools/%(pool)s/filesystems/%(fs)s' % {
             'pool': self.pool_name,
-            'fs': PATH_DELIMITER.join([self.fs_prefix, share['share_id']])
+            'fs': PATH_DELIMITER.join([self.fs_prefix, share['name']])
         }
         url += '?snapshots=true'
         self.drv.nef.delete.assert_called_with(url)
 
     @patch(PATH_TO_RPC)
     def test_extend_share(self, m):
-        share = {'share_id': 'share'}
+        share = {'name': 'share'}
         new_size = 1
         self.drv.extend_share(share, new_size)
         quota = new_size * units.Gi
@@ -166,12 +162,12 @@ class TestNexentaNasDriver(test.TestCase):
             'reservationSize': quota
         }
         url = 'storage/pools/{}/filesystems/{}%2F{}'.format(
-            self.pool_name, self.fs_prefix, share['share_id'])
+            self.pool_name, self.fs_prefix, share['name'])
         self.drv.nef.post.assert_called_with(url, data)
 
     @patch(PATH_TO_RPC)
     def test_shrink_share(self, m):
-        share = {'share_id': 'share'}
+        share = {'name': 'share'}
         new_size = 5
         self.drv.extend_share(share, new_size)
         quota = new_size * units.Gi
@@ -179,28 +175,28 @@ class TestNexentaNasDriver(test.TestCase):
             'reservationSize': quota
         }
         url = 'storage/pools/{}/filesystems/{}%2F{}'.format(
-            self.pool_name, self.fs_prefix, share['share_id'])
+            self.pool_name, self.fs_prefix, share['name'])
         self.drv.nef.post.assert_called_with(url, data)
 
     @patch(PATH_TO_RPC)
     def test_create_snapshot(self, m):
-        snapshot = {'share_id': 'share', 'name': 'share@first'}
+        snapshot = {'share_name': 'share', 'name': 'share@first'}
         self.drv.create_snapshot(self.ctx, snapshot)
         url = 'storage/pools/%(pool)s/filesystems/%(fs)s/snapshots' % {
             'pool': self.pool_name,
-            'fs': PATH_DELIMITER.join([self.fs_prefix, snapshot['share_id']])
+            'fs': PATH_DELIMITER.join([self.fs_prefix, snapshot['share_name']])
         }
         data = {'name': snapshot['name']}
         self.drv.nef.post.assert_called_with(url, data)
 
     @patch(PATH_TO_RPC)
     def test_delete_snapshot(self, m):
-        snapshot = {'share_id': 'share', 'name': 'share@first'}
+        snapshot = {'share_name': 'share', 'name': 'share@first'}
         self.drv.delete_snapshot(self.ctx, snapshot)
         url = ('storage/pools/%(pool)s/'
                'filesystems/%(fs)s/snapshots/%(snap)s') % {
             'pool': self.pool_name,
-            'fs': PATH_DELIMITER.join([self.fs_prefix, snapshot['share_id']]),
+            'fs': PATH_DELIMITER.join([self.fs_prefix, snapshot['share_name']]),
             'snap': snapshot['name']
         }
         self.drv.nef.delete.assert_called_with(url)
@@ -217,12 +213,12 @@ class TestNexentaNasDriver(test.TestCase):
         elif level == 'ro':
             new_sc['readOnlyList'] = ls
         else:
-            raise Exception('Wrong access level')
+            raise exception.ManilaException('Wrong access level')
         return new_sc
 
     @patch(PATH_TO_RPC)
     def test_update_access__unsupported_access_type(self, m):
-        share = {'share_id': 'share'}
+        share = {'name': 'share'}
         access = {
             'access_type': 'group',
             'access_to': 'ordinary_users',
@@ -233,14 +229,14 @@ class TestNexentaNasDriver(test.TestCase):
 
     @patch(PATH_TO_RPC)
     def test_update_access__cidr(self, m):
-        share = {'share_id': 'share'}
+        share = {'name': 'share'}
         access = {
             'access_type': 'ip',
             'access_to': '1.1.1.1/24',
             'access_level': 'rw'
         }
         url = 'nas/nfs/' + PATH_DELIMITER.join(
-            (self.pool_name, self.fs_prefix, share['share_id']))
+            (self.pool_name, self.fs_prefix, share['name']))
         self.drv.nef.get.return_value = {}
         self.drv.update_access(self.ctx, share, [access], None, None)
         self.drv.nef.put.assert_called_with(
@@ -249,7 +245,7 @@ class TestNexentaNasDriver(test.TestCase):
 
     @patch(PATH_TO_RPC)
     def test_update_access__cidr_wrong_mask(self, m):
-        share = {'share_id': 'share'}
+        share = {'name': 'share'}
         access = {
             'access_type': 'ip',
             'access_to': '1.1.1.1/aa',
@@ -261,7 +257,7 @@ class TestNexentaNasDriver(test.TestCase):
 
     @patch(PATH_TO_RPC)
     def test_update_access__one_ip_ro_add_rule_to_existing(self, m):
-        share = {'share_id': 'share'}
+        share = {'name': 'share'}
         access = [{'access_type': 'ip',
                    'access_to': '5.5.5.5',
                    'access_level': 'ro'},
@@ -269,7 +265,7 @@ class TestNexentaNasDriver(test.TestCase):
                    'access_to': '1.1.1.1/24',
                    'access_level': 'rw'}]
         url = 'nas/nfs/' + PATH_DELIMITER.join(
-            (self.pool_name, self.fs_prefix, share['share_id']))
+            (self.pool_name, self.fs_prefix, share['name']))
         sc = self.build_access_security_context('rw', '1.1.1.1', 24)
         self.drv.nef.get.return_value = {'securityContexts': [sc]}
         self.drv.update_access(self.ctx, share, access, None, None)

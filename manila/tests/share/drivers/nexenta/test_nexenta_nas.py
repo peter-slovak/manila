@@ -129,7 +129,7 @@ class TestNexentaNasDriver(test.TestCase):
 
         create_folder_props = {
             'recordsize': '4K',
-            'quota': 'none',
+            'quota': '1G',
             'compression': self.cfg.nexenta_dataset_compression,
             'sharesmb': self.cfg.nexenta_smb,
             'sharenfs': self.cfg.nexenta_nfs,
@@ -176,18 +176,18 @@ class TestNexentaNasDriver(test.TestCase):
 
     @patch(PATH_TO_RPC)
     def test_create_share(self, post):
-        share = {'share_id': 'share', 'size': 1,
+        share = {'name': 'share', 'size': 1,
                  'share_proto': self.cfg.enabled_share_protocols}
         post.return_value = FakeResponse()
         self.cfg.nexenta_thin_provisioning = False
-        path = '%s/%s/%s' % (self.volume, self.share, share['share_id'])
+        path = '%s/%s/%s' % (self.volume, self.share, share['name'])
         location = '%s:/volumes/%s' % (self.cfg.nexenta_host, path)
         self.assertEqual(location,
                          self.drv.create_share(self.ctx, share))
 
     @patch(PATH_TO_RPC)
     def test_create_share__wrong_proto(self, post):
-        share = {'share_id': 'share', 'size': 1,
+        share = {'name': 'share', 'size': 1,
                  'share_proto': 'A_VERY_WRONG_PROTO'}
         post.return_value = FakeResponse()
         self.assertRaises(exception.InvalidShare, self.drv.create_share,
@@ -195,13 +195,11 @@ class TestNexentaNasDriver(test.TestCase):
 
     @patch(PATH_TO_RPC)
     def test_create_share__thin_provisioning(self, post):
-        share = {'share_id': 'share', 'size': 1,
+        share = {'name': 'share', 'size': 1,
                  'share_proto': self.cfg.enabled_share_protocols}
-        quota = 'none'
         create_folder_props = {
             'recordsize': '4K',
-            'quota': quota,
-            'reservation': quota,
+            'quota': '1G',
             'compression': self.cfg.nexenta_dataset_compression,
             'sharenfs': self.cfg.nexenta_nfs,
         }
@@ -211,13 +209,13 @@ class TestNexentaNasDriver(test.TestCase):
         self.drv.create_share(self.ctx, share)
         post.assert_called_with(
             self.request_params.url, data=self.request_params.build_post_args(
-                'folder', 'create_with_props', parent_path, share['share_id'],
+                'folder', 'create_with_props', parent_path, share['name'],
                 create_folder_props),
             headers=self.request_params.headers)
 
     @patch(PATH_TO_RPC)
     def test_create_share__thick_provisioning(self, post):
-        share = {'share_id': 'share', 'size': 1,
+        share = {'name': 'share', 'size': 1,
                  'share_proto': self.cfg.enabled_share_protocols}
         quota = '%sG' % share['size']
         create_folder_props = {
@@ -233,17 +231,17 @@ class TestNexentaNasDriver(test.TestCase):
         self.drv.create_share(self.ctx, share)
         post.assert_any_call(
             self.request_params.url, data=self.request_params.build_post_args(
-                'folder', 'create_with_props', parent_path, share['share_id'],
+                'folder', 'create_with_props', parent_path, share['name'],
                 create_folder_props),
             headers=self.request_params.headers)
 
     @patch(PATH_TO_RPC)
     def test_create_share_from_snapshot(self, post):
-        share = {'share_id': 'share', 'size': 1,
+        share = {'name': 'share', 'size': 1,
                  'share_proto': self.cfg.enabled_share_protocols}
-        snapshot = {'name': 'sn1', 'share_name': share['share_id']}
+        snapshot = {'name': 'sn1', 'share_name': share['name']}
         post.return_value = FakeResponse()
-        path = '%s/%s/%s' % (self.volume, self.share, share['share_id'])
+        path = '%s/%s/%s' % (self.volume, self.share, share['name'])
         location = '%s:/volumes/%s' % (self.cfg.nexenta_host, path)
         self.assertEqual(location, self.drv.create_share_from_snapshot(
             self.ctx, share, snapshot))
@@ -252,16 +250,16 @@ class TestNexentaNasDriver(test.TestCase):
         post.assert_any_call(
             self.request_params.url, data=self.request_params.build_post_args(
                 'folder', 'clone', snapshot_name,
-                '%s/%s/%s' % (self.volume, self.share, share['share_id'])),
+                '%s/%s/%s' % (self.volume, self.share, share['name'])),
             headers=self.request_params.headers)
 
     @patch(PATH_TO_RPC)
     def test_delete_share(self, post):
-        share = {'share_id': 'share', 'size': 1,
+        share = {'name': 'share', 'size': 1,
                  'share_proto': self.cfg.enabled_share_protocols}
         post.return_value = FakeResponse()
         self.drv.delete_share(self.ctx, share)
-        folder = '%s/%s/%s' % (self.volume, self.share, share['share_id'])
+        folder = '%s/%s/%s' % (self.volume, self.share, share['name'])
         post.assert_any_call(
             self.request_params.url, data=self.request_params.build_post_args(
                 'folder', 'destroy', folder.strip(), '-r'),
@@ -269,7 +267,7 @@ class TestNexentaNasDriver(test.TestCase):
 
     @patch(PATH_TO_RPC)
     def test_delete_share__exists_error(self, post):
-        share = {'share_id': 'share', 'size': 1,
+        share = {'name': 'share', 'size': 1,
                  'share_proto': self.cfg.enabled_share_protocols}
         post.return_value = FakeResponse()
         post.side_effect = exception.NexentaException('does not exist')
@@ -277,7 +275,7 @@ class TestNexentaNasDriver(test.TestCase):
 
     @patch(PATH_TO_RPC)
     def test_delete_share__some_error(self, post):
-        share = {'share_id': 'share', 'size': 1,
+        share = {'name': 'share', 'size': 1,
                  'share_proto': self.cfg.enabled_share_protocols}
         post.return_value = FakeResponse()
         post.side_effect = exception.ManilaException('Some error')
@@ -286,7 +284,7 @@ class TestNexentaNasDriver(test.TestCase):
 
     @patch(PATH_TO_RPC)
     def test_extend_share__thin_provisoning(self, post):
-        share = {'share_id': 'share', 'size': 1,
+        share = {'name': 'share', 'size': 1,
                  'share_proto': self.cfg.enabled_share_protocols}
         new_size = 5
         quota = '%sG' % new_size
@@ -296,13 +294,13 @@ class TestNexentaNasDriver(test.TestCase):
         post.assert_called_with(
             self.request_params.url, data=self.request_params.build_post_args(
                 'folder', 'set_child_prop',
-                '%s/%s/%s' % (self.volume, self.share, share['share_id']),
+                '%s/%s/%s' % (self.volume, self.share, share['name']),
                 'quota', quota),
             headers=self.request_params.headers)
 
     @patch(PATH_TO_RPC)
     def test_extend_share__thick_provisoning(self, post):
-        share = {'share_id': 'share', 'size': 1,
+        share = {'name': 'share', 'size': 1,
                  'share_proto': self.cfg.enabled_share_protocols}
         new_size = 5
         post.return_value = FakeResponse()
@@ -358,7 +356,7 @@ class TestNexentaNasDriver(test.TestCase):
 
     @patch(PATH_TO_RPC)
     def test_update_access__unsupported_access_type(self, post):
-        share = {'share_id': 'share',
+        share = {'name': 'share',
                  'share_proto': self.cfg.enabled_share_protocols}
         access = {
             'access_type': 'group',
@@ -370,7 +368,7 @@ class TestNexentaNasDriver(test.TestCase):
 
     @patch(PATH_TO_RPC)
     def test_update_access__cidr(self, post):
-        share = {'share_id': 'share',
+        share = {'name': 'share',
                  'share_proto': self.cfg.enabled_share_protocols}
         access1 = {
             'access_type': 'ip',
@@ -399,7 +397,7 @@ class TestNexentaNasDriver(test.TestCase):
             if kwargs['data'] == self.request_params.build_post_args(
                     'netstorsvc', 'share_folder',
                     'svc:/network/nfs/server:default',
-                    self._get_share_path(share['share_id']), share_opts):
+                    self._get_share_path(share['name']), share_opts):
                 return FakeResponse()
             else:
                 raise exception.ManilaException('Unexpected request')
@@ -410,7 +408,7 @@ class TestNexentaNasDriver(test.TestCase):
             self.request_params.url, data=self.request_params.build_post_args(
                 'netstorsvc', 'share_folder',
                 'svc:/network/nfs/server:default',
-                self._get_share_path(share['share_id']), share_opts),
+                self._get_share_path(share['name']), share_opts),
             headers=self.request_params.headers)
         post.side_effect = my_side_effect
         self.assertRaises(exception.ManilaException, self.drv.update_access,
@@ -422,7 +420,7 @@ class TestNexentaNasDriver(test.TestCase):
 
     @patch(PATH_TO_RPC)
     def test_update_access__add_one_ip_to_empty_access_list(self, post):
-        share = {'share_id': 'share',
+        share = {'name': 'share',
                  'share_proto': self.cfg.enabled_share_protocols}
         access = {
             'access_type': 'ip',
@@ -445,12 +443,12 @@ class TestNexentaNasDriver(test.TestCase):
             if kwargs['data'] == self.request_params.build_post_args(
                     'netstorsvc', 'get_shareopts',
                     'svc:/network/nfs/server:default',
-                    self._get_share_path(share['share_id'])):
+                    self._get_share_path(share['name'])):
                 return FakeResponse({'result': {'read_write': rw_list}})
             elif kwargs['data'] == self.request_params.build_post_args(
                     'netstorsvc', 'share_folder',
                     'svc:/network/nfs/server:default',
-                    self._get_share_path(share['share_id']), share_opts):
+                    self._get_share_path(share['name']), share_opts):
                 return FakeResponse()
             else:
                 raise exception.ManilaException('Unexpected request')
@@ -461,7 +459,7 @@ class TestNexentaNasDriver(test.TestCase):
             self.request_params.url, data=self.request_params.build_post_args(
                 'netstorsvc', 'share_folder',
                 'svc:/network/nfs/server:default',
-                self._get_share_path(share['share_id']), share_opts),
+                self._get_share_path(share['name']), share_opts),
             headers=self.request_params.headers)
         post.side_effect = my_side_effect
         self.assertRaises(exception.ManilaException, self.drv.update_access,
@@ -473,7 +471,7 @@ class TestNexentaNasDriver(test.TestCase):
 
     @patch(PATH_TO_RPC)
     def test_deny_access__unsupported_access_type(self, post):
-        share = {'share_id': 'share',
+        share = {'name': 'share',
                  'share_proto': self.cfg.enabled_share_protocols}
         access = {
             'access_type': 'group',

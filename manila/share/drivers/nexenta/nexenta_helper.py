@@ -79,21 +79,24 @@ class RestHelper(object):
     def _create_filesystem(self, share):
         """Create file system."""
         if self.configuration.nexenta_thin_provisioning:
-            quota = 'none'
+            create_folder_props = {'recordsize': '4K',
+                                   'quota': '%sG' % share['size'],
+                                   'compression': self.dataset_compression,
+                                   'sharenfs': self.nfs,
+                                   }
         else:
-            quota = '%sG' % share['size']
-        create_folder_props = {'recordsize': '4K',
-                               'quota': quota,
-                               'reservation': quota,
-                               'compression': self.dataset_compression,
-                               'sharenfs': self.nfs,
-                               }
+            create_folder_props = {'recordsize': '4K',
+                                   'quota': '%sG' % share['size'],
+                                   'reservation': '%sG' % share['size'],
+                                   'compression': self.dataset_compression,
+                                   'sharenfs': self.nfs,
+                                   }
 
         parent_path = '%s/%s' % (self.volume, self.share)
         self.nms.folder.create_with_props(
-            parent_path, share['share_id'], create_folder_props)
+            parent_path, share['name'], create_folder_props)
 
-        path = self._get_share_path(share['share_id'])
+        path = self._get_share_path(share['name'])
         return self._get_location_path(path, share['share_proto'])
 
     def _share_folder(self, path):
@@ -169,14 +172,16 @@ class RestHelper(object):
                              'folder': share_name,
                              'snapshot': snapshot_name,
                 })
+            else:
+                raise
 
     def _create_share_from_snapshot(self, share, snapshot):
         snapshot_name = '%s/%s/%s@%s' % (
             self.volume, self.share, snapshot['share_name'], snapshot['name'])
         self.nms.folder.clone(
             snapshot_name,
-            '%s/%s/%s' % (self.volume, self.share, share['share_id']))
-        path = self._get_share_path(share['share_id'])
+            '%s/%s/%s' % (self.volume, self.share, share['name']))
+        path = self._get_share_path(share['name'])
         self._share_folder(path)
         return self._get_location_path(path, share['share_proto'])
 
@@ -203,10 +208,9 @@ class RestHelper(object):
             'anonymous': 'true',
             'extra_options': 'anon=0',
         }
-        result = self.nms.netstorsvc.share_folder(
+        self.nms.netstorsvc.share_folder(
             'svc:/network/nfs/server:default',
             self._get_share_path(share_id), share_opts)
-        return result
 
     def _get_capacity_info(self, nfs_share):
         """Calculate available space on the NFS share.
