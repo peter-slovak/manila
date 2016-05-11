@@ -77,7 +77,7 @@ class RestHelper(object):
                                'compression': self.dataset_compression,
                                'sharenfs': self.nfs,
                                }
-        if not self.configuration.nexenta_thin_provisioning:
+        if self.configuration.nexenta_thin_provisioning is not True:
             create_folder_props['reservation'] = '%sG' % share['size']
 
         parent_path = '%s/%s' % (self.volume, self.share)

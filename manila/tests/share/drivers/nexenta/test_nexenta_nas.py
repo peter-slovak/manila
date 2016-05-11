@@ -229,7 +229,7 @@ class TestNexentaNasDriver(test.TestCase):
         post.return_value = FakeResponse()
         self.cfg.nexenta_thin_provisioning = False
         self.drv.create_share(self.ctx, share)
-        post.assert_any_call(
+        post.assert_called_with(
             self.request_params.url, data=self.request_params.build_post_args(
                 'folder', 'create_with_props', parent_path, share['name'],
                 create_folder_props),
