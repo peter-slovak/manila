@@ -196,7 +196,8 @@ class TestNexentaNasDriver(test.TestCase):
         url = ('storage/pools/%(pool)s/'
                'filesystems/%(fs)s/snapshots/%(snap)s') % {
             'pool': self.pool_name,
-            'fs': PATH_DELIMITER.join([self.fs_prefix, snapshot['share_name']]),
+            'fs': PATH_DELIMITER.join(
+                [self.fs_prefix, snapshot['share_name']]),
             'snap': snapshot['name']
         }
         self.drv.nef.delete.assert_called_with(url)

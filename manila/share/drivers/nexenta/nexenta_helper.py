@@ -70,27 +70,15 @@ class RestHelper(object):
             path = '%s/%s' % (self.volume, self.share)
             self._share_folder(path)
 
-    def _get_cifs_service_status(self):
-        LOG.debug("Check CIFS Service status - NOT YET IMPLEMENTED.")
-
-    def _start_cifs_service_status(self):
-        LOG.debug("Start CIFS Service - NOT YET IMPLEMENTED.")
-
     def _create_filesystem(self, share):
         """Create file system."""
-        if self.configuration.nexenta_thin_provisioning:
-            create_folder_props = {'recordsize': '4K',
-                                   'quota': '%sG' % share['size'],
-                                   'compression': self.dataset_compression,
-                                   'sharenfs': self.nfs,
-                                   }
-        else:
-            create_folder_props = {'recordsize': '4K',
-                                   'quota': '%sG' % share['size'],
-                                   'reservation': '%sG' % share['size'],
-                                   'compression': self.dataset_compression,
-                                   'sharenfs': self.nfs,
-                                   }
+        create_folder_props = {'recordsize': '4K',
+                               'quota': '%sG' % share['size'],
+                               'compression': self.dataset_compression,
+                               'sharenfs': self.nfs,
+                               }
+        if not self.configuration.nexenta_thin_provisioning:
+            create_folder_props['reservation'] = '%sG' % share['size']
 
         parent_path = '%s/%s' % (self.volume, self.share)
         self.nms.folder.create_with_props(

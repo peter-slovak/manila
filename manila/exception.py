@@ -785,4 +785,5 @@ class StorageCommunicationException(ShareBackendException):
 
 
 class NexentaException(ManilaException):
-    message = _("Exception due to Nexenta failure.")
+    message = _("Exception due to Nexenta failure."
+                "%(response)s")
