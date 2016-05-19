@@ -130,8 +130,10 @@ class NexentaNasDriver(driver.ShareDriver):
 
         url = 'storage/pools/{}/filesystems'.format(self.pool_name)
         self.nef.post(url, data)
-        location = '{}:/{}/{}/{}'.format(self.nef_host, self.pool_name,
-                                         self.fs_prefix, share['name'])
+        location = {
+            'path': '{}:/{}/{}/{}'.format(self.nef_host, self.pool_name,
+                                          self.fs_prefix, share['name'])
+        }
 
         try:
             self._add_permission(share['name'])
@@ -139,13 +141,14 @@ class NexentaNasDriver(driver.ShareDriver):
             try:
                 url = 'storage/pools/{}/filesystems/{}'.format(
                     self.pool_name,
-                    PATH_DELIMITER.join([self.fs_prefix, share['name']]))
+                    PATH_DELIMITER.join((self.fs_prefix, share['name'])))
                 self.nef.delete(url)
-            except exception.NexentaException:
+            except exception.NexentaException as exc:
                 LOG.warning(_LW(
-                    "Cannot destroy created filesystem: %(vol)s/%(folder)s"),
+                    "Cannot destroy created filesystem: %(vol)s/%(folder)s, "
+                    "exception: %(exc)s"),
                     {'vol': self.pool_name, 'folder': '/'.join(
-                        [self.fs_prefix, share['name']])})
+                        [self.fs_prefix, share['name']]), 'exc': exc})
             raise
         return location
 
@@ -157,11 +160,13 @@ class NexentaNasDriver(driver.ShareDriver):
                'filesystems/%(fs)s/snapshots/%(snap)s/clone') % {
             'pool': self.pool_name,
             'fs': PATH_DELIMITER.join(
-                [self.fs_prefix, snapshot['share_name']]),
+                (self.fs_prefix, snapshot['share_name'])),
             'snap': snapshot['name']}
-        location = '{}:/{}/{}/{}'.format(self.nef_host, self.pool_name,
-                                         self.fs_prefix, share['name'])
-        path = '/'.join([self.pool_name, self.fs_prefix, share['name']])
+        location = {
+            'path': '{}:/{}/{}/{}'.format(self.nef_host, self.pool_name,
+                                          self.fs_prefix, share['name'])
+        }
+        path = '/'.join((self.pool_name, self.fs_prefix, share['name']))
         data = {'targetPath': path}
         self.nef.post(url, data)
 
@@ -196,7 +201,7 @@ class NexentaNasDriver(driver.ShareDriver):
         try:
             self.nef.delete(url)
         except exception.NexentaException as e:
-            if 'Failed to destroy snapshot' in e.msg:
+            if 'EEXIST' == e.code:
                 LOG.debug('Snapshot has dependent clones, skipping')
             else:
                 raise
@@ -220,7 +225,7 @@ class NexentaNasDriver(driver.ShareDriver):
         url = 'storage/pools/%(pool)s/filesystems/%(fs)s/snapshots' % {
             'pool': self.pool_name,
             'fs': PATH_DELIMITER.join(
-                [self.fs_prefix, snapshot['share_name']]),
+                (self.fs_prefix, snapshot['share_name'])),
         }
         data = {'name': snapshot['name']}
         self.nef.post(url, data)
@@ -228,13 +233,12 @@ class NexentaNasDriver(driver.ShareDriver):
     def delete_snapshot(self, context, snapshot, share_server=None):
         """Delete a snapshot."""
         LOG.debug('Deleting a snapshot: %s.' % '@'.join(
-            [snapshot['share_name'], snapshot['name']]))
+            (snapshot['share_name'], snapshot['name'])))
 
         url = ('storage/pools/%(pool)s/filesystems/%(fs)s/snapshots/'
                '%(snap)s') % {'pool': self.pool_name,
                               'fs': PATH_DELIMITER.join(
-                                  [self.fs_prefix,
-                                   snapshot['share_name']]),
+                                  (self.fs_prefix, snapshot['share_name'])),
                               'snap': snapshot['name']}
         try:
             self.nef.delete(url)
@@ -332,16 +336,16 @@ class NexentaNasDriver(driver.ShareDriver):
 
     def _update_share_stats(self, data=None):
         super(NexentaNasDriver, self)._update_share_stats()
-        share = ':/'.join([self.nef_host, self.fs_prefix])
+        share = ':/'.join((self.nef_host, self.fs_prefix))
         total, free, allocated = self._get_capacity_info(share)
-        total_space = utils.str2gib_size(total)
-        free_space = utils.str2gib_size(free)
+        # total_space = utils.str2gib_size(total)
+        # free_space = utils.str2gib_size(free)
 
         data = {
             'vendor_name': 'Nexenta',
             'storage_protocol': self.storage_protocol,
-            'total_capacity_gb': total_space,
-            'free_capacity_gb': free_space,
+            'total_capacity_gb': total,
+            'free_capacity_gb': free,
             'reserved_percentage': (
                 self.configuration.reserved_share_percentage),
             'nfs_mount_point_base': self.nfs_mount_point_base,
@@ -359,8 +363,8 @@ class NexentaNasDriver(driver.ShareDriver):
         url = 'storage/pools/{}/filesystems/{}'.format(self.pool_name,
                                                        self.fs_prefix)
         data = self.nef.get(url)
-        total = utils.str2size(data['bytesAvailable'])
-        allocated = utils.str2size(data['bytesUsed'])
+        total = utils.bytes_to_gb(data['bytesAvailable'])
+        allocated = utils.bytes_to_gb(data['bytesUsed'])
         free = total - allocated
         return total, free, allocated
 
@@ -373,9 +377,7 @@ class NexentaNasDriver(driver.ShareDriver):
             raise exception.InvalidInput(err_msg)
 
         access_to = access['access_to'].strip()
-        ls = [{"allow": True,
-               "etype": "network",
-               "entity": access_to}]
+        ls = [{"allow": True, "etype": "network", "entity": access_to}]
         data = {
             "securityContexts": [
                 {

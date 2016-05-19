@@ -29,6 +29,9 @@ nexenta_connection_opts = [
     cfg.IntOpt('nexenta_rest_port',
                default=8457,
                help='HTTP port to connect to Nexenta REST API server.'),
+    cfg.IntOpt('nexenta_retry_count',
+               default=6,
+               help='Number of retries for unsuccessful API calls.'),
     cfg.StrOpt('nexenta_rest_protocol',
                default='auto',
                choices=['http', 'https', 'auto'],
@@ -83,8 +86,3 @@ nexenta_dataset_opts = [
                 help=('If True shares will not be space guaranteed and '
                       'overprovisioning will be enabled.')),
 ]
-
-CONF = cfg.CONF
-CONF.register_opts(nexenta_connection_opts)
-CONF.register_opts(nexenta_dataset_opts)
-CONF.register_opts(nexenta_nfs_opts)

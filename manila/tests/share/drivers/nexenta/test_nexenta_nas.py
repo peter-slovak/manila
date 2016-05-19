@@ -121,7 +121,8 @@ class TestNexentaNasDriver(test.TestCase):
     @patch(PATH_TO_RPC)
     def test_check_for_setup_error__volume_doesnt_exist(self, post):
         post.return_value = FakeResponse()
-        self.assertRaises(LookupError, self.drv.check_for_setup_error)
+        self.assertRaises(
+            exception.NexentaException, self.drv.check_for_setup_error)
 
     @patch(PATH_TO_RPC)
     def test_check_for_setup_error__folder_doesnt_exist(self, post):
@@ -181,7 +182,7 @@ class TestNexentaNasDriver(test.TestCase):
         post.return_value = FakeResponse()
         self.cfg.nexenta_thin_provisioning = False
         path = '%s/%s/%s' % (self.volume, self.share, share['name'])
-        location = '%s:/volumes/%s' % (self.cfg.nexenta_host, path)
+        location = {'path': '%s:/volumes/%s' % (self.cfg.nexenta_host, path)}
         self.assertEqual(location,
                          self.drv.create_share(self.ctx, share))
 
@@ -221,9 +222,9 @@ class TestNexentaNasDriver(test.TestCase):
         create_folder_props = {
             'recordsize': '4K',
             'quota': quota,
-            'reservation': quota,
             'compression': self.cfg.nexenta_dataset_compression,
             'sharenfs': self.cfg.nexenta_nfs,
+            'reservation': quota,
         }
         parent_path = '%s/%s' % (self.volume, self.share)
         post.return_value = FakeResponse()
@@ -242,7 +243,7 @@ class TestNexentaNasDriver(test.TestCase):
         snapshot = {'name': 'sn1', 'share_name': share['name']}
         post.return_value = FakeResponse()
         path = '%s/%s/%s' % (self.volume, self.share, share['name'])
-        location = '%s:/volumes/%s' % (self.cfg.nexenta_host, path)
+        location = {'path': '%s:/volumes/%s' % (self.cfg.nexenta_host, path)}
         self.assertEqual(location, self.drv.create_share_from_snapshot(
             self.ctx, share, snapshot))
         snapshot_name = '%s/%s/%s@%s' % (

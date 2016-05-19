@@ -21,20 +21,15 @@
 
 import base64
 import json
+import requests
 import time
 
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
 
-import requests
-
 from manila.exception import NexentaException
 
 LOG = logging.getLogger(__name__)
-
-
-class HTTP404Exception(Exception):
-    pass
 
 
 class NexentaJSONProxy(object):
@@ -113,5 +108,5 @@ class NexentaJSONProxy(object):
                 message = content.get(
                     'message', 'Message is not specified by Nexenta REST')
                 raise NexentaException(message, code=content['code'])
-            raise Exception(
+            raise NexentaException(
                 'Got bad response: {} {} {}'.format(code, reason, content))

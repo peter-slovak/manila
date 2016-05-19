@@ -19,6 +19,7 @@
 .. automodule:: nexenta.jsonrpc
 """
 
+import base64
 import requests
 import socket
 
@@ -76,7 +77,8 @@ class NexentaJSONProxy(object):
             'method': self.method,
             'params': args,
         })
-        auth = ('%s:%s' % (self.user, self.password)).encode('base64')[:-1]
+        auth = base64.b64encode(
+            ('%s:%s' % (self.user, self.password)).encode('utf-8'))
         headers = {
             'Content-Type': 'application/json',
             'Authorization': 'Basic %s' % auth,
@@ -87,5 +89,5 @@ class NexentaJSONProxy(object):
         LOG.debug('Got response: %s', response)
         if response.get('error') is not None:
             message = response['error'].get('message', '')
-            raise NexentaException(message)
+            raise NexentaException(response=message)
         return response.get('result')

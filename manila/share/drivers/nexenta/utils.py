@@ -13,44 +13,16 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import re
-
 from oslo_utils import units
 
-
-def str2size(s, scale=1024):
-    """Convert size-string.
-
-    String format: <value>[:space:]<B | K | M | ...> to bytes.
-
-    :param s: size-string
-    :param scale: base size
-    """
-    if not s:
-        return 0
-
-    if isinstance(s, (int, long)):
-        return s
-
-    match = re.match(r'^([\.\d]+)\s*([BbKkMmGgTtPpEeZzYy]?)', s)
-    if match is None:
-        raise ValueError('Invalid value: %s' % s)
-
-    groups = match.groups()
-    value = float(groups[0])
-    suffix = len(groups) > 1 and groups[1].upper() or 'B'
-
-    types = ['B', 'K', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y']
-    for i, t in enumerate(types):
-        if suffix == t:
-            n = value * pow(scale, i)
-            print(n)
-            p = int(value * pow(scale, i))
-            print(p)
-            return int(value * pow(scale, i))
+from manila import utils
 
 
 def str2gib_size(s):
     """Covert size-string to size in gigabytes."""
-    size_in_bytes = str2size(s)
+    size_in_bytes = utils.translate_string_size_to_float(s)
     return size_in_bytes // units.Gi
+
+
+def bytes_to_gb(size):
+    return int(size) / (1024 * 1024 * 1024)

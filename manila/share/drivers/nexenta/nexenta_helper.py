@@ -15,6 +15,7 @@
 
 from oslo_log import log
 
+from manila.common import constants as common
 from manila import exception
 from manila.i18n import _
 from manila.i18n import _LI
@@ -56,14 +57,16 @@ class RestHelper(object):
 
     def check_for_setup_error(self):
         if not self.nms.volume.object_exists(self.volume):
-            raise LookupError(_("Volume %s does not exist in Nexenta"
-                                "Stor appliance"), self.volume)
+            raise exception.NexentaException(_(
+                "Volume %s does not exist in NexentaStor appliance"),
+                self.volume)
         folder = '%s/%s' % (self.volume, self.share)
-        create_folder_props = {'recordsize': '4K',
-                               'quota': 'none',
-                               'compression': self.dataset_compression,
-                               'sharenfs': self.configuration.nexenta_nfs,
-                               }
+        create_folder_props = {
+            'recordsize': '4K',
+            'quota': 'none',
+            'compression': self.dataset_compression,
+            'sharenfs': self.configuration.nexenta_nfs,
+        }
         if not self.nms.folder.object_exists(folder):
             self.nms.folder.create_with_props(
                 self.volume, self.share, create_folder_props)
@@ -72,11 +75,12 @@ class RestHelper(object):
 
     def _create_filesystem(self, share):
         """Create file system."""
-        create_folder_props = {'recordsize': '4K',
-                               'quota': '%sG' % share['size'],
-                               'compression': self.dataset_compression,
-                               'sharenfs': self.nfs,
-                               }
+        create_folder_props = {
+            'recordsize': '4K',
+            'quota': '%sG' % share['size'],
+            'compression': self.dataset_compression,
+            'sharenfs': self.nfs,
+        }
         if self.configuration.nexenta_thin_provisioning is not True:
             create_folder_props['reservation'] = '%sG' % share['size']
 
@@ -109,7 +113,7 @@ class RestHelper(object):
     def _get_location_path(self, path, protocol):
         location = None
         if protocol == 'NFS':
-            location = '%s:/volumes/%s' % (self.nms_host, path)
+            location = {'path': '%s:/volumes/%s' % (self.nms_host, path)}
         else:
             raise exception.InvalidShare(
                 reason=(_('Invalid NAS protocol supplied: %s.')
@@ -173,8 +177,8 @@ class RestHelper(object):
         self._share_folder(path)
         return self._get_location_path(path, share['share_proto'])
 
-    def _update_access(self, share_id, access_rules):
-        """Allow access to the share."""
+    def _update_access(self, share_name, access_rules):
+        """Update access to the share."""
         rw_list = []
         ro_list = []
         for rule in access_rules:
@@ -182,7 +186,7 @@ class RestHelper(object):
                 msg = _('Only IP access type is supported.')
                 raise exception.InvalidShareAccess(reason=msg)
             else:
-                if rule['access_level'] == 'rw':
+                if rule['access_level'] == common.ACCESS_LEVEL_RW:
                     rw_list.append(rule['access_to'])
                 else:
                     ro_list.append(rule['access_to'])
@@ -198,7 +202,7 @@ class RestHelper(object):
         }
         self.nms.netstorsvc.share_folder(
             'svc:/network/nfs/server:default',
-            self._get_share_path(share_id), share_opts)
+            self._get_share_path(share_name), share_opts)
 
     def _get_capacity_info(self, nfs_share):
         """Calculate available space on the NFS share.
@@ -213,17 +217,18 @@ class RestHelper(object):
 
     def _update_share_stats(self):
         total, free, allocated = self._get_capacity_info(self.share)
-        return dict(
-            vendor_name='Nexenta',
-            storage_protocol=self.storage_protocol,
-            total_capacity_gb=total,
-            free_capacity_gb=free,
-            reserved_percentage=self.configuration.reserved_share_percentage,
-            nfs_mount_point_base=self.nfs_mount_point_base,
-            thin_provisioning=self.configuration.nexenta_thin_provisioning,
-            max_over_subscription_ratio=(
-                        self.configuration.safe_get(
-                            'max_over_subscription_ratio')),
-            compression=self.dataset_compression,
-            dedupe=self.dataset_dedupe,
-        )
+        return {
+            'vendor_name': 'Nexenta',
+            'storage_protocol': self.storage_protocol,
+            'total_capacity_gb': total,
+            'free_capacity_gb': free,
+            'reserved_percentage': (
+                self.configuration.reserved_share_percentage),
+            'nfs_mount_point_base': self.nfs_mount_point_base,
+            'thin_provisioning': self.configuration.nexenta_thin_provisioning,
+            'max_over_subscription_ratio': (
+                self.configuration.safe_get(
+                    'max_over_subscription_ratio')),
+            'compression': self.dataset_compression,
+            'dedupe': self.dataset_dedupe,
+        }

@@ -38,7 +38,7 @@ class NexentaNasDriver(driver.ShareDriver):
         """Do initialization."""
         LOG.debug('Initializing Nexenta driver.')
         super(NexentaNasDriver, self).__init__(False, *args, **kwargs)
-        self.configuration = kwargs.get('configuration', None)
+        self.configuration = kwargs.get('configuration')
         if self.configuration:
             self.configuration.append_config_values(
                 options.nexenta_connection_opts)
@@ -53,17 +53,18 @@ class NexentaNasDriver(driver.ShareDriver):
 
     @property
     def share_backend_name(self):
-        share_backend_name = None
-        if self.configuration:
-            share_backend_name = self.configuration.safe_get(
-                'share_backend_name')
-        if not share_backend_name:
-            share_backend_name = 'NexentaStor4'
-        return share_backend_name
+        if not hasattr(self, '_share_backend_name'):
+            self._share_backend_name = None
+            if self.configuration:
+                self._share_backend_name = self.configuration.safe_get(
+                    'share_backend_name')
+            if not self._share_backend_name:
+                self._share_backend_name = 'NexentaStor4'
+        return self._share_backend_name
 
     def do_setup(self, context):
-        """Any initialization the nexenta nas driver does while starting."""
-        LOG.debug('Setting up the plugin.')
+        """Any initialization the Nexenta NAS driver does while starting."""
+        LOG.debug('Setting up the NexentaStor4 plugin.')
         return self.helper.do_setup()
 
     def check_for_setup_error(self):
