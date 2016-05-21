@@ -87,7 +87,6 @@ class TestNexentaNasDriver(test.TestCase):
         self.ctx = context.get_admin_context()
         self.cfg = mock.Mock(spec=conf.Configuration)
         self.cfg.safe_get = mock.Mock(side_effect=_safe_get)
-
         self.cfg.nexenta_host = '1.1.1.1'
         self.cfg.nexenta_rest_port = 1000
         self.cfg.nexenta_rest_protocol = 'auto'
@@ -202,7 +201,6 @@ class TestNexentaNasDriver(test.TestCase):
             'recordsize': '4K',
             'quota': '1G',
             'compression': self.cfg.nexenta_dataset_compression,
-            'sharenfs': self.cfg.nexenta_nfs,
         }
         parent_path = '%s/%s' % (self.volume, self.share)
         post.return_value = FakeResponse()
@@ -223,7 +221,6 @@ class TestNexentaNasDriver(test.TestCase):
             'recordsize': '4K',
             'quota': quota,
             'compression': self.cfg.nexenta_dataset_compression,
-            'sharenfs': self.cfg.nexenta_nfs,
             'reservation': quota,
         }
         parent_path = '%s/%s' % (self.volume, self.share)
@@ -273,6 +270,8 @@ class TestNexentaNasDriver(test.TestCase):
         post.return_value = FakeResponse()
         post.side_effect = exception.NexentaException('does not exist')
         self.drv.delete_share(self.ctx, share)
+        self.assertRaises(
+            AttributeError, self.drv.delete_share, self.ctx, share)
 
     @patch(PATH_TO_RPC)
     def test_delete_share__some_error(self, post):

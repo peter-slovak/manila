@@ -14,6 +14,7 @@
 #    under the License.
 
 from oslo_log import log
+from oslo_utils import excutils
 
 from manila.common import constants as common
 from manila import exception
@@ -65,23 +66,19 @@ class RestHelper(object):
             'recordsize': '4K',
             'quota': 'none',
             'compression': self.dataset_compression,
-            'sharenfs': self.configuration.nexenta_nfs,
         }
         if not self.nms.folder.object_exists(folder):
             self.nms.folder.create_with_props(
                 self.volume, self.share, create_folder_props)
-            path = '%s/%s' % (self.volume, self.share)
-            self._share_folder(path)
 
-    def _create_filesystem(self, share):
+    def create_filesystem(self, share):
         """Create file system."""
         create_folder_props = {
             'recordsize': '4K',
             'quota': '%sG' % share['size'],
             'compression': self.dataset_compression,
-            'sharenfs': self.nfs,
         }
-        if self.configuration.nexenta_thin_provisioning is not True:
+        if not self.configuration.nexenta_thin_provisioning:
             create_folder_props['reservation'] = '%sG' % share['size']
 
         parent_path = '%s/%s' % (self.volume, self.share)
@@ -91,20 +88,7 @@ class RestHelper(object):
         path = self._get_share_path(share['name'])
         return self._get_location_path(path, share['share_proto'])
 
-    def _share_folder(self, path):
-        share_opts = {
-            'read_write': '*',
-            'read_only': '',
-            'root': 'nobody',
-            'extra_options': 'anon=0',
-            'recursive': 'true',
-            'anonymous_rw': 'true',
-        }
-        LOG.debug('Sharing folder %s on NexentaStor' % path)
-        self.nms.netstorsvc.share_folder('svc:/network/nfs/server:default',
-                                         path, share_opts)
-
-    def _set_quota(self, share_name, new_size):
+    def set_quota(self, share_name, new_size):
         if self.configuration.nexenta_thin_provisioning:
             quota = '%sG' % new_size
             self.nms.folder.set_child_prop(
@@ -120,17 +104,17 @@ class RestHelper(object):
                         % protocol))
         return location
 
-    def _delete_share(self, share_name):
+    def delete_share(self, share_name):
         """Delete share."""
         folder = self._get_share_path(share_name)
         try:
             self.nms.folder.destroy(folder.strip(), '-r')
         except exception.NexentaException as exc:
-            if 'does not exist' in exc.args[0]:
-                LOG.info(_LI('Folder %s does not exist, it was '
-                             'already deleted.'), folder)
-                return
-            raise
+            with excutils.save_and_reraise_exception as exc:
+                if 'does not exist' in exc.args[0]:
+                    LOG.info(_LI('Folder %s does not exist, it was '
+                                 'already deleted.'), folder)
+                    exc.reraise = False
 
     def _get_share_path(self, share_name):
         return '%s/%s/%s' % (self.volume, self.share, share_name)
@@ -138,13 +122,13 @@ class RestHelper(object):
     def _get_snapshot_name(self, snapshot_name):
         return 'snapshot-%s' % snapshot_name
 
-    def _create_snapshot(self, share_name, snapshot_name):
+    def create_snapshot(self, share_name, snapshot_name):
         """Create a snapshot."""
         folder = self._get_share_path(share_name)
         self.nms.folder.create_snapshot(folder, snapshot_name, '-r')
         return '%s@%s' % (folder, snapshot_name)
 
-    def _delete_snapshot(self, share_name, snapshot_name):
+    def delete_snapshot(self, share_name, snapshot_name):
         """Deletes snapshot."""
         try:
             self.nms.snapshot.destroy('%s@%s' % (
@@ -167,17 +151,16 @@ class RestHelper(object):
             else:
                 raise
 
-    def _create_share_from_snapshot(self, share, snapshot):
+    def create_share_from_snapshot(self, share, snapshot):
         snapshot_name = '%s/%s/%s@%s' % (
             self.volume, self.share, snapshot['share_name'], snapshot['name'])
         self.nms.folder.clone(
             snapshot_name,
             '%s/%s/%s' % (self.volume, self.share, share['name']))
         path = self._get_share_path(share['name'])
-        self._share_folder(path)
         return self._get_location_path(path, share['share_proto'])
 
-    def _update_access(self, share_name, access_rules):
+    def update_access(self, share_name, access_rules):
         """Update access to the share."""
         rw_list = []
         ro_list = []
@@ -215,7 +198,7 @@ class RestHelper(object):
         allocated = utils.str2gib_size(folder_props['used'])
         return free + allocated, free, allocated
 
-    def _update_share_stats(self):
+    def update_share_stats(self):
         total, free, allocated = self._get_capacity_info(self.share)
         return {
             'vendor_name': 'Nexenta',
