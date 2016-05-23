@@ -270,8 +270,6 @@ class TestNexentaNasDriver(test.TestCase):
         post.return_value = FakeResponse()
         post.side_effect = exception.NexentaException('does not exist')
         self.drv.delete_share(self.ctx, share)
-        self.assertRaises(
-            AttributeError, self.drv.delete_share, self.ctx, share)
 
     @patch(PATH_TO_RPC)
     def test_delete_share__some_error(self, post):

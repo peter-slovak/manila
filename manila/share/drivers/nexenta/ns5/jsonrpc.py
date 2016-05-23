@@ -97,7 +97,7 @@ class NexentaJSONProxy(object):
                 response.close()
         return content
 
-    def checkError(self, response):
+    def check_error(self, response):
         code = response.status_code
         if code not in (200, 201, 202):
             reason = response.reason

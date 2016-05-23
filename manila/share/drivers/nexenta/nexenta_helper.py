@@ -109,9 +109,9 @@ class RestHelper(object):
         folder = self._get_share_path(share_name)
         try:
             self.nms.folder.destroy(folder.strip(), '-r')
-        except exception.NexentaException as exc:
-            with excutils.save_and_reraise_exception as exc:
-                if 'does not exist' in exc.args[0]:
+        except exception.NexentaException:
+            with excutils.save_and_reraise_exception() as exc:
+                if 'does not exist' in exc.value:
                     LOG.info(_LI('Folder %s does not exist, it was '
                                  'already deleted.'), folder)
                     exc.reraise = False
@@ -133,23 +133,24 @@ class RestHelper(object):
         try:
             self.nms.snapshot.destroy('%s@%s' % (
                 self._get_share_path(share_name), snapshot_name), '')
-        except exception.NexentaException as exc:
-            if 'does not exist' in exc.args[0]:
-                LOG.info(_LI('Snapshot %(folder)s@%(snapshot)s does not '
-                             'exist, it was already deleted.'),
-                         {
-                             'folder': share_name,
-                             'snapshot': snapshot_name,
-                })
-            elif 'has dependent clones' in exc.args[0]:
-                LOG.info(_LI('Snapshot %(folder)s@%(snapshot)s has dependent '
-                             'clones, it will be deleted later.'),
-                         {
-                             'folder': share_name,
-                             'snapshot': snapshot_name,
-                })
-            else:
-                raise
+        except exception.NexentaException:
+            with excutils.save_and_reraise_exception() as exc:
+                if 'does not exist' in exc.value:
+                    LOG.info(_LI('Snapshot %(folder)s@%(snapshot)s does not '
+                                 'exist, it was already deleted.'),
+                             {
+                                 'folder': share_name,
+                                 'snapshot': snapshot_name,
+                    })
+                    exc.reraise = False
+                elif 'has dependent clones' in exc.value:
+                    LOG.info(_LI(
+                        'Snapshot %(folder)s@%(snapshot)s has dependent '
+                        'clones, it will be deleted later.'), {
+                            'folder': share_name,
+                            'snapshot': snapshot_name
+                    })
+                    exc.reraise = False
 
     def create_share_from_snapshot(self, share, snapshot):
         snapshot_name = '%s/%s/%s@%s' % (
