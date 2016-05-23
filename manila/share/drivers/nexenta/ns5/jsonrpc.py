@@ -76,7 +76,7 @@ class NexentaJSONProxy(object):
 
         response = getattr(requests, self.method)(
             url, data=data, headers=headers)
-        self.checkError(response)
+        self.check_error(response)
         content = json.loads(response.content) if response.content else None
         LOG.debug("Got response: %s %s %s",
                   response.status_code, response.reason, content)
@@ -88,7 +88,7 @@ class NexentaJSONProxy(object):
             while keep_going:
                 time.sleep(1)
                 response = requests.get(url)
-                self.checkError(response)
+                self.check_error(response)
                 LOG.debug("Got response: %s %s", response.status_code,
                           response.reason)
                 content = json.loads(
