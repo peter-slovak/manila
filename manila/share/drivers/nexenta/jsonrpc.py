@@ -21,16 +21,14 @@
 
 import base64
 import requests
-import socket
 
-from oslo_log import log as logging
+from oslo_log import log
 from oslo_serialization import jsonutils
 
 from manila.exception import NexentaException
 from manila.utils import retry
 
-LOG = logging.getLogger(__name__)
-socket.setdefaulttimeout(100)
+LOG = log.getLogger(__name__)
 
 
 class NexentaJSONProxy(object):

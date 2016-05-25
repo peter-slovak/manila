@@ -34,8 +34,9 @@ class TestNexentaNasDriver(test.TestCase):
             return getattr(self.cfg, opt)
         super(TestNexentaNasDriver, self).setUp()
         self.ctx = context.get_admin_context()
-        self.cfg = mock.Mock(spec=conf.Configuration)
-        self.cfg.safe_get = mock.Mock(side_effect=_safe_get)
+        self.cfg = conf.Configuration(None)
+        self.mock_object(
+            self.cfg, 'safe_get', mock.Mock(side_effect=_safe_get))
         self.cfg.nexenta_host = '1.1.1.1'
         self.cfg.nexenta_rest_port = 8080
         self.cfg.nexenta_rest_protocol = 'auto'
@@ -252,14 +253,28 @@ class TestNexentaNasDriver(test.TestCase):
                 self.build_access_security_context('rw', '1.1.1.1', 24)]})
 
     @patch(PATH_TO_RPC)
-    def test_update_access__cidr_wrong_mask(self, mock_rpc):
+    def test_update_access__ip(self, mock_rpc):
+        share = {'name': 'share'}
+        access = {
+            'access_type': 'ip',
+            'access_to': '1.1.1.1',
+            'access_level': 'rw'
+        }
+        url = 'nas/nfs/' + PATH_DELIMITER.join(
+            (self.pool_name, self.fs_prefix, share['name']))
+        self.drv.nef.get.return_value = {}
+        self.drv.update_access(self.ctx, share, [access], None, None)
+        self.drv.nef.put.assert_called_with(
+            url, {'securityContexts': [
+                self.build_access_security_context('rw', '1.1.1.1')]})
+
+    def test_update_access__cidr_wrong_mask(self):
         share = {'name': 'share'}
         access = {
             'access_type': 'ip',
             'access_to': '1.1.1.1/aa',
             'access_level': 'rw'
         }
-        self.drv.nef.get.return_value = {}
         self.assertRaises(exception.InvalidInput, self.drv.update_access,
                           self.ctx, share, [access], None, None)
 

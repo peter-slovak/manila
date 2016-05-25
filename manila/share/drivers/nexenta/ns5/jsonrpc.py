@@ -24,12 +24,12 @@ import json
 import requests
 import time
 
-from oslo_log import log as logging
+from oslo_log import log
 from oslo_serialization import jsonutils
 
 from manila.exception import NexentaException
 
-LOG = logging.getLogger(__name__)
+LOG = log.getLogger(__name__)
 
 
 class NexentaJSONProxy(object):

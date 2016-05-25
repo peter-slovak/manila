@@ -59,7 +59,7 @@ class RestHelper(object):
     def check_for_setup_error(self):
         if not self.nms.volume.object_exists(self.volume):
             raise exception.NexentaException(_(
-                "Volume %s does not exist in NexentaStor appliance"),
+                "Volume %s does not exist in NexentaStor appliance") %
                 self.volume)
         folder = '%s/%s' % (self.volume, self.share)
         create_folder_props = {
@@ -109,9 +109,9 @@ class RestHelper(object):
         folder = self._get_share_path(share_name)
         try:
             self.nms.folder.destroy(folder.strip(), '-r')
-        except exception.NexentaException:
+        except exception.NexentaException as e:
             with excutils.save_and_reraise_exception() as exc:
-                if 'does not exist' in exc.value:
+                if 'does not exist' in e.args[0]:
                     LOG.info(_LI('Folder %s does not exist, it was '
                                  'already deleted.'), folder)
                     exc.reraise = False
@@ -133,9 +133,9 @@ class RestHelper(object):
         try:
             self.nms.snapshot.destroy('%s@%s' % (
                 self._get_share_path(share_name), snapshot_name), '')
-        except exception.NexentaException:
+        except exception.NexentaException as e:
             with excutils.save_and_reraise_exception() as exc:
-                if 'does not exist' in exc.value:
+                if 'does not exist' in e.args[0]:
                     LOG.info(_LI('Snapshot %(folder)s@%(snapshot)s does not '
                                  'exist, it was already deleted.'),
                              {

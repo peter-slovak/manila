@@ -148,7 +148,7 @@ class NexentaNasDriver(driver.ShareDriver):
                     "Cannot destroy created filesystem: %(vol)s/%(folder)s, "
                     "exception: %(exc)s"),
                     {'vol': self.pool_name, 'folder': '/'.join(
-                        [self.fs_prefix, share['name']]), 'exc': exc})
+                        (self.fs_prefix, share['name'])), 'exc': exc})
             raise
         return location
 
@@ -338,8 +338,6 @@ class NexentaNasDriver(driver.ShareDriver):
         super(NexentaNasDriver, self)._update_share_stats()
         share = ':/'.join((self.nef_host, self.fs_prefix))
         total, free, allocated = self._get_capacity_info(share)
-        # total_space = utils.str2gib_size(total)
-        # free_space = utils.str2gib_size(free)
 
         data = {
             'vendor_name': 'Nexenta',
