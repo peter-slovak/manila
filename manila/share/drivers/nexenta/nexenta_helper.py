@@ -143,7 +143,7 @@ class RestHelper(object):
                                  'snapshot': snapshot_name,
                     })
                     exc.reraise = False
-                elif 'has dependent clones' in exc.value:
+                elif 'has dependent clones' in e.args[0]:
                     LOG.info(_LI(
                         'Snapshot %(folder)s@%(snapshot)s has dependent '
                         'clones, it will be deleted later.'), {
