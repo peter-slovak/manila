@@ -81,12 +81,12 @@ class NexentaNasDriver(driver.ShareDriver):
     def do_setup(self, context):
         """Any initialization the nexenta nas driver does while starting."""
         if self.nef_protocol == 'auto':
-            protocol, auto = 'http', True
+            protocol = 'https'
         else:
-            protocol, auto = self.nef_protocol, False
+            protocol = self.nef_protocol
         self.nef = jsonrpc.NexentaJSONProxy(
             protocol, self.nef_host, self.nef_port, self.nef_user,
-            self.nef_password, auto=auto)
+            self.nef_password)
 
     def check_for_setup_error(self):
         """Verify that the volume for our folder exists.
@@ -139,10 +139,7 @@ class NexentaNasDriver(driver.ShareDriver):
             self._add_permission(share['name'])
         except exception.NexentaException:
             try:
-                url = 'storage/pools/{}/filesystems/{}'.format(
-                    self.pool_name,
-                    PATH_DELIMITER.join((self.fs_prefix, share['name'])))
-                self.nef.delete(url)
+                self.delete_share(None, share)
             except exception.NexentaException as exc:
                 LOG.warning(_LW(
                     "Cannot destroy created filesystem: %(vol)s/%(folder)s, "
@@ -174,11 +171,7 @@ class NexentaNasDriver(driver.ShareDriver):
             self._add_permission(share['name'])
         except exception.NexentaException:
             try:
-                url = ('storage/pools/%(pool)s/filesystems/%(fs)s') % {
-                    'pool': self.pool_name,
-                    'fs': PATH_DELIMITER.join(
-                        (self.fs_prefix, share['name']))}
-                self.nef.delete(url)
+                self.delete_share(None, share)
             except exception.NexentaException:
                 LOG.warning(_LW("Cannot destroy cloned filesystem: "
                                 "%(vol)s/%(filesystem)s"),
@@ -201,7 +194,7 @@ class NexentaNasDriver(driver.ShareDriver):
         try:
             self.nef.delete(url)
         except exception.NexentaException as e:
-            if 'EEXIST' == e.code:
+            if 'EEXIST' == e.kwargs['code']:
                 LOG.debug('Snapshot has dependent clones, skipping')
             else:
                 raise
@@ -365,38 +358,6 @@ class NexentaNasDriver(driver.ShareDriver):
         allocated = utils.bytes_to_gb(data['bytesUsed'])
         free = total - allocated
         return total, free, allocated
-
-    def _manage_share_access(self, share_name, access, type_):
-        access_type = access['access_type'].strip()
-        if access_type != 'ip':
-            err_msg = (
-                _('Access type %s is not allowed in Nexenta Store appliance.'),
-                access_type)
-            raise exception.InvalidInput(err_msg)
-
-        access_to = access['access_to'].strip()
-        ls = [{"allow": True, "etype": "network", "entity": access_to}]
-        data = {
-            "securityContexts": [
-                {
-                    "root": ls,
-                    "securityModes": ["sys"]
-                }
-            ]
-        }
-
-        access_level = access['access_level'].strip()
-        if access_level == 'rw':
-            data['securityContexts'][0]['readWriteList'] = ls
-        elif access_level == 'ro':
-            data['securityContexts'][0]['readOnlyList'] = ls
-        else:
-            raise exception.InvalidInput(_(
-                'Access level  %s is not allowed in '
-                'Nexenta Store appliance'), access_level)
-        url = 'nas/nfs/' + PATH_DELIMITER.join(
-            (self.pool_name, self.fs_prefix, share_name))
-        self.nef.put(url, data)
 
     def _add_permission(self, share_name):
         """Share NFS filesystem on NexentaStor Appliance.

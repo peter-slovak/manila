@@ -22,6 +22,8 @@
 import base64
 import json
 import requests
+from requests.packages.urllib3.exceptions import InsecurePlatformWarning
+from requests.packages.urllib3.exceptions import InsecureRequestWarning
 import time
 
 from oslo_log import log
@@ -30,17 +32,20 @@ from oslo_serialization import jsonutils
 from manila.exception import NexentaException
 
 LOG = log.getLogger(__name__)
+requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+requests.packages.urllib3.disable_warnings(
+    InsecurePlatformWarning)
+session = requests.Session()
 
 
 class NexentaJSONProxy(object):
     def __init__(self, scheme, host, port, user,
-                 password, auto=False, method=None):
+                 password, method=None):
         self.scheme = scheme
         self.host = host
         self.port = port
         self.user = user
         self.password = password
-        self.auto = True
         self.method = method
 
     @property
@@ -51,7 +56,7 @@ class NexentaJSONProxy(object):
         if method:
             return NexentaJSONProxy(
                 self.scheme, self.host, self.port,
-                self.user, self.password, self.auto, method)
+                self.user, self.password, method)
 
     def __hash__(self):
         return self.url.__hash__()
@@ -62,10 +67,6 @@ class NexentaJSONProxy(object):
     def __call__(self, path, data=None):
         auth = base64.b64encode(
             ('%s:%s' % (self.user, self.password)).encode('utf-8'))
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': 'Basic %s' % auth
-        }
         url = self.url + path
 
         if data:
@@ -73,9 +74,21 @@ class NexentaJSONProxy(object):
 
         LOG.debug('Sending JSON to url: %s, data: %s, method: %s',
                   path, data, self.method)
+        session.headers.update({'Content-Type': 'application/json'})
 
-        response = getattr(requests, self.method)(
-            url, data=data, headers=headers)
+        response = getattr(session, self.method)(
+            url, data=data, verify=False)
+        if response.status_code in (401, 403):
+            LOG.debug('Login requested by NexentaStor')
+            if self.scheme == 'http':
+                session.headers.update({'Authorization': 'Basic %s' % auth})
+            else:
+                session.headers.update(
+                    {'Authorization': 'Bearer %s' % self.https_auth()})
+            LOG.debug('Re-sending JSON to url: %s, data: %s, method: %s',
+                      path, data, self.method)
+            response = getattr(session, self.method)(
+                url, data=data, verify=False)
         self.check_error(response)
         content = json.loads(response.content) if response.content else None
         LOG.debug("Got response: %s %s %s",
@@ -87,7 +100,7 @@ class NexentaJSONProxy(object):
             keep_going = True
             while keep_going:
                 time.sleep(1)
-                response = requests.get(url)
+                response = session.get(url, verify=False)
                 self.check_error(response)
                 LOG.debug("Got response: %s %s", response.status_code,
                           response.reason)
@@ -96,6 +109,18 @@ class NexentaJSONProxy(object):
                 keep_going = response.status_code == 202
                 response.close()
         return content
+
+    def https_auth(self):
+        url = self.url + 'auth/login'
+        data = jsonutils.dumps(
+            {'username': self.user, 'password': self.password})
+        response = session.post(
+            url, data=data, verify=False)
+        content = json.loads(response.content) if response.content else None
+        LOG.debug("Got response: %s %s %s",
+                  response.status_code, response.reason, content)
+        response.close()
+        return content['token']
 
     def check_error(self, response):
         code = response.status_code

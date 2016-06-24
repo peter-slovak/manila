@@ -24,6 +24,7 @@ from manila.share import configuration as conf
 from manila.share.drivers.nexenta.nexenta_nas import NexentaNasDriver
 from manila import test
 from oslo_serialization import jsonutils
+from oslo_utils import units
 
 PATH_TO_RPC = 'requests.post'
 CODE = PropertyMock(return_value=200)
@@ -89,6 +90,8 @@ class TestNexentaNasDriver(test.TestCase):
         self.cfg.safe_get = mock.Mock(side_effect=_safe_get)
         self.cfg.nexenta_host = '1.1.1.1'
         self.cfg.nexenta_rest_port = 1000
+        self.cfg.reserved_share_percentage = 0
+        self.cfg.max_over_subscription_ratio = 0
         self.cfg.nexenta_rest_protocol = 'auto'
         self.cfg.nexenta_volume = 'volume'
         self.cfg.nexenta_nfs_share = 'nfs_share'
@@ -97,6 +100,7 @@ class TestNexentaNasDriver(test.TestCase):
         self.cfg.nexenta_thin_provisioning = False
         self.cfg.enabled_share_protocols = 'NFS'
         self.cfg.nexenta_mount_point_base = '$state_path/mnt'
+        self.cfg.share_backend_name = 'NexentaStor'
         self.cfg.nexenta_dataset_compression = 'on'
         self.cfg.nexenta_smb = 'on'
         self.cfg.nexenta_nfs = 'on'
@@ -478,3 +482,38 @@ class TestNexentaNasDriver(test.TestCase):
         }
         self.assertRaises(exception.InvalidShareAccess, self.drv.update_access,
                           self.ctx, share, [access], None, None)
+
+    def test_share_backend_name(self):
+        self.assertEqual('NexentaStor', self.drv.share_backend_name)
+
+    @patch(PATH_TO_RPC)
+    def test_get_capacity_info(self, post):
+        post.return_value = FakeResponse({'result': {
+            'available': 9 * units.Gi, 'used': 1 * units.Gi}})
+        self.assertEqual(
+            (10, 9, 1), self.drv.helper._get_capacity_info('path'))
+
+    @patch('manila.share.drivers.nexenta.nexenta_helper.RestHelper.'
+           '_get_capacity_info')
+    @patch('manila.share.driver.ShareDriver._update_share_stats')
+    def test_update_share_stats(self, super_stats, info):
+        info.return_value = (100, 90, 10)
+        stats = {
+            'vendor_name': 'Nexenta',
+            'storage_protocol': 'NFS',
+            'total_capacity_gb': 100,
+            'free_capacity_gb': 90,
+            'reserved_percentage': (
+                self.cfg.reserved_share_percentage),
+            'nfs_mount_point_base': self.cfg.nexenta_mount_point_base,
+            'thin_provisioning': self.cfg.nexenta_thin_provisioning,
+            'driver_version': '1.0',
+            'max_over_subscription_ratio': (
+                self.cfg.safe_get(
+                    'max_over_subscription_ratio')),
+            'compression': self.cfg.nexenta_dataset_compression,
+            'dedupe': self.cfg.nexenta_dataset_dedupe,
+            'share_backend_name': self.cfg.share_backend_name
+        }
+        self.drv._update_share_stats()
+        self.assertEqual(stats, self.drv._stats)
