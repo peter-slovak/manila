@@ -397,7 +397,7 @@ class TestNexentaJSONProxy(test.TestCase):
 
         get.return_value.__setstate__({
             'status_code': 201, '_content': ''})
-        self.assertEqual(None, nef_get('url'))
+        self.assertIsNone(nef_get('url'))
 
         data2 = {'links': [{'href': 'redirect_url'}]}
         post.return_value.__setstate__({
@@ -408,7 +408,7 @@ class TestNexentaJSONProxy(test.TestCase):
 
         get.return_value.__setstate__({
             'status_code': 200, '_content': ''})
-        self.assertEqual(None, nef_post('url', data))
+        self.assertIsNone(nef_post('url', data))
 
         get.return_value.__setstate__({
             'status_code': 400,
