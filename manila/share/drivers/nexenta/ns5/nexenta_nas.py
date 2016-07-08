@@ -52,7 +52,7 @@ class NexentaNasDriver(driver.ShareDriver):
                 options.nexenta_dataset_opts)
         else:
             raise exception.BadConfigurationException(
-                _('Nexenta configuration missing.'))
+                reason=_('Nexenta configuration missing.'))
 
         self.nef = None
         self.nef_protocol = self.configuration.nexenta_rest_protocol
@@ -239,7 +239,7 @@ class NexentaNasDriver(driver.ShareDriver):
             if e.kwargs['code'] == 'ENOENT':
                 LOG.warning(e.msg + e.kwargs['code'])
             else:
-                raise e
+                raise
 
     def update_access(self, context, share, access_rules, add_rules,
                       delete_rules, share_server=None):
@@ -283,7 +283,7 @@ class NexentaNasDriver(driver.ShareDriver):
                         ls[0]['mask'] = mask
                 except Exception:
                     raise exception.InvalidInput(
-                        '<{}> is not a valid access parameter'.format(
+                        reason='<{}> is not a valid access parameter'.format(
                             addr))
             new_sc = {
                 "securityModes": ["sys"]
@@ -302,7 +302,7 @@ class NexentaNasDriver(driver.ShareDriver):
                         ls[0]['mask'] = mask
                 except Exception:
                     raise exception.InvalidInput(
-                        '<{}> is not a valid access parameter'.format(
+                        reason='<{}> is not a valid access parameter'.format(
                             addr))
             new_sc = {
                 "securityModes": ["sys"]
@@ -330,7 +330,7 @@ class NexentaNasDriver(driver.ShareDriver):
     def _update_share_stats(self, data=None):
         super(NexentaNasDriver, self)._update_share_stats()
         share = ':/'.join((self.nef_host, self.fs_prefix))
-        total, free, allocated = self._get_capacity_info(share)
+        total, free, provisioned = self._get_capacity_info(share)
 
         data = {
             'vendor_name': 'Nexenta',
@@ -342,6 +342,10 @@ class NexentaNasDriver(driver.ShareDriver):
             'nfs_mount_point_base': self.nfs_mount_point_base,
             'thin_provisioning': self.configuration.nexenta_thin_provisioning,
             'driver_version': VERSION,
+            'provisioned_capacity_gb': provisioned,
+            'max_over_subscription_ratio': (
+                self.configuration.safe_get(
+                    'max_over_subscription_ratio')),
             'share_backend_name': self.backend_name
         }
         self._stats.update(data)

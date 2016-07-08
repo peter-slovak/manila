@@ -49,7 +49,7 @@ class NexentaNasDriver(driver.ShareDriver):
             self.helper = nexenta_helper.RestHelper(self.configuration)
         else:
             raise exception.BadConfigurationException(
-                _('Nexenta configuration missing.'))
+                reason=_('Nexenta configuration missing.'))
 
     @property
     def share_backend_name(self):

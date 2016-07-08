@@ -14,17 +14,18 @@
 #    under the License.
 
 import base64
+
 import mock
 from mock import patch
 from mock import PropertyMock
+from oslo_serialization import jsonutils
+from oslo_utils import units
 
 from manila import context
 from manila import exception
 from manila.share import configuration as conf
 from manila.share.drivers.nexenta.nexenta_nas import NexentaNasDriver
 from manila import test
-from oslo_serialization import jsonutils
-from oslo_utils import units
 
 PATH_TO_RPC = 'requests.post'
 CODE = PropertyMock(return_value=200)

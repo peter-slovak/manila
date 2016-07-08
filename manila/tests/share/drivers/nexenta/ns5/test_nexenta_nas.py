@@ -16,6 +16,7 @@
 import mock
 from mock import patch
 from oslo_serialization import jsonutils
+from oslo_utils import units
 import requests
 
 
@@ -26,7 +27,6 @@ from manila.share.drivers.nexenta.ns5 import jsonrpc
 from manila.share.drivers.nexenta.ns5.nexenta_nas import NexentaNasDriver
 from manila.share.drivers.nexenta.ns5.nexenta_nas import PATH_DELIMITER
 from manila import test
-from oslo_utils import units
 
 PATH_TO_RPC = 'manila.share.drivers.nexenta.ns5.jsonrpc.NexentaJSONProxy'
 

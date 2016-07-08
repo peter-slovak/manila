@@ -18,8 +18,7 @@ from oslo_utils import excutils
 
 from manila.common import constants as common
 from manila import exception
-from manila.i18n import _
-from manila.i18n import _LI
+from manila.i18n import _, _LI
 from manila.share.drivers.nexenta import jsonrpc
 from manila.share.drivers.nexenta import utils
 
@@ -58,7 +57,7 @@ class RestHelper(object):
 
     def check_for_setup_error(self):
         if not self.nms.volume.object_exists(self.volume):
-            raise exception.NexentaException(_(
+            raise exception.NexentaException(reason=_(
                 "Volume %s does not exist in NexentaStor appliance") %
                 self.volume)
         folder = '%s/%s' % (self.volume, self.share)
@@ -200,12 +199,13 @@ class RestHelper(object):
         return free + allocated, free, allocated
 
     def update_share_stats(self):
-        total, free, allocated = self._get_capacity_info(self.share)
+        total, free, provisioned = self._get_capacity_info(self.share)
         return {
             'vendor_name': 'Nexenta',
             'storage_protocol': self.storage_protocol,
             'total_capacity_gb': total,
             'free_capacity_gb': free,
+            'provisioned_capacity_gb': provisioned,
             'reserved_percentage': (
                 self.configuration.reserved_share_percentage),
             'nfs_mount_point_base': self.nfs_mount_point_base,
