@@ -22,19 +22,18 @@
 import base64
 import json
 import requests
-from requests.packages.urllib3.exceptions import InsecurePlatformWarning
-from requests.packages.urllib3.exceptions import InsecureRequestWarning
+from requests.packages.urllib3 import exceptions
 import time
 
 from oslo_log import log
 from oslo_serialization import jsonutils
 
-from manila.exception import NexentaException
+from manila import exception
 
 LOG = log.getLogger(__name__)
-requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+requests.packages.urllib3.disable_warnings(exceptions.InsecureRequestWarning)
 requests.packages.urllib3.disable_warnings(
-    InsecurePlatformWarning)
+    exceptions.InsecurePlatformWarning)
 session = requests.Session()
 
 

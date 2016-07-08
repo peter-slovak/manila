@@ -200,6 +200,7 @@ class RestHelper(object):
 
     def update_share_stats(self):
         total, free, provisioned = self._get_capacity_info(self.share)
+        compression = False if self.dataset_compression == 'off' else True
         return {
             'vendor_name': 'Nexenta',
             'storage_protocol': self.storage_protocol,
@@ -213,6 +214,6 @@ class RestHelper(object):
             'max_over_subscription_ratio': (
                 self.configuration.safe_get(
                     'max_over_subscription_ratio')),
-            'compression': self.dataset_compression,
+            'compression': compression,
             'dedupe': self.dataset_dedupe,
         }

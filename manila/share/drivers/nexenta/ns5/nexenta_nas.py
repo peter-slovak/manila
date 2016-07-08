@@ -17,7 +17,7 @@ from oslo_log import log
 from oslo_utils import units
 
 from manila import exception
-from manila.i18n import _, _LW
+from manila.i18n import _, _LW, _LE
 from manila.share import driver
 from manila.share.drivers.nexenta.ns5 import jsonrpc
 from manila.share.drivers.nexenta import options
@@ -42,7 +42,7 @@ class NexentaNasDriver(driver.ShareDriver):
         """Do initialization."""
         LOG.debug('Initializing Nexenta driver.')
         super(NexentaNasDriver, self).__init__(False, *args, **kwargs)
-        self.configuration = kwargs.get('configuration', None)
+        self.configuration = kwargs.get('configuration')
         if self.configuration:
             self.configuration.append_config_values(
                 options.nexenta_connection_opts)
@@ -70,13 +70,15 @@ class NexentaNasDriver(driver.ShareDriver):
             self.configuration.nexenta_dataset_compression)
 
     @property
-    def backend_name(self):
-        backend_name = None
-        if self.configuration:
-            backend_name = self.configuration.safe_get('share_backend_name')
-        if not backend_name:
-            backend_name = 'NexentaStor5'
-        return backend_name
+    def share_backend_name(self):
+        if not hasattr(self, '_share_backend_name'):
+            self._share_backend_name = None
+            if self.configuration:
+                self._share_backend_name = self.configuration.safe_get(
+                    'share_backend_name')
+            if not self._share_backend_name:
+                self._share_backend_name = 'NexentaStor5'
+        return self._share_backend_name
 
     def do_setup(self, context):
         """Any initialization the nexenta nas driver does while starting."""
@@ -169,7 +171,8 @@ class NexentaNasDriver(driver.ShareDriver):
 
         try:
             self._add_permission(share['name'])
-        except exception.NexentaException:
+        except exception.NexentaException as exc:
+            LOG.error(_LE(exc))
             try:
                 self.delete_share(None, share)
             except exception.NexentaException:
@@ -190,14 +193,7 @@ class NexentaNasDriver(driver.ShareDriver):
             'pool': self.pool_name,
             'fs': PATH_DELIMITER.join([self.fs_prefix, share['name']])
         }
-        url += '?snapshots=true'
-        try:
-            self.nef.delete(url)
-        except exception.NexentaException as e:
-            if 'EEXIST' == e.kwargs['code']:
-                LOG.debug('Snapshot has dependent clones, skipping')
-            else:
-                raise
+        self.nef.delete(url)
 
     def extend_share(self, share, new_size, share_server=None):
         """Extends a share."""

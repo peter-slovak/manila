@@ -39,7 +39,7 @@ def str2size(s, scale=1024):
     groups = match.groups()
     value = float(groups[0])
     suffix = len(groups) > 1 and groups[1].upper() or 'B'
-    types = ['B', 'K', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y']
+    types = ('B', 'K', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y')
     for i, t in enumerate(types):
         if suffix == t:
             return float(value * pow(scale, i))
@@ -52,4 +52,4 @@ def str2gib_size(s):
 
 
 def bytes_to_gb(size):
-    return int(size) / (1024 * 1024 * 1024)
+    return int(size) / units.Gi

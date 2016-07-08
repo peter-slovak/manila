@@ -24,11 +24,11 @@ from oslo_config import cfg
 
 nexenta_connection_opts = [
     cfg.StrOpt('nexenta_host',
-               default='',
+               required=True,
                help='IP address of Nexenta SA.'),
     cfg.IntOpt('nexenta_rest_port',
                default=8457,
-               help='HTTP port to connect to Nexenta REST API server.'),
+               help='Rest port to connect to Nexenta REST API server.'),
     cfg.IntOpt('nexenta_retry_count',
                default=6,
                help='Number of retries for unsuccessful API calls.'),
@@ -70,7 +70,7 @@ nexenta_nfs_opts = [
 nexenta_dataset_opts = [
     cfg.StrOpt('nexenta_nfs_share',
                default='nfs_share',
-               help='NFS share on NexentaStor.'),
+               help='Parent folder on NexentaStor.'),
     cfg.StrOpt('nexenta_dataset_compression',
                default='on',
                choices=['on', 'off', 'gzip', 'gzip-1', 'gzip-2', 'gzip-3',
