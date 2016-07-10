@@ -17,7 +17,7 @@ from oslo_log import log
 from oslo_utils import units
 
 from manila import exception
-from manila.i18n import _, _LW, _LE
+from manila.i18n import _, _LW
 from manila.share import driver
 from manila.share.drivers.nexenta.ns5 import jsonrpc
 from manila.share.drivers.nexenta import options
@@ -172,7 +172,7 @@ class NexentaNasDriver(driver.ShareDriver):
         try:
             self._add_permission(share['name'])
         except exception.NexentaException as exc:
-            LOG.error(_LE(exc))
+            LOG.error(exc)
             try:
                 self.delete_share(None, share)
             except exception.NexentaException:

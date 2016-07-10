@@ -152,12 +152,6 @@ class TestNexentaNasDriver(test.TestCase):
 
     def test_delete_share(self):
         share = {'name': 'share'}
-        url = 'storage/pools/%(pool)s/filesystems/%(fs)s' % {
-            'pool': self.pool_name,
-            'fs': nexenta_nas.PATH_DELIMITER.join(
-                [self.fs_prefix, share['name']])
-        }
-        url += '?snapshots=true'
         self.assertIsNone(self.drv.delete_share(self.ctx, share))
 
     def test_extend_share(self):
