@@ -342,7 +342,7 @@ class NexentaNasDriver(driver.ShareDriver):
             'max_over_subscription_ratio': (
                 self.configuration.safe_get(
                     'max_over_subscription_ratio')),
-            'share_backend_name': self.backend_name
+            'share_backend_name': self.share_backend_name
         }
         self._stats.update(data)
 

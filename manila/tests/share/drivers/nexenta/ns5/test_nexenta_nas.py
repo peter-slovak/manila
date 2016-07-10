@@ -67,7 +67,7 @@ class TestNexentaNasDriver(test.TestCase):
         self.fs_prefix = self.cfg.nexenta_nfs_share
 
     def test_backend_name(self):
-        self.assertEqual('NexentaStor5', self.drv.backend_name)
+        self.assertEqual('NexentaStor5', self.drv.share_backend_name)
 
     def test_check_for_setup_error(self):
         self.drv.nef.get.return_value = None
@@ -151,8 +151,6 @@ class TestNexentaNasDriver(test.TestCase):
             self.ctx, share, snapshot)
 
     def test_delete_share(self):
-        self.mock_rpc.side_effect = exception.NexentaException(
-            'err', code='EEXIST')
         share = {'name': 'share'}
         url = 'storage/pools/%(pool)s/filesystems/%(fs)s' % {
             'pool': self.pool_name,
@@ -161,10 +159,6 @@ class TestNexentaNasDriver(test.TestCase):
         }
         url += '?snapshots=true'
         self.assertIsNone(self.drv.delete_share(self.ctx, share))
-        self.mock_rpc.side_effect = exception.NexentaException(
-            'err', code='somecode')
-        self.assertRaises(
-            exception.NexentaException, self.drv.delete_share, self.ctx, share)
 
     def test_extend_share(self):
         share = {'name': 'share'}
