@@ -131,7 +131,8 @@ class NexentaJSONProxy(object):
             if content and 'code' in content:
                 message = content.get(
                     'message', 'Message is not specified by Nexenta REST')
-                raise NexentaException(reason=message, code=content['code'])
-            raise NexentaException(
+                raise exception.NexentaException(
+                    reason=message, code=content['code'])
+            raise exception.NexentaException(
                 reason='Got bad response: {} {} {}'.format(
                     code, reason, content))

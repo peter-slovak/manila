@@ -69,7 +69,7 @@ class TestNexentaNasDriver(test.TestCase):
     def test_backend_name(self):
         self.assertEqual('NexentaStor5', self.drv.backend_name)
 
-    def test_check_for_setup_error(self, mock_rpc):
+    def test_check_for_setup_error(self):
         self.drv.nef.get.return_value = None
         self.assertRaises(LookupError, self.drv.check_for_setup_error)
         self.drv.nef.get.return_value = {
@@ -79,7 +79,7 @@ class TestNexentaNasDriver(test.TestCase):
         self.drv.nef.get.return_value = {'data': [{'filesystem': 'asd'}]}
         self.assertRaises(LookupError, self.drv.check_for_setup_error)
 
-    def test_create_share(self, mock_rpc):
+    def test_create_share(self):
         share = {'name': 'share', 'size': 1}
         self.assertEqual(
             {
@@ -92,7 +92,7 @@ class TestNexentaNasDriver(test.TestCase):
     @patch('%s.delete_share' % DRV_PATH)
     @patch('%s._add_permission' % DRV_PATH)
     def test_create_share__error_on_add_permission(
-            self, mock_rpc, add_permission_mock, delete_share):
+            self, add_permission_mock, delete_share):
         share = {'name': 'share', 'size': 1}
         add_permission_mock.side_effect = exception.NexentaException(
             'An error occurred while adding permission')
@@ -101,7 +101,7 @@ class TestNexentaNasDriver(test.TestCase):
         self.assertRaises(
             exception.NexentaException, self.drv.create_share, self.ctx, share)
 
-    def test_create_share_from_snapshot(self, mock_rpc):
+    def test_create_share_from_snapshot(self):
         share = {'name': 'share'}
         snapshot = {'name': 'share@first', 'share_name': 'share'}
         self.assertEqual(
@@ -126,7 +126,7 @@ class TestNexentaNasDriver(test.TestCase):
     @patch('%s.delete_share' % DRV_PATH)
     @patch('%s._add_permission' % DRV_PATH)
     def test_create_share_from_snapshot__add_permission_error(
-            self, mock_rpc, add_permission_mock, delete_share):
+            self, add_permission_mock, delete_share):
         share = {'name': 'share'}
         snapshot = {'share_name': 'share', 'name': 'share@first'}
         delete_share.side_effect = exception.NexentaException(
@@ -139,7 +139,7 @@ class TestNexentaNasDriver(test.TestCase):
 
     @patch('%s._add_permission' % DRV_PATH)
     def test_create_share_from_snapshot__add_permission_error_error(
-            self, m, add_permission_mock):
+            self, add_permission_mock):
         share = {'name': 'share'}
         snapshot = {'share_name': 'share', 'name': 'share@first'}
         add_permission_mock.side_effect = exception.NexentaException(
@@ -150,8 +150,8 @@ class TestNexentaNasDriver(test.TestCase):
             exception.NexentaException, self.drv.create_share_from_snapshot,
             self.ctx, share, snapshot)
 
-    def test_delete_share(self, mock_rpc):
-        mock_rpc.side_effect = exception.NexentaException(
+    def test_delete_share(self):
+        self.mock_rpc.side_effect = exception.NexentaException(
             'err', code='EEXIST')
         share = {'name': 'share'}
         url = 'storage/pools/%(pool)s/filesystems/%(fs)s' % {
@@ -161,12 +161,12 @@ class TestNexentaNasDriver(test.TestCase):
         }
         url += '?snapshots=true'
         self.assertIsNone(self.drv.delete_share(self.ctx, share))
-        mock_rpc.side_effect = exception.NexentaException(
+        self.mock_rpc.side_effect = exception.NexentaException(
             'err', code='somecode')
         self.assertRaises(
             exception.NexentaException, self.drv.delete_share, self.ctx, share)
 
-    def test_extend_share(self, mock_rpc):
+    def test_extend_share(self):
         share = {'name': 'share'}
         new_size = 1
         self.drv.extend_share(share, new_size)
@@ -178,7 +178,7 @@ class TestNexentaNasDriver(test.TestCase):
             self.pool_name, self.fs_prefix, share['name'])
         self.drv.nef.post.assert_called_with(url, data)
 
-    def test_shrink_share(self, mock_rpc):
+    def test_shrink_share(self):
         share = {'name': 'share'}
         new_size = 5
         self.drv.shrink_share(share, new_size)
@@ -190,7 +190,7 @@ class TestNexentaNasDriver(test.TestCase):
             self.pool_name, self.fs_prefix, share['name'])
         self.drv.nef.post.assert_called_with(url, data)
 
-    def test_create_snapshot(self, mock_rpc):
+    def test_create_snapshot(self):
         snapshot = {'share_name': 'share', 'name': 'share@first'}
         self.drv.create_snapshot(self.ctx, snapshot)
         url = 'storage/pools/%(pool)s/filesystems/%(fs)s/snapshots' % {
@@ -201,12 +201,12 @@ class TestNexentaNasDriver(test.TestCase):
         data = {'name': snapshot['name']}
         self.drv.nef.post.assert_called_with(url, data)
 
-    def test_delete_snapshot(self, mock_rpc):
-        mock_rpc.side_effect = exception.NexentaException(
+    def test_delete_snapshot(self):
+        self.mock_rpc.side_effect = exception.NexentaException(
             'err', code='ENOENT')
         snapshot = {'share_name': 'share', 'name': 'share@first'}
         self.assertIsNone(self.drv.delete_snapshot(self.ctx, snapshot))
-        mock_rpc.side_effect = exception.NexentaException(
+        self.mock_rpc.side_effect = exception.NexentaException(
             'err', code='somecode')
         self.assertRaises(
             exception.NexentaException, self.drv.delete_snapshot,
@@ -227,7 +227,7 @@ class TestNexentaNasDriver(test.TestCase):
             raise exception.ManilaException('Wrong access level')
         return new_sc
 
-    def test_update_access__unsupported_access_type(self, mock_rpc):
+    def test_update_access__unsupported_access_type(self):
         share = {'name': 'share'}
         access = {
             'access_type': 'group',
@@ -237,7 +237,7 @@ class TestNexentaNasDriver(test.TestCase):
         self.assertRaises(exception.InvalidShareAccess, self.drv.update_access,
                           self.ctx, share, [access], None, None)
 
-    def test_update_access__cidr(self, mock_rpc):
+    def test_update_access__cidr(self):
         share = {'name': 'share'}
         access = {
             'access_type': 'ip',
@@ -252,7 +252,7 @@ class TestNexentaNasDriver(test.TestCase):
             url, {'securityContexts': [
                 self.build_access_security_context('rw', '1.1.1.1', 24)]})
 
-    def test_update_access__ip(self, mock_rpc):
+    def test_update_access__ip(self):
         share = {'name': 'share'}
         access = {
             'access_type': 'ip',
@@ -284,7 +284,7 @@ class TestNexentaNasDriver(test.TestCase):
         self.assertRaises(exception.InvalidInput, self.drv.update_access,
                           self.ctx, share, [access], None, None)
 
-    def test_update_access__one_ip_ro_add_rule_to_existing(self, mock_rpc):
+    def test_update_access__one_ip_ro_add_rule_to_existing(self):
         share = {'name': 'share'}
         access = [
             {
@@ -308,7 +308,7 @@ class TestNexentaNasDriver(test.TestCase):
                 sc, self.build_access_security_context('ro', '5.5.5.5')]})
 
     def test_update_access__one_ip_ro_add_rule_to_existing_wrong_mask(
-            self, mock_rpc):
+            self):
         share = {'name': 'share'}
         access = [
             {
@@ -328,7 +328,7 @@ class TestNexentaNasDriver(test.TestCase):
                           self.ctx, share, access, None, None)
 
     @patch('%s._get_capacity_info' % DRV_PATH)
-    @patch('%s._update_share_stats' % DRV_PATH)
+    @patch('manila.share.driver.ShareDriver._update_share_stats')
     def test_update_share_stats(self, super_stats, info):
         info.return_value = (100, 90, 10)
         stats = {
@@ -336,6 +336,8 @@ class TestNexentaNasDriver(test.TestCase):
             'storage_protocol': 'NFS',
             'total_capacity_gb': 100,
             'free_capacity_gb': 90,
+            'provisioned_capacity_gb': 10,
+            'max_over_subscription_ratio': 20.0,
             'reserved_percentage': (
                 self.cfg.reserved_share_percentage),
             'nfs_mount_point_base': self.cfg.nexenta_mount_point_base,
@@ -346,7 +348,7 @@ class TestNexentaNasDriver(test.TestCase):
         self.drv._update_share_stats()
         self.assertEqual(stats, self.drv._stats)
 
-    def test_get_capacity_info(self, mock_rpc):
+    def test_get_capacity_info(self):
         self.drv.nef.get.return_value = {
             'bytesAvailable': 10 * units.Gi, 'bytesUsed': 1 * units.Gi}
         self.assertEqual((10, 9, 1), self.drv._get_capacity_info('path'))

@@ -24,6 +24,7 @@ from oslo_config import cfg
 
 nexenta_connection_opts = [
     cfg.StrOpt('nexenta_host',
+               default='',
                required=True,
                help='IP address of Nexenta SA.'),
     cfg.IntOpt('nexenta_rest_port',

@@ -504,6 +504,7 @@ class TestNexentaNasDriver(test.TestCase):
             'storage_protocol': 'NFS',
             'total_capacity_gb': 100,
             'free_capacity_gb': 90,
+            'provisioned_capacity_gb': 10,
             'reserved_percentage': (
                 self.cfg.reserved_share_percentage),
             'nfs_mount_point_base': self.cfg.nexenta_mount_point_base,
@@ -512,7 +513,7 @@ class TestNexentaNasDriver(test.TestCase):
             'max_over_subscription_ratio': (
                 self.cfg.safe_get(
                     'max_over_subscription_ratio')),
-            'compression': self.cfg.nexenta_dataset_compression,
+            'compression': True,
             'dedupe': self.cfg.nexenta_dataset_dedupe,
             'share_backend_name': self.cfg.share_backend_name
         }
