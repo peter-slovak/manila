@@ -17,7 +17,7 @@ from oslo_log import log
 from oslo_utils import units
 
 from manila import exception
-from manila.i18n import _, _LW
+from manila.i18n import _, _LW, _LE
 from manila.share import driver
 from manila.share.drivers.nexenta.ns5 import jsonrpc
 from manila.share.drivers.nexenta import options
@@ -171,8 +171,9 @@ class NexentaNasDriver(driver.ShareDriver):
 
         try:
             self._add_permission(share['name'])
-        except exception.NexentaException as exc:
-            LOG.error(exc)
+        except exception.NexentaException:
+            LOG.exception(
+                _LE('Failed to add permissions for %s') % share['name'])
             try:
                 self.delete_share(None, share)
             except exception.NexentaException:
@@ -187,7 +188,7 @@ class NexentaNasDriver(driver.ShareDriver):
 
     def delete_share(self, context, share, share_server=None):
         """Delete a share."""
-        LOG.debug('Deleting share: %s.' % share['name'])
+        LOG.debug('Deleting share: %s.', share['name'])
 
         url = ('storage/pools/%(pool)s/filesystems/%(fs)s') % {
             'pool': self.pool_name,
@@ -198,13 +199,15 @@ class NexentaNasDriver(driver.ShareDriver):
     def extend_share(self, share, new_size, share_server=None):
         """Extends a share."""
         LOG.debug(
-            'Extending share: %s to %sG.' % (share['name'], new_size))
+            'Extending share: %(name)s to %(size)sG.' % (
+                {'name': share['name'], 'size': new_size}))
         self._set_quota(share['name'], new_size)
 
     def shrink_share(self, share, new_size, share_server=None):
         """Shrinks size of existing share."""
         LOG.debug(
-            'Shrinking share: %s to %sG.' % (share['name'], new_size))
+            'Shrinking share: %(name)s to %(size)sG.', (
+                {'name': share['name'], 'size': new_size}))
         self._set_quota(share['name'], new_size)
 
     def create_snapshot(self, context, snapshot, share_server=None):
@@ -221,8 +224,9 @@ class NexentaNasDriver(driver.ShareDriver):
 
     def delete_snapshot(self, context, snapshot, share_server=None):
         """Delete a snapshot."""
-        LOG.debug('Deleting a snapshot: %s.' % '@'.join(
-            (snapshot['share_name'], snapshot['name'])))
+        LOG.debug('Deleting a snapshot: %(shr_name)s@%(snap_name)s.', ({
+            'shr_name': snapshot['share_name'],
+            'snap_name': snapshot['name']}))
 
         url = ('storage/pools/%(pool)s/filesystems/%(fs)s/snapshots/'
                '%(snap)s') % {'pool': self.pool_name,
@@ -233,7 +237,9 @@ class NexentaNasDriver(driver.ShareDriver):
             self.nef.delete(url)
         except exception.NexentaException as e:
             if e.kwargs['code'] == 'ENOENT':
-                LOG.warning(e.msg + e.kwargs['code'])
+                LOG.warning(
+                    _LW('snapshot %(name)s not found, response: %(msg)s') % {
+                        'name': snapshot['name'], 'msg': e.msg})
             else:
                 raise
 
@@ -254,7 +260,7 @@ class NexentaNasDriver(driver.ShareDriver):
         :param share_server: Data structure with share server information.
         Not used by this driver.
         """
-        LOG.debug('Updating access to share %s.' % share)
+        LOG.debug('Updating access to share %s.', share)
         rw_list = []
         ro_list = []
         security_contexts = []
@@ -279,8 +285,9 @@ class NexentaNasDriver(driver.ShareDriver):
                         ls[0]['mask'] = mask
                 except Exception:
                     raise exception.InvalidInput(
-                        reason='<{}> is not a valid access parameter'.format(
-                            addr))
+                        reason=_(
+                            '<{}> is not a valid access parameter').format(
+                                addr))
             new_sc = {
                 "securityModes": ["sys"]
             }
@@ -298,8 +305,9 @@ class NexentaNasDriver(driver.ShareDriver):
                         ls[0]['mask'] = mask
                 except Exception:
                     raise exception.InvalidInput(
-                        reason='<{}> is not a valid access parameter'.format(
-                            addr))
+                        reason=_(
+                            '<{}> is not a valid access parameter').format(
+                                addr))
             new_sc = {
                 "securityModes": ["sys"]
             }
@@ -326,7 +334,7 @@ class NexentaNasDriver(driver.ShareDriver):
     def _update_share_stats(self, data=None):
         super(NexentaNasDriver, self)._update_share_stats()
         share = ':/'.join((self.nef_host, self.fs_prefix))
-        total, free, provisioned = self._get_capacity_info(share)
+        total, free, allocated = self._get_capacity_info(share)
 
         data = {
             'vendor_name': 'Nexenta',
@@ -338,7 +346,7 @@ class NexentaNasDriver(driver.ShareDriver):
             'nfs_mount_point_base': self.nfs_mount_point_base,
             'thin_provisioning': self.configuration.nexenta_thin_provisioning,
             'driver_version': VERSION,
-            'provisioned_capacity_gb': provisioned,
+            'provisioned_capacity_gb': 0,
             'max_over_subscription_ratio': (
                 self.configuration.safe_get(
                     'max_over_subscription_ratio')),

@@ -87,5 +87,5 @@ class NexentaJSONProxy(object):
         LOG.debug('Got response: %s', response)
         if response.get('error') is not None:
             message = response['error'].get('message', '')
-            raise NexentaException(response=message)
+            raise NexentaException(reason=message)
         return response.get('result')

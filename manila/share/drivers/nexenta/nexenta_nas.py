@@ -73,7 +73,7 @@ class NexentaNasDriver(driver.ShareDriver):
 
     def create_share(self, context, share, share_server=None):
         """Create a share."""
-        LOG.debug('Creating share %s.' % share['name'])
+        LOG.debug('Creating share %s.', share['name'])
         return self.helper.create_filesystem(share)
 
     def create_share_from_snapshot(self, context, share, snapshot,
@@ -84,25 +84,27 @@ class NexentaNasDriver(driver.ShareDriver):
 
     def delete_share(self, context, share, share_server=None):
         """Delete a share."""
-        LOG.debug('Deleting share %s.' % share['name'])
+        LOG.debug('Deleting share %s.', share['name'])
         self.helper.delete_share(share['name'])
 
     def extend_share(self, share, new_size, share_server=None):
         """Extends a share."""
-        LOG.debug('Extending share %s to %sG.' % (share['name'], new_size))
+        LOG.debug('Extending share %(name)s to %(size)sG.', (
+            {'name': share['name'], 'size': new_size}))
         self.helper.set_quota(share['name'], new_size)
 
     def create_snapshot(self, context, snapshot, share_server=None):
         """Create a snapshot."""
-        LOG.debug('Creating a snapshot of share %s.' % snapshot['share_name'])
+        LOG.debug('Creating a snapshot of share %s.', snapshot['share_name'])
         snap_id = self.helper.create_snapshot(
             snapshot['share_name'], snapshot['name'])
         LOG.info(_LI('Created snapshot %s.'), snap_id)
 
     def delete_snapshot(self, context, snapshot, share_server=None):
         """Delete a snapshot."""
-        LOG.debug('Deleting snapshot %s@%s.' % (
-            snapshot['share_name'], snapshot['name']))
+        LOG.debug('Deleting snapshot %(shr_name)s@%(snap_name)s.', ({
+            'shr_name': snapshot['share_name'],
+            'snap_name': snapshot['name']}))
         self.helper.delete_snapshot(snapshot['share_name'], snapshot['name'])
 
     def update_access(self, context, share, access_rules, add_rules,

@@ -23,6 +23,8 @@ from manila.share.drivers.nexenta import jsonrpc
 from manila.share.drivers.nexenta import utils
 
 LOG = log.getLogger(__name__)
+NOT_EXIST = 'does not exist'
+DEP_CLONES = 'has dependent clones'
 
 
 class RestHelper(object):
@@ -110,7 +112,7 @@ class RestHelper(object):
             self.nms.folder.destroy(folder.strip(), '-r')
         except exception.NexentaException as e:
             with excutils.save_and_reraise_exception() as exc:
-                if 'does not exist' in e.args[0]:
+                if NOT_EXIST in e.args[0]:
                     LOG.info(_LI('Folder %s does not exist, it was '
                                  'already deleted.'), folder)
                     exc.reraise = False
@@ -134,7 +136,7 @@ class RestHelper(object):
                 self._get_share_path(share_name), snapshot_name), '')
         except exception.NexentaException as e:
             with excutils.save_and_reraise_exception() as exc:
-                if 'does not exist' in e.args[0]:
+                if NOT_EXIST in e.args[0]:
                     LOG.info(_LI('Snapshot %(folder)s@%(snapshot)s does not '
                                  'exist, it was already deleted.'),
                              {
@@ -142,7 +144,7 @@ class RestHelper(object):
                                  'snapshot': snapshot_name,
                     })
                     exc.reraise = False
-                elif 'has dependent clones' in e.args[0]:
+                elif DEP_CLONES in e.args[0]:
                     LOG.info(_LI(
                         'Snapshot %(folder)s@%(snapshot)s has dependent '
                         'clones, it will be deleted later.'), {
@@ -199,14 +201,14 @@ class RestHelper(object):
         return free + allocated, free, allocated
 
     def update_share_stats(self):
-        total, free, provisioned = self._get_capacity_info(self.share)
+        total, free, allocated = self._get_capacity_info(self.share)
         compression = False if self.dataset_compression == 'off' else True
         return {
             'vendor_name': 'Nexenta',
             'storage_protocol': self.storage_protocol,
             'total_capacity_gb': total,
             'free_capacity_gb': free,
-            'provisioned_capacity_gb': provisioned,
+            'provisioned_capacity_gb': 0,
             'reserved_percentage': (
                 self.configuration.reserved_share_percentage),
             'nfs_mount_point_base': self.nfs_mount_point_base,

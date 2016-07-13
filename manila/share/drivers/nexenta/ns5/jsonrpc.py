@@ -29,6 +29,7 @@ from oslo_log import log
 from oslo_serialization import jsonutils
 
 from manila import exception
+from manila.i18n import _
 
 LOG = log.getLogger(__name__)
 requests.packages.urllib3.disable_warnings(exceptions.InsecureRequestWarning)
@@ -90,8 +91,10 @@ class NexentaJSONProxy(object):
                 url, data=data, verify=False)
         self.check_error(response)
         content = json.loads(response.content) if response.content else None
-        LOG.debug("Got response: %s %s %s",
-                  response.status_code, response.reason, content)
+        LOG.debug("Got response: %(code)s %(reason)s %(content)s", {
+            'code': response.status_code,
+            'reason': response.reason,
+            'content': content})
         response.close()
 
         if response.status_code == 202 and content:
@@ -101,8 +104,9 @@ class NexentaJSONProxy(object):
                 time.sleep(1)
                 response = session.get(url, verify=False)
                 self.check_error(response)
-                LOG.debug("Got response: %s %s", response.status_code,
-                          response.reason)
+                LOG.debug("Got response: %(code)s %(reason)s", {
+                    'code': response.status_code,
+                    'reason': response.reason})
                 content = json.loads(
                     response.content) if response.content else None
                 keep_going = response.status_code == 202
@@ -116,8 +120,10 @@ class NexentaJSONProxy(object):
         response = session.post(
             url, data=data, verify=False)
         content = json.loads(response.content) if response.content else None
-        LOG.debug("Got response: %s %s %s",
-                  response.status_code, response.reason, content)
+        LOG.debug("Got response: %(code)s %(reason)s %(content)s", {
+            'code': response.status_code,
+            'reason': response.reason,
+            'content': content})
         response.close()
         return content['token']
 
@@ -134,5 +140,6 @@ class NexentaJSONProxy(object):
                 raise exception.NexentaException(
                     reason=message, code=content['code'])
             raise exception.NexentaException(
-                reason='Got bad response: {} {} {}'.format(
-                    code, reason, content))
+                reason=_(
+                    'Got bad response: %(code)s %(reason)s %(content)s') % {
+                        'code': code, 'reason': reason, 'content': content})
