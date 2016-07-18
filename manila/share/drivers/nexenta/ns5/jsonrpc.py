@@ -40,7 +40,7 @@ session = requests.Session()
 
 class NexentaJSONProxy(object):
     def __init__(self, scheme, host, port, user,
-                 password, method=None):
+                 password, method='get'):
         self.scheme = scheme
         self.host = host
         self.port = port
@@ -52,7 +52,7 @@ class NexentaJSONProxy(object):
     def url(self):
         return '%s://%s:%s/' % (self.scheme, self.host, self.port)
 
-    def __getattr__(self, method=None):
+    def __getattr__(self, method='get'):
         if method:
             return NexentaJSONProxy(
                 self.scheme, self.host, self.port,

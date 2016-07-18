@@ -68,6 +68,7 @@ class NexentaNasDriver(driver.ShareDriver):
         self.nfs_mount_point_base = self.configuration.nexenta_mount_point_base
         self.dataset_compression = (
             self.configuration.nexenta_dataset_compression)
+        self.provisioned_capacity = 0
 
     @property
     def share_backend_name(self):
@@ -118,6 +119,16 @@ class NexentaNasDriver(driver.ShareDriver):
             raise LookupError(_(
                 "Dataset {} is not shared in Nexenta Store appliance").format(
                 path))
+        self.get_provisioned_capacity()
+
+    def get_provisioned_capacity(self):
+        url = 'storage/filesystems?parent=%(pool)s/%(fs)s' % {
+            'pool': self.pool_name, 'fs': self.fs_prefix}
+        fs_list = self.nef.get(url)['data']
+        for fs in fs_list:
+            if fs['path'] != '%(pool)s/%(fs)s' % {
+                    'pool': self.pool_name, 'fs': self.fs_prefix}:
+                self.provisioned_capacity += fs['quotaSize'] / units.Gi
 
     def create_share(self, context, share, share_server=None):
         """Create a share."""
@@ -125,10 +136,11 @@ class NexentaNasDriver(driver.ShareDriver):
         data = {
             'recordSize': 4 * units.Ki,
             'compressionMode': self.dataset_compression,
-            'name': '/'.join((self.fs_prefix, share['name']))
+            'name': '/'.join((self.fs_prefix, share['name'])),
+            'quotaSize': share['size'] * units.Gi
         }
         if not self.configuration.nexenta_thin_provisioning:
-            data['reservationSize'] = int(share['size']) * units.Gi
+            data['reservationSize'] = share['size'] * units.Gi
 
         url = 'storage/pools/{}/filesystems'.format(self.pool_name)
         self.nef.post(url, data)
@@ -149,6 +161,7 @@ class NexentaNasDriver(driver.ShareDriver):
                     {'vol': self.pool_name, 'folder': '/'.join(
                         (self.fs_prefix, share['name'])), 'exc': exc})
             raise
+        self.provisioned_capacity += share['size']
         return location
 
     def create_share_from_snapshot(self, context, share, snapshot,
@@ -166,7 +179,13 @@ class NexentaNasDriver(driver.ShareDriver):
                                           self.fs_prefix, share['name'])
         }
         path = '/'.join((self.pool_name, self.fs_prefix, share['name']))
-        data = {'targetPath': path}
+        data = {
+            'targetPath': path,
+            'quotaSize': share['size'] * units.Gi,
+            'recordSize': 4 * units.Ki,
+            'compressionMode': self.dataset_compression}
+        if not self.configuration.nexenta_thin_provisioning:
+            data['reservationSize'] = share['size'] * units.Gi
         self.nef.post(url, data)
 
         try:
@@ -184,6 +203,7 @@ class NexentaNasDriver(driver.ShareDriver):
                                  (self.fs_prefix, share['name']))})
             raise
 
+        self.provisioned_capacity += share['size']
         return location
 
     def delete_share(self, context, share, share_server=None):
@@ -195,6 +215,7 @@ class NexentaNasDriver(driver.ShareDriver):
             'fs': PATH_DELIMITER.join([self.fs_prefix, share['name']])
         }
         self.nef.delete(url)
+        self.provisioned_capacity -= share['size']
 
     def extend_share(self, share, new_size, share_server=None):
         """Extends a share."""
@@ -202,6 +223,7 @@ class NexentaNasDriver(driver.ShareDriver):
             'Extending share: %(name)s to %(size)sG.' % (
                 {'name': share['name'], 'size': new_size}))
         self._set_quota(share['name'], new_size)
+        self.provisioned_capacity += (new_size - share['size'])
 
     def shrink_share(self, share, new_size, share_server=None):
         """Shrinks size of existing share."""
@@ -209,6 +231,7 @@ class NexentaNasDriver(driver.ShareDriver):
             'Shrinking share: %(name)s to %(size)sG.', (
                 {'name': share['name'], 'size': new_size}))
         self._set_quota(share['name'], new_size)
+        self.provisioned_capacity += (share['size'] - new_size)
 
     def create_snapshot(self, context, snapshot, share_server=None):
         """Create a snapshot."""
@@ -320,12 +343,12 @@ class NexentaNasDriver(driver.ShareDriver):
         self.nef.put(url, data)
 
     def _set_quota(self, share_name, new_size):
-        if self.configuration.nexenta_thin_provisioning:
-            return
         quota = new_size * units.Gi
         data = {
-            'reservationSize': quota
+            'quotaSize': quota
         }
+        if not self.configuration.nexenta_thin_provisioning:
+            data['reservationSize'] = quota
         url = 'storage/pools/{}/filesystems/{}%2F{}'.format(self.pool_name,
                                                             self.fs_prefix,
                                                             share_name)
@@ -346,7 +369,7 @@ class NexentaNasDriver(driver.ShareDriver):
             'nfs_mount_point_base': self.nfs_mount_point_base,
             'thin_provisioning': self.configuration.nexenta_thin_provisioning,
             'driver_version': VERSION,
-            'provisioned_capacity_gb': 0,
+            'provisioned_capacity_gb': self.provisioned_capacity,
             'max_over_subscription_ratio': (
                 self.configuration.safe_get(
                     'max_over_subscription_ratio')),

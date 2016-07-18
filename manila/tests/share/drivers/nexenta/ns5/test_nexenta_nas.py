@@ -69,15 +69,25 @@ class TestNexentaNasDriver(test.TestCase):
     def test_backend_name(self):
         self.assertEqual('NexentaStor5', self.drv.share_backend_name)
 
-    def test_check_for_setup_error(self):
+    @patch('%s.get_provisioned_capacity' % DRV_PATH)
+    def test_check_for_setup_error(self, mock_provisioned):
         self.drv.nef.get.return_value = None
         self.assertRaises(LookupError, self.drv.check_for_setup_error)
         self.drv.nef.get.return_value = {
-            'data': [{'filesystem': 'pool1/nfs_share'}]
+            'data': [{'filesystem': 'pool1/nfs_share', 'quotaSize': 1}]
         }
         self.assertIsNone(self.drv.check_for_setup_error())
-        self.drv.nef.get.return_value = {'data': [{'filesystem': 'asd'}]}
+        self.drv.nef.get.return_value = {
+            'data': [{'filesystem': 'asd', 'quotaSize': 1}]}
         self.assertRaises(LookupError, self.drv.check_for_setup_error)
+
+    def test_get_provisioned_capacity(self):
+        self.drv.nef.get.return_value = {
+            'data': [
+                {'path': 'pool1/nfs_share/123', 'quotaSize': 1 * units.Gi}]
+        }
+        self.drv.get_provisioned_capacity()
+        self.assertEqual(1, self.drv.provisioned_capacity)
 
     def test_create_share(self):
         share = {'name': 'share', 'size': 1}
@@ -102,7 +112,7 @@ class TestNexentaNasDriver(test.TestCase):
             exception.NexentaException, self.drv.create_share, self.ctx, share)
 
     def test_create_share_from_snapshot(self):
-        share = {'name': 'share'}
+        share = {'name': 'share', 'size': 1}
         snapshot = {'name': 'share@first', 'share_name': 'share'}
         self.assertEqual(
             {
@@ -113,21 +123,11 @@ class TestNexentaNasDriver(test.TestCase):
             self.drv.create_share_from_snapshot(self.ctx, share, snapshot)
         )
 
-        url = ('storage/pools/%(pool)s/'
-               'filesystems/%(fs)s/snapshots/%(snap)s/clone') % {
-            'pool': self.pool_name,
-            'fs': nexenta_nas.PATH_DELIMITER.join(
-                [self.fs_prefix, snapshot['share_name']]),
-            'snap': snapshot['name']}
-        path = '/'.join([self.pool_name, self.fs_prefix, share['name']])
-        data = {'targetPath': path}
-        self.drv.nef.post.assert_any_call(url, data)
-
     @patch('%s.delete_share' % DRV_PATH)
     @patch('%s._add_permission' % DRV_PATH)
     def test_create_share_from_snapshot__add_permission_error(
             self, add_permission_mock, delete_share):
-        share = {'name': 'share'}
+        share = {'name': 'share', 'size': 1}
         snapshot = {'share_name': 'share', 'name': 'share@first'}
         delete_share.side_effect = exception.NexentaException(
             'An error occurred while deleting')
@@ -140,7 +140,7 @@ class TestNexentaNasDriver(test.TestCase):
     @patch('%s._add_permission' % DRV_PATH)
     def test_create_share_from_snapshot__add_permission_error_error(
             self, add_permission_mock):
-        share = {'name': 'share'}
+        share = {'name': 'share', 'size': 1}
         snapshot = {'share_name': 'share', 'name': 'share@first'}
         add_permission_mock.side_effect = exception.NexentaException(
             'Some exception')
@@ -151,28 +151,30 @@ class TestNexentaNasDriver(test.TestCase):
             self.ctx, share, snapshot)
 
     def test_delete_share(self):
-        share = {'name': 'share'}
+        share = {'name': 'share', 'size': 1}
         self.assertIsNone(self.drv.delete_share(self.ctx, share))
 
     def test_extend_share(self):
-        share = {'name': 'share'}
-        new_size = 1
+        share = {'name': 'share', 'size': 1}
+        new_size = 2
         self.drv.extend_share(share, new_size)
         quota = new_size * units.Gi
         data = {
-            'reservationSize': quota
+            'reservationSize': quota,
+            'quotaSize': quota
         }
         url = 'storage/pools/{}/filesystems/{}%2F{}'.format(
             self.pool_name, self.fs_prefix, share['name'])
         self.drv.nef.post.assert_called_with(url, data)
 
     def test_shrink_share(self):
-        share = {'name': 'share'}
-        new_size = 5
+        share = {'name': 'share', 'size': 2}
+        new_size = 1
         self.drv.shrink_share(share, new_size)
         quota = new_size * units.Gi
         data = {
-            'reservationSize': quota
+            'reservationSize': quota,
+            'quotaSize': quota
         }
         url = 'storage/pools/{}/filesystems/{}%2F{}'.format(
             self.pool_name, self.fs_prefix, share['name'])
@@ -216,7 +218,7 @@ class TestNexentaNasDriver(test.TestCase):
         return new_sc
 
     def test_update_access__unsupported_access_type(self):
-        share = {'name': 'share'}
+        share = {'name': 'share', 'size': 1}
         access = {
             'access_type': 'group',
             'access_to': 'ordinary_users',
@@ -226,7 +228,7 @@ class TestNexentaNasDriver(test.TestCase):
                           self.ctx, share, [access], None, None)
 
     def test_update_access__cidr(self):
-        share = {'name': 'share'}
+        share = {'name': 'share', 'size': 1}
         access = {
             'access_type': 'ip',
             'access_to': '1.1.1.1/24',
@@ -241,7 +243,7 @@ class TestNexentaNasDriver(test.TestCase):
                 self.build_access_security_context('rw', '1.1.1.1', 24)]})
 
     def test_update_access__ip(self):
-        share = {'name': 'share'}
+        share = {'name': 'share', 'size': 1}
         access = {
             'access_type': 'ip',
             'access_to': '1.1.1.1',
@@ -256,7 +258,7 @@ class TestNexentaNasDriver(test.TestCase):
                 self.build_access_security_context('rw', '1.1.1.1')]})
 
     def test_update_access__cidr_wrong_mask(self):
-        share = {'name': 'share'}
+        share = {'name': 'share', 'size': 1}
         access = {
             'access_type': 'ip',
             'access_to': '1.1.1.1/aa',
@@ -273,7 +275,7 @@ class TestNexentaNasDriver(test.TestCase):
                           self.ctx, share, [access], None, None)
 
     def test_update_access__one_ip_ro_add_rule_to_existing(self):
-        share = {'name': 'share'}
+        share = {'name': 'share', 'size': 1}
         access = [
             {
                 'access_type': 'ip',
@@ -297,7 +299,7 @@ class TestNexentaNasDriver(test.TestCase):
 
     def test_update_access__one_ip_ro_add_rule_to_existing_wrong_mask(
             self):
-        share = {'name': 'share'}
+        share = {'name': 'share', 'size': 1}
         access = [
             {
                 'access_type': 'ip',
