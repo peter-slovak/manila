@@ -201,6 +201,9 @@ class RestHelper(object):
         return free + allocated, free, allocated
 
     def update_share_stats(self):
+        """No way of tracking provisioned capacity on this appliance,
+        not returning any to let the scheduler estimate it.
+        """
         total, free, allocated = self._get_capacity_info(self.share)
         compression = False if self.dataset_compression == 'off' else True
         return {
@@ -208,7 +211,6 @@ class RestHelper(object):
             'storage_protocol': self.storage_protocol,
             'total_capacity_gb': total,
             'free_capacity_gb': free,
-            'provisioned_capacity_gb': 0,
             'reserved_percentage': (
                 self.configuration.reserved_share_percentage),
             'nfs_mount_point_base': self.nfs_mount_point_base,

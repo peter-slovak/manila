@@ -504,7 +504,6 @@ class TestNexentaNasDriver(test.TestCase):
             'storage_protocol': 'NFS',
             'total_capacity_gb': 100,
             'free_capacity_gb': 90,
-            'provisioned_capacity_gb': 0,
             'reserved_percentage': (
                 self.cfg.reserved_share_percentage),
             'nfs_mount_point_base': self.cfg.nexenta_mount_point_base,
