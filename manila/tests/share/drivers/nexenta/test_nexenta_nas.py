@@ -20,11 +20,14 @@ from mock import patch
 from mock import PropertyMock
 from oslo_serialization import jsonutils
 from oslo_utils import units
+import requests
 
 from manila import context
 from manila import exception
 from manila.share import configuration as conf
-from manila.share.drivers.nexenta.nexenta_nas import NexentaNasDriver
+from manila.share.drivers.nexenta.ns4.jsonrpc import NexentaJSONProxy
+from manila.share.drivers.nexenta.ns4.nexenta_nas import NexentaNasDriver
+from manila.share.drivers.nexenta.utils import str2size
 from manila import test
 
 PATH_TO_RPC = 'requests.post'
@@ -84,12 +87,12 @@ class TestNexentaNasDriver(test.TestCase):
     def setUp(self):
         def _safe_get(opt):
             return getattr(self.cfg, opt)
+        self.cfg = mock.Mock(spec=conf.Configuration)
+        self.cfg.nexenta_host = '1.1.1.1'
         super(TestNexentaNasDriver, self).setUp()
 
         self.ctx = context.get_admin_context()
-        self.cfg = mock.Mock(spec=conf.Configuration)
         self.cfg.safe_get = mock.Mock(side_effect=_safe_get)
-        self.cfg.nexenta_host = '1.1.1.1'
         self.cfg.nexenta_rest_port = 1000
         self.cfg.reserved_share_percentage = 0
         self.cfg.max_over_subscription_ratio = 0
@@ -164,9 +167,6 @@ class TestNexentaNasDriver(test.TestCase):
                     'netstorsvc', 'share_folder',
                     'svc:/network/nfs/server:default', folder, share_opts):
                 return FakeResponse()
-            elif kwargs['data'] == self.request_params.build_post_args(
-                    'volume', 'test_error', self.volume):
-                return FakeResponse({'error': 'some_error'})
             else:
                 raise exception.ManilaException('Unexpected request')
 
@@ -180,10 +180,6 @@ class TestNexentaNasDriver(test.TestCase):
         post.assert_any_call(
             self.request_params.url, data=self.request_params.build_post_args(
                 'folder', 'object_exists', folder),
-            headers=self.request_params.headers)
-        post.assert_any_call(
-            self.request_params.url, data=self.request_params.build_post_args(
-                'folder', 'test_error', folder),
             headers=self.request_params.headers)
 
     @patch(PATH_TO_RPC)
@@ -501,7 +497,7 @@ class TestNexentaNasDriver(test.TestCase):
         self.assertEqual(
             (10, 9, 1), self.drv.helper._get_capacity_info('path'))
 
-    @patch('manila.share.drivers.nexenta.nexenta_helper.RestHelper.'
+    @patch('manila.share.drivers.nexenta.ns4.nexenta_helper.RestHelper.'
            '_get_capacity_info')
     @patch('manila.share.driver.ShareDriver._update_share_stats')
     def test_update_share_stats(self, super_stats, info):
@@ -520,8 +516,45 @@ class TestNexentaNasDriver(test.TestCase):
                 self.cfg.safe_get(
                     'max_over_subscription_ratio')),
             'compression': True,
-            'dedupe': self.cfg.nexenta_dataset_dedupe,
+            'dedupe': True,
             'share_backend_name': self.cfg.share_backend_name
         }
         self.drv._update_share_stats()
         self.assertEqual(stats, self.drv._stats)
+
+    @patch('requests.post')
+    def test_call(self, post):
+        nms_post = NexentaJSONProxy(
+            'http', '1.1.1.1', '8080', 'user', 'pass',
+            'obj', auto=False, method='get')
+        data = {'error': {'message': 'some_error'}}
+
+        post.return_value = requests.Response()
+        post.return_value.__setstate__({
+            'status_code': 500, '_content': jsonutils.dumps(data)})
+        self.assertRaises(exception.NexentaException, nms_post)
+
+    def test_str2size(self):
+        values_to_test = (
+            # Test empty value
+            (None, 0),
+            ('', 0),
+            ('0', 0),
+            ('12', 12),
+            # Test int values
+            (10, 10),
+            # Test bytes string
+            ('1b', 1),
+            ('1B', 1),
+            ('1023b', 1023),
+            ('0B', 0),
+            # Test other units
+            ('1M', units.Mi),
+            ('1.0M', units.Mi),
+        )
+
+        for value, result in values_to_test:
+            self.assertEqual(result, str2size(value))
+
+        # Invalid format value
+        self.assertRaises(ValueError, str2size, 'A')

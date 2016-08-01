@@ -24,7 +24,7 @@ from oslo_config import cfg
 
 nexenta_connection_opts = [
     cfg.StrOpt('nexenta_host',
-               required=True,
+               # required=True,
                help='IP address of Nexenta SA.'),
     cfg.IntOpt('nexenta_rest_port',
                default=8457,
@@ -41,7 +41,7 @@ nexenta_connection_opts = [
                help='User name to connect to Nexenta SA.'),
     cfg.StrOpt('nexenta_password',
                default='nexenta',
-               help='Password to connect to Nexenta S.A',
+               help='Password to connect to Nexenta SA.',
                secret=True),
     cfg.StrOpt('nexenta_volume',
                default='volume1',
@@ -51,20 +51,13 @@ nexenta_connection_opts = [
                help='pool name on NexentaStor.'),
     cfg.StrOpt('nexenta_nfs',
                default='on',
-               help='on if share over NFS is enabled.'),
-    cfg.StrOpt('nexenta_smb',
-               default='off',
-               help='on if share over SMB is enabled.')
+               help='on if share over NFS is enabled.')
 ]
 
 nexenta_nfs_opts = [
     cfg.StrOpt('nexenta_mount_point_base',
                default='$state_path/mnt',
                help='Base directory that contains NFS share mount points.'),
-    cfg.BoolOpt('nexenta_nms_cache_volroot',
-                default=True,
-                help=('If set True cache NexentaStor appliance volroot option '
-                      'value.'))
 ]
 
 nexenta_dataset_opts = [

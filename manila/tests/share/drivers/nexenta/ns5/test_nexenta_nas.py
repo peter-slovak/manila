@@ -13,12 +13,12 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import ddt
 import mock
 from mock import patch
 from oslo_serialization import jsonutils
 from oslo_utils import units
 import requests
-
 
 from manila import context
 from manila import exception
@@ -31,17 +31,18 @@ PATH_TO_RPC = 'manila.share.drivers.nexenta.ns5.jsonrpc.NexentaJSONProxy'
 DRV_PATH = 'manila.share.drivers.nexenta.ns5.nexenta_nas.NexentaNasDriver'
 
 
+@ddt.ddt
 class TestNexentaNasDriver(test.TestCase):
 
     def setUp(self):
         def _safe_get(opt):
             return getattr(self.cfg, opt)
+        self.cfg = conf.Configuration(None)
+        self.cfg.nexenta_host = '1.1.1.1'
         super(TestNexentaNasDriver, self).setUp()
         self.ctx = context.get_admin_context()
-        self.cfg = conf.Configuration(None)
         self.mock_object(
             self.cfg, 'safe_get', mock.Mock(side_effect=_safe_get))
-        self.cfg.nexenta_host = '1.1.1.1'
         self.cfg.nexenta_rest_port = 8080
         self.cfg.nexenta_rest_protocol = 'auto'
         self.cfg.nexenta_pool = 'pool1'
@@ -257,22 +258,33 @@ class TestNexentaNasDriver(test.TestCase):
             url, {'securityContexts': [
                 self.build_access_security_context('rw', '1.1.1.1')]})
 
-    def test_update_access__cidr_wrong_mask(self):
+    @ddt.data('rw', 'ro')
+    def test_update_access__cidr_wrong_mask(self, access_level):
         share = {'name': 'share', 'size': 1}
         access = {
             'access_type': 'ip',
             'access_to': '1.1.1.1/aa',
-            'access_level': 'rw'
+            'access_level': access_level,
         }
         self.assertRaises(exception.InvalidInput, self.drv.update_access,
                           self.ctx, share, [access], None, None)
-        access = {
-            'access_type': 'ip',
-            'access_to': '1.1.1.1/aa',
-            'access_level': 'ro'
-        }
-        self.assertRaises(exception.InvalidInput, self.drv.update_access,
-                          self.ctx, share, [access], None, None)
+
+    # def test_update_access__cidr_wrong_mask(self):
+    #     share = {'name': 'share', 'size': 1}
+    #     access = {
+    #         'access_type': 'ip',
+    #         'access_to': '1.1.1.1/aa',
+    #         'access_level': 'rw'
+    #     }
+    #     self.assertRaises(exception.InvalidInput, self.drv.update_access,
+    #                       self.ctx, share, [access], None, None)
+    #     access = {
+    #         'access_type': 'ip',
+    #         'access_to': '1.1.1.1/aa',
+    #         'access_level': 'ro'
+    #     }
+    #     self.assertRaises(exception.InvalidInput, self.drv.update_access,
+    #                       self.ctx, share, [access], None, None)
 
     def test_update_access__one_ip_ro_add_rule_to_existing(self):
         share = {'name': 'share', 'size': 1}
