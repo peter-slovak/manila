@@ -164,6 +164,9 @@ class TestNexentaNasDriver(test.TestCase):
                     'netstorsvc', 'share_folder',
                     'svc:/network/nfs/server:default', folder, share_opts):
                 return FakeResponse()
+            elif kwargs['data'] == self.request_params.build_post_args(
+                    'volume', 'test_error', self.volume):
+                return FakeResponse({'error': 'some_error'})
             else:
                 raise exception.ManilaException('Unexpected request')
 
@@ -177,6 +180,10 @@ class TestNexentaNasDriver(test.TestCase):
         post.assert_any_call(
             self.request_params.url, data=self.request_params.build_post_args(
                 'folder', 'object_exists', folder),
+            headers=self.request_params.headers)
+        post.assert_any_call(
+            self.request_params.url, data=self.request_params.build_post_args(
+                'folder', 'test_error', folder),
             headers=self.request_params.headers)
 
     @patch(PATH_TO_RPC)
