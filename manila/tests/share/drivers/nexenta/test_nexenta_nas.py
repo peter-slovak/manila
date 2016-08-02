@@ -14,7 +14,7 @@
 #    under the License.
 
 import base64
-
+import json
 import mock
 from mock import patch
 from mock import PropertyMock
@@ -37,11 +37,8 @@ CODE = PropertyMock(return_value=200)
 class FakeResponse(object):
 
     def __init__(self, response={}):
-        self.response = response
+        self.content = json.dumps(response)
         super(FakeResponse, self).__init__()
-
-    def json(self):
-        return self.response
 
     def close(self):
         pass

@@ -20,6 +20,7 @@
 """
 
 import base64
+import json
 import requests
 
 from oslo_log import log
@@ -83,7 +84,7 @@ class NexentaJSONProxy(object):
         }
         LOG.debug('Sending JSON data: %s', data)
         r = requests.post(self.url, data=data, headers=headers)
-        response = r.json()
+        response = json.loads(r.content) if r.content else None
         LOG.debug('Got response: %s', response)
         if response.get('error') is not None:
             message = response['error'].get('message', '')
