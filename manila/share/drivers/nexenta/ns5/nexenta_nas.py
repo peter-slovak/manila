@@ -270,6 +270,7 @@ class NexentaNasDriver(driver.ShareDriver):
                       delete_rules, share_server=None):
         """Update access rules for given share.
 
+        Using access_rules list for both adding and deleting rules.
         :param context: The `context.RequestContext` object for the request
         :param share: Share that will have its access rules updated.
         :param access_rules: All access rules for given share. This list

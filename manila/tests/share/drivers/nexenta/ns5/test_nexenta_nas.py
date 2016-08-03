@@ -23,6 +23,7 @@ import requests
 from manila import context
 from manila import exception
 from manila.share import configuration as conf
+from manila.share.driver import CONF
 from manila.share.drivers.nexenta.ns5 import jsonrpc
 from manila.share.drivers.nexenta.ns5 import nexenta_nas
 from manila import test
@@ -37,6 +38,7 @@ class TestNexentaNasDriver(test.TestCase):
     def setUp(self):
         def _safe_get(opt):
             return getattr(self.cfg, opt)
+        self.mock_object(CONF, '_check_required_opts')
         self.cfg = conf.Configuration(None)
         self.cfg.nexenta_host = '1.1.1.1'
         super(TestNexentaNasDriver, self).setUp()
@@ -268,23 +270,6 @@ class TestNexentaNasDriver(test.TestCase):
         }
         self.assertRaises(exception.InvalidInput, self.drv.update_access,
                           self.ctx, share, [access], None, None)
-
-    # def test_update_access__cidr_wrong_mask(self):
-    #     share = {'name': 'share', 'size': 1}
-    #     access = {
-    #         'access_type': 'ip',
-    #         'access_to': '1.1.1.1/aa',
-    #         'access_level': 'rw'
-    #     }
-    #     self.assertRaises(exception.InvalidInput, self.drv.update_access,
-    #                       self.ctx, share, [access], None, None)
-    #     access = {
-    #         'access_type': 'ip',
-    #         'access_to': '1.1.1.1/aa',
-    #         'access_level': 'ro'
-    #     }
-    #     self.assertRaises(exception.InvalidInput, self.drv.update_access,
-    #                       self.ctx, share, [access], None, None)
 
     def test_update_access__one_ip_ro_add_rule_to_existing(self):
         share = {'name': 'share', 'size': 1}

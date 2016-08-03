@@ -25,6 +25,7 @@ import requests
 from manila import context
 from manila import exception
 from manila.share import configuration as conf
+from manila.share.driver import CONF
 from manila.share.drivers.nexenta.ns4.jsonrpc import NexentaJSONProxy
 from manila.share.drivers.nexenta.ns4.nexenta_nas import NexentaNasDriver
 from manila.share.drivers.nexenta.utils import str2size
@@ -84,6 +85,8 @@ class TestNexentaNasDriver(test.TestCase):
     def setUp(self):
         def _safe_get(opt):
             return getattr(self.cfg, opt)
+
+        self.mock_object(CONF, '_check_required_opts')
         self.cfg = mock.Mock(spec=conf.Configuration)
         self.cfg.nexenta_host = '1.1.1.1'
         super(TestNexentaNasDriver, self).setUp()

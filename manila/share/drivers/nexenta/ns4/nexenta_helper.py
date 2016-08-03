@@ -162,7 +162,10 @@ class RestHelper(object):
         return self._get_location_path(path, share['share_proto'])
 
     def update_access(self, share_name, access_rules):
-        """Update access to the share."""
+        """Update access to the share.
+
+        Using access_rules list for both adding and deleting rules.
+        """
         rw_list = []
         ro_list = []
         for rule in access_rules:

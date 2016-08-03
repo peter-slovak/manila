@@ -784,5 +784,9 @@ class StorageCommunicationException(ShareBackendException):
     message = _("Could not communicate with storage array.")
 
 
+class EvaluatorParseException(ManilaException):
+    message = _("Error during evaluator parsing: %(reason)s")
+
+
 class NexentaException(ShareBackendException):
     message = _("Exception due to Nexenta failure. %(reason)s")
