@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+# from oslo_config import cfg
 from oslo_log import log
 from oslo_utils import units
 
@@ -26,6 +27,10 @@ from manila.share.drivers.nexenta import utils
 PATH_DELIMITER = '%2F'
 VERSION = '1.0'
 LOG = log.getLogger(__name__)
+# CONF = cfg.CONF
+# CONF.register_opts(options.nexenta_connection_opts)
+# CONF.register_opts(options.nexenta_nfs_opts)
+# CONF.register_opts(options.nexenta_dataset_opts)
 
 
 class NexentaNasDriver(driver.ShareDriver):
@@ -122,22 +127,22 @@ class NexentaNasDriver(driver.ShareDriver):
         self.get_provisioned_capacity()
 
     def get_provisioned_capacity(self):
-        url = 'storage/filesystems?parent=%(pool)s/%(fs)s' % {
+        path = '%(pool)s/%(fs)s' % {
             'pool': self.pool_name, 'fs': self.fs_prefix}
+        url = 'storage/filesystems?parent=%s' % path
         fs_list = self.nef.get(url)['data']
         for fs in fs_list:
-            if fs['path'] != '%(pool)s/%(fs)s' % {
-                    'pool': self.pool_name, 'fs': self.fs_prefix}:
+            if fs['path'] != path:
                 self.provisioned_capacity += fs['quotaSize'] / units.Gi
 
     def create_share(self, context, share, share_server=None):
         """Create a share."""
-        LOG.debug('Creating share: %s.' % share['name'])
+        LOG.debug('Creating share: %s.', share['name'])
         data = {
             'recordSize': 4 * units.Ki,
             'compressionMode': self.dataset_compression,
             'name': '/'.join((self.fs_prefix, share['name'])),
-            'quotaSize': share['size'] * units.Gi
+            'quotaSize': share['size'] * units.Gi,
         }
         if not self.configuration.nexenta_thin_provisioning:
             data['reservationSize'] = share['size'] * units.Gi
@@ -183,7 +188,8 @@ class NexentaNasDriver(driver.ShareDriver):
             'targetPath': path,
             'quotaSize': share['size'] * units.Gi,
             'recordSize': 4 * units.Ki,
-            'compressionMode': self.dataset_compression}
+            'compressionMode': self.dataset_compression,
+        }
         if not self.configuration.nexenta_thin_provisioning:
             data['reservationSize'] = share['size'] * units.Gi
         self.nef.post(url, data)
@@ -192,7 +198,7 @@ class NexentaNasDriver(driver.ShareDriver):
             self._add_permission(share['name'])
         except exception.NexentaException:
             LOG.exception(
-                _LE('Failed to add permissions for %s') % share['name'])
+                _LE('Failed to add permissions for %s'), share['name'])
             try:
                 self.delete_share(None, share)
             except exception.NexentaException:
@@ -212,7 +218,7 @@ class NexentaNasDriver(driver.ShareDriver):
 
         url = ('storage/pools/%(pool)s/filesystems/%(fs)s') % {
             'pool': self.pool_name,
-            'fs': PATH_DELIMITER.join([self.fs_prefix, share['name']])
+            'fs': PATH_DELIMITER.join([self.fs_prefix, share['name']]),
         }
         self.nef.delete(url)
         self.provisioned_capacity -= share['size']
@@ -220,7 +226,7 @@ class NexentaNasDriver(driver.ShareDriver):
     def extend_share(self, share, new_size, share_server=None):
         """Extends a share."""
         LOG.debug(
-            'Extending share: %(name)s to %(size)sG.' % (
+            'Extending share: %(name)s to %(size)sG.', (
                 {'name': share['name'], 'size': new_size}))
         self._set_quota(share['name'], new_size)
         self.provisioned_capacity += (new_size - share['size'])
@@ -228,15 +234,21 @@ class NexentaNasDriver(driver.ShareDriver):
     def shrink_share(self, share, new_size, share_server=None):
         """Shrinks size of existing share."""
         LOG.debug(
-            'Shrinking share: %(name)s to %(size)sG.', (
-                {'name': share['name'], 'size': new_size}))
+            'Shrinking share: %(name)s to %(size)sG.', {
+                'name': share['name'], 'size': new_size})
+        url = 'storage/pools/{}/filesystems/{}%2F{}'.format(self.pool_name,
+                                                            self.fs_prefix,
+                                                            share['name'])
+        used = self.nef.get(url)['bytesUsed'] / units.Gi
+        if used > new_size:
+            raise exception.ShareShrinkingPossibleDataLoss(
+                share_id=share['id'])
         self._set_quota(share['name'], new_size)
         self.provisioned_capacity += (share['size'] - new_size)
 
     def create_snapshot(self, context, snapshot, share_server=None):
         """Create a snapshot."""
-        LOG.debug('Creating a snapshot of share: %s.'
-                  % snapshot['share_name'])
+        LOG.debug('Creating a snapshot of share: %s.', snapshot['share_name'])
         url = 'storage/pools/%(pool)s/filesystems/%(fs)s/snapshots' % {
             'pool': self.pool_name,
             'fs': PATH_DELIMITER.join(
@@ -247,9 +259,9 @@ class NexentaNasDriver(driver.ShareDriver):
 
     def delete_snapshot(self, context, snapshot, share_server=None):
         """Delete a snapshot."""
-        LOG.debug('Deleting a snapshot: %(shr_name)s@%(snap_name)s.', ({
+        LOG.debug('Deleting a snapshot: %(shr_name)s@%(snap_name)s.', {
             'shr_name': snapshot['share_name'],
-            'snap_name': snapshot['name']}))
+            'snap_name': snapshot['name']})
 
         url = ('storage/pools/%(pool)s/filesystems/%(fs)s/snapshots/'
                '%(snap)s') % {'pool': self.pool_name,
@@ -261,7 +273,7 @@ class NexentaNasDriver(driver.ShareDriver):
         except exception.NexentaException as e:
             if e.kwargs['code'] == 'ENOENT':
                 LOG.warning(
-                    _LW('snapshot %(name)s not found, response: %(msg)s') % {
+                    _LW('snapshot %(name)s not found, response: %(msg)s'), {
                         'name': snapshot['name'], 'msg': e.msg})
             else:
                 raise
@@ -298,46 +310,27 @@ class NexentaNasDriver(driver.ShareDriver):
                 else:
                     ro_list.append(rule['access_to'])
 
-        for addr in rw_list:
-            address_mask = addr.strip().split('/', 1)
-            address = address_mask[0]
-            ls = [{"allow": True, "etype": "network", "entity": address}]
-            if len(address_mask) == 2:
-                try:
-                    mask = int(address_mask[1])
-                    if mask != 32:
-                        ls[0]['mask'] = mask
-                except Exception:
-                    raise exception.InvalidInput(
-                        reason=_(
-                            '<{}> is not a valid access parameter').format(
-                                addr))
-            new_sc = {
-                "securityModes": ["sys"]
-            }
-            new_sc['readWriteList'] = ls
-            security_contexts.append(new_sc)
+        def append_sc(addr_list, sc_type):
+            for addr in addr_list:
+                address_mask = addr.strip().split('/', 1)
+                address = address_mask[0]
+                ls = [{"allow": True, "etype": "network", "entity": address}]
+                if len(address_mask) == 2:
+                    try:
+                        mask = int(address_mask[1])
+                        if mask != 32:
+                            ls[0]['mask'] = mask
+                    except Exception:
+                        raise exception.InvalidInput(
+                            reason=_(
+                                '<{}> is not a valid access parameter').format(
+                                    addr))
+                new_sc = {"securityModes": ["sys"]}
+                new_sc[sc_type] = ls
+                security_contexts.append(new_sc)
 
-        for addr in ro_list:
-            address_mask = addr.strip().split('/', 1)
-            address = address_mask[0]
-            ls = [{"allow": True, "etype": "network", "entity": address}]
-            if len(address_mask) == 2:
-                try:
-                    mask = int(address_mask[1])
-                    if mask != 32:
-                        ls[0]['mask'] = mask
-                except Exception:
-                    raise exception.InvalidInput(
-                        reason=_(
-                            '<{}> is not a valid access parameter').format(
-                                addr))
-            new_sc = {
-                "securityModes": ["sys"]
-            }
-            new_sc['readOnlyList'] = ls
-            security_contexts.append(new_sc)
-
+        append_sc(rw_list, 'readWriteList')
+        append_sc(ro_list, 'readOnlyList')
         data = {"securityContexts": security_contexts}
         url = 'nas/nfs/' + PATH_DELIMITER.join(
             (self.pool_name, self.fs_prefix, share['name']))
@@ -345,9 +338,7 @@ class NexentaNasDriver(driver.ShareDriver):
 
     def _set_quota(self, share_name, new_size):
         quota = new_size * units.Gi
-        data = {
-            'quotaSize': quota
-        }
+        data = {'quotaSize': quota}
         if not self.configuration.nexenta_thin_provisioning:
             data['reservationSize'] = quota
         url = 'storage/pools/{}/filesystems/{}%2F{}'.format(self.pool_name,
@@ -363,18 +354,22 @@ class NexentaNasDriver(driver.ShareDriver):
         data = {
             'vendor_name': 'Nexenta',
             'storage_protocol': self.storage_protocol,
-            'total_capacity_gb': total,
-            'free_capacity_gb': free,
-            'reserved_percentage': (
-                self.configuration.reserved_share_percentage),
+            'share_backend_name': self.share_backend_name,
             'nfs_mount_point_base': self.nfs_mount_point_base,
-            'thin_provisioning': self.configuration.nexenta_thin_provisioning,
             'driver_version': VERSION,
-            'provisioned_capacity_gb': self.provisioned_capacity,
-            'max_over_subscription_ratio': (
-                self.configuration.safe_get(
-                    'max_over_subscription_ratio')),
-            'share_backend_name': self.share_backend_name
+            'pools': [{
+                'pool_name': self.pool_name,
+                'total_capacity_gb': total,
+                'free_capacity_gb': free,
+                'reserved_percentage': (
+                    self.configuration.reserved_share_percentage),
+                'max_over_subscription_ratio': (
+                    self.configuration.safe_get(
+                        'max_over_subscription_ratio')),
+                'thin_provisioning':
+                    self.configuration.nexenta_thin_provisioning,
+                'provisioned_capacity_gb': self.provisioned_capacity,
+            }],
         }
         self._stats.update(data)
 
@@ -421,12 +416,12 @@ class NexentaNasDriver(driver.ShareDriver):
                 "read_acl",
                 "write_acl",
                 "write_owner",
-                "synchronize"
+                "synchronize",
             ],
             "flags": [
                 "file_inherit",
-                "dir_inherit"
-            ]
+                "dir_inherit",
+            ],
         }
         self.nef.post(url, data)
 

@@ -214,15 +214,19 @@ class RestHelper(object):
         return {
             'vendor_name': 'Nexenta',
             'storage_protocol': self.storage_protocol,
-            'total_capacity_gb': total,
-            'free_capacity_gb': free,
-            'reserved_percentage': (
-                self.configuration.reserved_share_percentage),
             'nfs_mount_point_base': self.nfs_mount_point_base,
-            'thin_provisioning': self.configuration.nexenta_thin_provisioning,
-            'max_over_subscription_ratio': (
-                self.configuration.safe_get(
-                    'max_over_subscription_ratio')),
-            'compression': compression,
-            'dedupe': dedupe,
+            'pools': [{
+                'pool_name': self.volume,
+                'total_capacity_gb': total,
+                'free_capacity_gb': free,
+                'reserved_percentage':
+                    self.configuration.reserved_share_percentage,
+                'compression': compression,
+                'dedupe': dedupe,
+                'max_over_subscription_ratio': (
+                    self.configuration.safe_get(
+                        'max_over_subscription_ratio')),
+                'thin_provisioning':
+                    self.configuration.nexenta_thin_provisioning,
+            }],
         }

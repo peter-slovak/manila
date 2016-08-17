@@ -24,11 +24,10 @@ from oslo_config import cfg
 
 nexenta_connection_opts = [
     cfg.StrOpt('nexenta_host',
-               required=True,
-               help='IP address of Nexenta SA.'),
+               help='IP address of Nexenta storage appliance.'),
     cfg.IntOpt('nexenta_rest_port',
                default=8457,
-               help='Rest port to connect to Nexenta REST API server.'),
+               help='Port to connect to Nexenta REST API server.'),
     cfg.IntOpt('nexenta_retry_count',
                default=6,
                help='Number of retries for unsuccessful API calls.'),
@@ -40,7 +39,6 @@ nexenta_connection_opts = [
                default='admin',
                help='User name to connect to Nexenta SA.'),
     cfg.StrOpt('nexenta_password',
-               default='nexenta',
                help='Password to connect to Nexenta SA.',
                secret=True),
     cfg.StrOpt('nexenta_volume',
@@ -49,9 +47,9 @@ nexenta_connection_opts = [
     cfg.StrOpt('nexenta_pool',
                default='pool1',
                help='pool name on NexentaStor.'),
-    cfg.StrOpt('nexenta_nfs',
-               default='on',
-               help='on if share over NFS is enabled.')
+    cfg.BoolOpt('nexenta_nfs',
+                default=True,
+                help='on if share over NFS is enabled.'),
 ]
 
 nexenta_nfs_opts = [

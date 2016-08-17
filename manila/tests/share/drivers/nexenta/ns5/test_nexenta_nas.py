@@ -16,15 +16,11 @@
 import ddt
 import mock
 from mock import patch
-from oslo_serialization import jsonutils
 from oslo_utils import units
-import requests
 
 from manila import context
 from manila import exception
 from manila.share import configuration as conf
-from manila.share.driver import CONF
-from manila.share.drivers.nexenta.ns5 import jsonrpc
 from manila.share.drivers.nexenta.ns5 import nexenta_nas
 from manila import test
 
@@ -38,10 +34,9 @@ class TestNexentaNasDriver(test.TestCase):
     def setUp(self):
         def _safe_get(opt):
             return getattr(self.cfg, opt)
-        self.mock_object(CONF, '_check_required_opts')
         self.cfg = conf.Configuration(None)
         self.cfg.nexenta_host = '1.1.1.1'
-        super(TestNexentaNasDriver, self).setUp()
+        super(self.__class__, self).setUp()
         self.ctx = context.get_admin_context()
         self.mock_object(
             self.cfg, 'safe_get', mock.Mock(side_effect=_safe_get))
@@ -75,13 +70,22 @@ class TestNexentaNasDriver(test.TestCase):
     @patch('%s.get_provisioned_capacity' % DRV_PATH)
     def test_check_for_setup_error(self, mock_provisioned):
         self.drv.nef.get.return_value = None
+
         self.assertRaises(LookupError, self.drv.check_for_setup_error)
+
+    @patch('%s.get_provisioned_capacity' % DRV_PATH)
+    def test_check_for_setup_error__none(self, mock_provisioned):
         self.drv.nef.get.return_value = {
             'data': [{'filesystem': 'pool1/nfs_share', 'quotaSize': 1}]
         }
+
         self.assertIsNone(self.drv.check_for_setup_error())
+
+    @patch('%s.get_provisioned_capacity' % DRV_PATH)
+    def test_check_for_setup_error__with_data(self, mock_provisioned):
         self.drv.nef.get.return_value = {
             'data': [{'filesystem': 'asd', 'quotaSize': 1}]}
+
         self.assertRaises(LookupError, self.drv.check_for_setup_error)
 
     def test_get_provisioned_capacity(self):
@@ -89,11 +93,14 @@ class TestNexentaNasDriver(test.TestCase):
             'data': [
                 {'path': 'pool1/nfs_share/123', 'quotaSize': 1 * units.Gi}]
         }
+
         self.drv.get_provisioned_capacity()
+
         self.assertEqual(1, self.drv.provisioned_capacity)
 
     def test_create_share(self):
         share = {'name': 'share', 'size': 1}
+
         self.assertEqual(
             {
                 'path': '{}:/{}/{}/{}'.format(
@@ -111,12 +118,14 @@ class TestNexentaNasDriver(test.TestCase):
             'An error occurred while adding permission')
         delete_share.side_effect = exception.NexentaException(
             'An error occurred while deleting')
+
         self.assertRaises(
             exception.NexentaException, self.drv.create_share, self.ctx, share)
 
     def test_create_share_from_snapshot(self):
         share = {'name': 'share', 'size': 1}
         snapshot = {'name': 'share@first', 'share_name': 'share'}
+
         self.assertEqual(
             {
                 'path': '{}:/{}/{}/{}'.format(
@@ -136,6 +145,7 @@ class TestNexentaNasDriver(test.TestCase):
             'An error occurred while deleting')
         add_permission_mock.side_effect = exception.NexentaException(
             'Some exception')
+
         self.assertRaises(
             exception.NexentaException, self.drv.create_share_from_snapshot,
             self.ctx, share, snapshot)
@@ -149,31 +159,34 @@ class TestNexentaNasDriver(test.TestCase):
             'Some exception')
         self.drv.nef.delete.side_effect = exception.NexentaException(
             'Some exception 2')
+
         self.assertRaises(
             exception.NexentaException, self.drv.create_share_from_snapshot,
             self.ctx, share, snapshot)
 
     def test_delete_share(self):
         share = {'name': 'share', 'size': 1}
+
         self.assertIsNone(self.drv.delete_share(self.ctx, share))
 
     def test_extend_share(self):
         share = {'name': 'share', 'size': 1}
         new_size = 2
-        self.drv.extend_share(share, new_size)
         quota = new_size * units.Gi
         data = {
             'reservationSize': quota,
-            'quotaSize': quota
+            'quotaSize': quota,
         }
         url = 'storage/pools/{}/filesystems/{}%2F{}'.format(
             self.pool_name, self.fs_prefix, share['name'])
+
+        self.drv.extend_share(share, new_size)
+
         self.drv.nef.post.assert_called_with(url, data)
 
     def test_shrink_share(self):
         share = {'name': 'share', 'size': 2}
         new_size = 1
-        self.drv.shrink_share(share, new_size)
         quota = new_size * units.Gi
         data = {
             'reservationSize': quota,
@@ -181,26 +194,35 @@ class TestNexentaNasDriver(test.TestCase):
         }
         url = 'storage/pools/{}/filesystems/{}%2F{}'.format(
             self.pool_name, self.fs_prefix, share['name'])
+        self.drv.nef.get.return_value = {'bytesUsed': 512}
+
+        self.drv.shrink_share(share, new_size)
+
         self.drv.nef.post.assert_called_with(url, data)
 
     def test_create_snapshot(self):
         snapshot = {'share_name': 'share', 'name': 'share@first'}
-        self.drv.create_snapshot(self.ctx, snapshot)
         url = 'storage/pools/%(pool)s/filesystems/%(fs)s/snapshots' % {
             'pool': self.pool_name,
             'fs': nexenta_nas.PATH_DELIMITER.join(
                 [self.fs_prefix, snapshot['share_name']])
         }
         data = {'name': snapshot['name']}
+
+        self.drv.create_snapshot(self.ctx, snapshot)
+
         self.drv.nef.post.assert_called_with(url, data)
 
     def test_delete_snapshot(self):
         self.mock_rpc.side_effect = exception.NexentaException(
             'err', code='ENOENT')
         snapshot = {'share_name': 'share', 'name': 'share@first'}
+
         self.assertIsNone(self.drv.delete_snapshot(self.ctx, snapshot))
+
         self.mock_rpc.side_effect = exception.NexentaException(
             'err', code='somecode')
+
         self.assertRaises(
             exception.NexentaException, self.drv.delete_snapshot,
             self.ctx, snapshot)
@@ -227,6 +249,7 @@ class TestNexentaNasDriver(test.TestCase):
             'access_to': 'ordinary_users',
             'access_level': 'rw'
         }
+
         self.assertRaises(exception.InvalidShareAccess, self.drv.update_access,
                           self.ctx, share, [access], None, None)
 
@@ -240,7 +263,9 @@ class TestNexentaNasDriver(test.TestCase):
         url = 'nas/nfs/' + nexenta_nas.PATH_DELIMITER.join(
             (self.pool_name, self.fs_prefix, share['name']))
         self.drv.nef.get.return_value = {}
+
         self.drv.update_access(self.ctx, share, [access], None, None)
+
         self.drv.nef.put.assert_called_with(
             url, {'securityContexts': [
                 self.build_access_security_context('rw', '1.1.1.1', 24)]})
@@ -255,7 +280,9 @@ class TestNexentaNasDriver(test.TestCase):
         url = 'nas/nfs/' + nexenta_nas.PATH_DELIMITER.join(
             (self.pool_name, self.fs_prefix, share['name']))
         self.drv.nef.get.return_value = {}
+
         self.drv.update_access(self.ctx, share, [access], None, None)
+
         self.drv.nef.put.assert_called_with(
             url, {'securityContexts': [
                 self.build_access_security_context('rw', '1.1.1.1')]})
@@ -268,6 +295,7 @@ class TestNexentaNasDriver(test.TestCase):
             'access_to': '1.1.1.1/aa',
             'access_level': access_level,
         }
+
         self.assertRaises(exception.InvalidInput, self.drv.update_access,
                           self.ctx, share, [access], None, None)
 
@@ -289,7 +317,9 @@ class TestNexentaNasDriver(test.TestCase):
             (self.pool_name, self.fs_prefix, share['name']))
         sc = self.build_access_security_context('rw', '1.1.1.1', 24)
         self.drv.nef.get.return_value = {'securityContexts': [sc]}
+
         self.drv.update_access(self.ctx, share, access, None, None)
+
         self.drv.nef.put.assert_called_with(
             url, {'securityContexts': [
                 sc, self.build_access_security_context('ro', '5.5.5.5')]})
@@ -311,6 +341,7 @@ class TestNexentaNasDriver(test.TestCase):
         ]
         sc = self.build_access_security_context('rw', '1.1.1.1', 24)
         self.drv.nef.get.return_value = {'securityContexts': [sc]}
+
         self.assertRaises(exception.InvalidInput, self.drv.update_access,
                           self.ctx, share, access, None, None)
 
@@ -321,87 +352,27 @@ class TestNexentaNasDriver(test.TestCase):
         stats = {
             'vendor_name': 'Nexenta',
             'storage_protocol': 'NFS',
-            'total_capacity_gb': 100,
-            'free_capacity_gb': 90,
-            'provisioned_capacity_gb': 0,
-            'max_over_subscription_ratio': 20.0,
-            'reserved_percentage': (
-                self.cfg.reserved_share_percentage),
             'nfs_mount_point_base': self.cfg.nexenta_mount_point_base,
-            'thin_provisioning': self.cfg.nexenta_thin_provisioning,
             'driver_version': '1.0',
-            'share_backend_name': self.cfg.share_backend_name
+            'share_backend_name': self.cfg.share_backend_name,
+            'pools': [{
+                'pool_name': 'pool1',
+                'total_capacity_gb': 100,
+                'free_capacity_gb': 90,
+                'provisioned_capacity_gb': 0,
+                'max_over_subscription_ratio': 20.0,
+                'reserved_percentage': (
+                    self.cfg.reserved_share_percentage),
+                'thin_provisioning': self.cfg.nexenta_thin_provisioning,
+            }],
         }
+
         self.drv._update_share_stats()
+
         self.assertEqual(stats, self.drv._stats)
 
     def test_get_capacity_info(self):
         self.drv.nef.get.return_value = {
             'bytesAvailable': 10 * units.Gi, 'bytesUsed': 1 * units.Gi}
+
         self.assertEqual((10, 9, 1), self.drv._get_capacity_info('path'))
-
-
-class TestNexentaJSONProxy(test.TestCase):
-
-    def __init__(self, method):
-        super(TestNexentaJSONProxy, self).__init__(method)
-
-    @patch('%s.https_auth' % PATH_TO_RPC)
-    @patch('requests.Response.close')
-    @patch('requests.Session.get')
-    @patch('requests.Session.post')
-    def test_call(self, post, get, close, auth):
-        nef_get = jsonrpc.NexentaJSONProxy(
-            'http', '1.1.1.1', '8080', 'user', 'pass', method='get')
-        nef_post = jsonrpc.NexentaJSONProxy(
-            'https', '1.1.1.1', '8080', 'user', 'pass', method='post')
-        data = {'key': 'value'}
-        get.return_value = requests.Response()
-        post.return_value = requests.Response()
-
-        get.return_value.__setstate__({
-            'status_code': 200, '_content': jsonutils.dumps(data)})
-        self.assertEqual({'key': 'value'}, nef_get('url'))
-
-        get.return_value.__setstate__({
-            'status_code': 201, '_content': ''})
-        self.assertIsNone(nef_get('url'))
-
-        data2 = {'links': [{'href': 'redirect_url'}]}
-        post.return_value.__setstate__({
-            'status_code': 202, '_content': jsonutils.dumps(data2)})
-        get.return_value.__setstate__({
-            'status_code': 200, '_content': jsonutils.dumps(data)})
-        self.assertEqual({'key': 'value'}, nef_post('url'))
-
-        get.return_value.__setstate__({
-            'status_code': 200, '_content': ''})
-        self.assertIsNone(nef_post('url', data))
-
-        get.return_value.__setstate__({
-            'status_code': 400,
-            '_content': jsonutils.dumps({'code': 'ENOENT'})})
-        self.assertRaises(exception.NexentaException, lambda: nef_get('url'))
-
-        get.return_value.__setstate__({
-            'status_code': 401,
-            '_content': jsonutils.dumps({'code': 'unauthorized'})})
-        self.assertRaises(exception.NexentaException, lambda: nef_get('url'))
-
-        auth.return_value = {'token': 'tok'}
-        post.return_value.__setstate__({
-            'status_code': 401,
-            '_content': jsonutils.dumps({'code': 'unauthorized'})})
-        self.assertRaises(exception.NexentaException, lambda: nef_post('url'))
-
-    @patch('requests.Response.close')
-    @patch('requests.Session.post')
-    def test_auth(self, post, close):
-        httpsdata = {'token': 'tok'}
-        post.return_value = requests.Response()
-        post.return_value.__setstate__({
-            'status_code': 200, '_content': jsonutils.dumps(httpsdata)})
-        nef_get = jsonrpc.NexentaJSONProxy(
-            'http', '1.1.1.1', '8080', 'user', 'pass', method='get')
-        https_auth = nef_get.https_auth()
-        self.assertEqual('tok', https_auth)

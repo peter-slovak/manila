@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_config import cfg
 from oslo_log import log
 
 from manila import exception
@@ -24,6 +25,10 @@ from manila.share.drivers.nexenta import options
 
 VERSION = '1.0'
 LOG = log.getLogger(__name__)
+CONF = cfg.CONF
+CONF.register_opts(options.nexenta_connection_opts)
+CONF.register_opts(options.nexenta_nfs_opts)
+CONF.register_opts(options.nexenta_dataset_opts)
 
 
 class NexentaNasDriver(driver.ShareDriver):
@@ -40,12 +45,12 @@ class NexentaNasDriver(driver.ShareDriver):
         super(NexentaNasDriver, self).__init__(False, *args, **kwargs)
         self.configuration = kwargs.get('configuration')
         if self.configuration:
-            self.configuration.append_config_values(
-                options.nexenta_connection_opts)
-            self.configuration.append_config_values(
-                options.nexenta_nfs_opts)
-            self.configuration.append_config_values(
-                options.nexenta_dataset_opts)
+            # self.configuration.append_config_values(
+            #     options.nexenta_connection_opts)
+            # self.configuration.append_config_values(
+            #     options.nexenta_nfs_opts)
+            # self.configuration.append_config_values(
+            #     options.nexenta_dataset_opts)
             self.helper = nexenta_helper.RestHelper(self.configuration)
         else:
             raise exception.BadConfigurationException(
@@ -89,8 +94,8 @@ class NexentaNasDriver(driver.ShareDriver):
 
     def extend_share(self, share, new_size, share_server=None):
         """Extends a share."""
-        LOG.debug('Extending share %(name)s to %(size)sG.', (
-            {'name': share['name'], 'size': new_size}))
+        LOG.debug('Extending share %(name)s to %(size)sG.', {
+            'name': share['name'], 'size': new_size})
         self.helper.set_quota(share['name'], new_size)
 
     def create_snapshot(self, context, snapshot, share_server=None):
@@ -102,9 +107,9 @@ class NexentaNasDriver(driver.ShareDriver):
 
     def delete_snapshot(self, context, snapshot, share_server=None):
         """Delete a snapshot."""
-        LOG.debug('Deleting snapshot %(shr_name)s@%(snap_name)s.', ({
+        LOG.debug('Deleting snapshot %(shr_name)s@%(snap_name)s.', {
             'shr_name': snapshot['share_name'],
-            'snap_name': snapshot['name']}))
+            'snap_name': snapshot['name']})
         self.helper.delete_snapshot(snapshot['share_name'], snapshot['name'])
 
     def update_access(self, context, share, access_rules, add_rules,
