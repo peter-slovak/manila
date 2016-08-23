@@ -13,7 +13,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from oslo_config import cfg
 from oslo_log import log
 
 from manila import exception
@@ -25,10 +24,6 @@ from manila.share.drivers.nexenta import options
 
 VERSION = '1.0'
 LOG = log.getLogger(__name__)
-CONF = cfg.CONF
-CONF.register_opts(options.nexenta_connection_opts)
-CONF.register_opts(options.nexenta_nfs_opts)
-CONF.register_opts(options.nexenta_dataset_opts)
 
 
 class NexentaNasDriver(driver.ShareDriver):
@@ -45,12 +40,12 @@ class NexentaNasDriver(driver.ShareDriver):
         super(NexentaNasDriver, self).__init__(False, *args, **kwargs)
         self.configuration = kwargs.get('configuration')
         if self.configuration:
-            # self.configuration.append_config_values(
-            #     options.nexenta_connection_opts)
-            # self.configuration.append_config_values(
-            #     options.nexenta_nfs_opts)
-            # self.configuration.append_config_values(
-            #     options.nexenta_dataset_opts)
+            self.configuration.append_config_values(
+                options.nexenta_connection_opts)
+            self.configuration.append_config_values(
+                options.nexenta_nfs_opts)
+            self.configuration.append_config_values(
+                options.nexenta_dataset_opts)
             self.helper = nexenta_helper.RestHelper(self.configuration)
         else:
             raise exception.BadConfigurationException(

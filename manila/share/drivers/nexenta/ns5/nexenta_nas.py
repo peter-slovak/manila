@@ -13,7 +13,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-# from oslo_config import cfg
 from oslo_log import log
 from oslo_utils import units
 
@@ -27,10 +26,6 @@ from manila.share.drivers.nexenta import utils
 PATH_DELIMITER = '%2F'
 VERSION = '1.0'
 LOG = log.getLogger(__name__)
-# CONF = cfg.CONF
-# CONF.register_opts(options.nexenta_connection_opts)
-# CONF.register_opts(options.nexenta_nfs_opts)
-# CONF.register_opts(options.nexenta_dataset_opts)
 
 
 class NexentaNasDriver(driver.ShareDriver):
