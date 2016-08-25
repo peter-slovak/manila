@@ -15,7 +15,7 @@
 
 from oslo_utils import units
 
-from manila.share.drivers.nexenta.utils import str2size
+from manila.share.drivers.nexenta import utils
 
 
 def test_str2size(self):
@@ -38,7 +38,7 @@ def test_str2size(self):
     )
 
     for value, result in values_to_test:
-        self.assertEqual(result, str2size(value))
+        self.assertEqual(result, utils.str2size(value))
 
     # Invalid format value
-    self.assertRaises(ValueError, str2size, 'A')
+    self.assertRaises(ValueError, utils.str2size, 'A')
