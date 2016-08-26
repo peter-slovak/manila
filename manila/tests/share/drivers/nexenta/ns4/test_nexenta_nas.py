@@ -543,7 +543,7 @@ class TestNexentaNasDriver(test.TestCase):
         post.return_value = FakeResponse({'result': {
             'available': 9 * units.Gi, 'used': 1 * units.Gi}})
         self.assertEqual(
-            (10, 9, 1), self.drv.helper._get_capacity_info('path'))
+            (10, 9, 1), self.drv.helper._get_capacity_info())
 
     @patch('manila.share.drivers.nexenta.ns4.nexenta_helper.RestHelper.'
            '_get_capacity_info')

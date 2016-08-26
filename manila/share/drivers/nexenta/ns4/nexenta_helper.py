@@ -189,8 +189,7 @@ class RestHelper(object):
             self._get_share_path(share_name), share_opts)
 
     def _get_capacity_info(self):
-        """Calculate available space on the NFS share.
-        """
+        """Calculate available space on the NFS share."""
         folder_props = self.nms.folder.get_child_props(
             '%s/%s' % (self.volume, self.share), 'used|available')
         free = utils.str2gib_size(folder_props['available'])
