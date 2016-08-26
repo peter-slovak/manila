@@ -19,16 +19,19 @@ import requests
 
 from manila import exception
 from manila.share.drivers.nexenta.ns4.jsonrpc import NexentaJSONProxy
+from manila import test
 
 
-@patch('requests.post')
-def test_call(self, post):
-    nms_post = NexentaJSONProxy(
-        'http', '1.1.1.1', '8080', 'user', 'pass',
-        'obj', auto=False, method='get')
-    data = {'error': {'message': 'some_error'}}
+class TestNexentaJSONProxy(test.TestCase):
 
-    post.return_value = requests.Response()
-    post.return_value.__setstate__({
-        'status_code': 500, '_content': jsonutils.dumps(data)})
-    self.assertRaises(exception.NexentaException, nms_post)
+    @patch('requests.post')
+    def test_call(self, post):
+        nms_post = NexentaJSONProxy(
+            'http', '1.1.1.1', '8080', 'user', 'pass',
+            'obj', auto=False, method='get')
+        data = {'error': {'message': 'some_error'}}
+
+        post.return_value = requests.Response()
+        post.return_value.__setstate__({
+            'status_code': 500, '_content': jsonutils.dumps(data)})
+        self.assertRaises(exception.NexentaException, nms_post)

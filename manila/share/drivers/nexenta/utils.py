@@ -35,7 +35,6 @@ def str2size(s, scale=1024):
     match = re.match(r'^([\.\d]+)\s*([BbKkMmGgTtPpEeZzYy]?)', s)
     if match is None:
         raise ValueError('Invalid value: %s' % s)
-
     groups = match.groups()
     value = float(groups[0])
     suffix = len(groups) > 1 and groups[1].upper() or 'B'

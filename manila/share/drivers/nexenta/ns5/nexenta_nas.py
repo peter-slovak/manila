@@ -16,6 +16,7 @@
 from oslo_log import log
 from oslo_utils import units
 
+from manila.common import constants as common
 from manila import exception
 from manila.i18n import _, _LW, _LE
 from manila.share import driver
@@ -119,9 +120,9 @@ class NexentaNasDriver(driver.ShareDriver):
             raise LookupError(_(
                 "Dataset {} is not shared in Nexenta Store appliance").format(
                 path))
-        self.get_provisioned_capacity()
+        self._get_provisioned_capacity()
 
-    def get_provisioned_capacity(self):
+    def _get_provisioned_capacity(self):
         path = '%(pool)s/%(fs)s' % {
             'pool': self.pool_name, 'fs': self.fs_prefix}
         url = 'storage/filesystems?parent=%s' % path
@@ -300,7 +301,7 @@ class NexentaNasDriver(driver.ShareDriver):
                 msg = _('Only IP access type is supported.')
                 raise exception.InvalidShareAccess(reason=msg)
             else:
-                if rule['access_level'] == 'rw':
+                if rule['access_level'] == common.ACCESS_LEVEL_RW:
                     rw_list.append(rule['access_to'])
                 else:
                     ro_list.append(rule['access_to'])
@@ -343,8 +344,7 @@ class NexentaNasDriver(driver.ShareDriver):
 
     def _update_share_stats(self, data=None):
         super(NexentaNasDriver, self)._update_share_stats()
-        share = ':/'.join((self.nef_host, self.fs_prefix))
-        total, free, allocated = self._get_capacity_info(share)
+        total, free, allocated = self._get_capacity_info()
 
         data = {
             'vendor_name': 'Nexenta',
@@ -368,11 +368,8 @@ class NexentaNasDriver(driver.ShareDriver):
         }
         self._stats.update(data)
 
-    def _get_capacity_info(self, path):
-        """Calculate available space on the NFS share.
-
-        :param path: example pool/nfs
-        """
+    def _get_capacity_info(self):
+        """Calculate available space on the NFS share."""
         url = 'storage/pools/{}/filesystems/{}'.format(self.pool_name,
                                                        self.fs_prefix)
         data = self.nef.get(url)

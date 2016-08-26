@@ -67,13 +67,13 @@ class TestNexentaNasDriver(test.TestCase):
     def test_backend_name(self):
         self.assertEqual('NexentaStor5', self.drv.share_backend_name)
 
-    @patch('%s.get_provisioned_capacity' % DRV_PATH)
+    @patch('%s._get_provisioned_capacity' % DRV_PATH)
     def test_check_for_setup_error(self, mock_provisioned):
         self.drv.nef.get.return_value = None
 
         self.assertRaises(LookupError, self.drv.check_for_setup_error)
 
-    @patch('%s.get_provisioned_capacity' % DRV_PATH)
+    @patch('%s._get_provisioned_capacity' % DRV_PATH)
     def test_check_for_setup_error__none(self, mock_provisioned):
         self.drv.nef.get.return_value = {
             'data': [{'filesystem': 'pool1/nfs_share', 'quotaSize': 1}]
@@ -81,20 +81,20 @@ class TestNexentaNasDriver(test.TestCase):
 
         self.assertIsNone(self.drv.check_for_setup_error())
 
-    @patch('%s.get_provisioned_capacity' % DRV_PATH)
+    @patch('%s._get_provisioned_capacity' % DRV_PATH)
     def test_check_for_setup_error__with_data(self, mock_provisioned):
         self.drv.nef.get.return_value = {
             'data': [{'filesystem': 'asd', 'quotaSize': 1}]}
 
         self.assertRaises(LookupError, self.drv.check_for_setup_error)
 
-    def test_get_provisioned_capacity(self):
+    def test__get_provisioned_capacity(self):
         self.drv.nef.get.return_value = {
             'data': [
                 {'path': 'pool1/nfs_share/123', 'quotaSize': 1 * units.Gi}]
         }
 
-        self.drv.get_provisioned_capacity()
+        self.drv._get_provisioned_capacity()
 
         self.assertEqual(1, self.drv.provisioned_capacity)
 
@@ -375,4 +375,4 @@ class TestNexentaNasDriver(test.TestCase):
         self.drv.nef.get.return_value = {
             'bytesAvailable': 10 * units.Gi, 'bytesUsed': 1 * units.Gi}
 
-        self.assertEqual((10, 9, 1), self.drv._get_capacity_info('path'))
+        self.assertEqual((10, 9, 1), self.drv._get_capacity_info())

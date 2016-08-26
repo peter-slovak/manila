@@ -162,10 +162,7 @@ class RestHelper(object):
         return self._get_location_path(path, share['share_proto'])
 
     def update_access(self, share_name, access_rules):
-        """Update access to the share.
-
-        Using access_rules list for both adding and deleting rules.
-        """
+        """Update access to the share."""
         rw_list = []
         ro_list = []
         for rule in access_rules:
@@ -191,10 +188,8 @@ class RestHelper(object):
             'svc:/network/nfs/server:default',
             self._get_share_path(share_name), share_opts)
 
-    def _get_capacity_info(self, nfs_share):
+    def _get_capacity_info(self):
         """Calculate available space on the NFS share.
-
-        :param nfs_share: example 172.18.194.100:/var/nfs
         """
         folder_props = self.nms.folder.get_child_props(
             '%s/%s' % (self.volume, self.share), 'used|available')

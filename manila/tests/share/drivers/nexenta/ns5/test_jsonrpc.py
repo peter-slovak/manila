@@ -30,7 +30,6 @@ class TestNexentaJSONProxy(test.TestCase):
         super(self.__class__, self).__init__(method)
 
     def setUp(self):
-        # self.mock_object(nexenta_nas.CONF, '_check_required_opts')
         super(self.__class__, self).setUp()
 
     @patch('%s.https_auth' % PATH_TO_RPC)
