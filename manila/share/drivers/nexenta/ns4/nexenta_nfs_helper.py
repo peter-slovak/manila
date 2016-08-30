@@ -203,7 +203,7 @@ class NFSHelper(object):
         No way of tracking provisioned capacity on this appliance,
         not returning any to let the scheduler estimate it.
         """
-        total, free, allocated = self._get_capacity_info(self.share)
+        total, free, allocated = self._get_capacity_info()
         compression = not self.dataset_compression == 'off'
         dedupe = not self.dataset_dedupe == 'off'
         return {
