@@ -27,7 +27,7 @@ NOT_EXIST = 'does not exist'
 DEP_CLONES = 'has dependent clones'
 
 
-class RestHelper(object):
+class NFSHelper(object):
 
     def __init__(self, configuration):
         self.configuration = configuration
@@ -87,7 +87,7 @@ class RestHelper(object):
             parent_path, share['name'], create_folder_props)
 
         path = self._get_share_path(share['name'])
-        return self._get_location_path(path, share['share_proto'])
+        return [self._get_location_path(path, share['share_proto'])]
 
     def set_quota(self, share_name, new_size):
         if self.configuration.nexenta_thin_provisioning:
@@ -126,7 +126,8 @@ class RestHelper(object):
         """Create a snapshot."""
         folder = self._get_share_path(share_name)
         self.nms.folder.create_snapshot(folder, snapshot_name, '-r')
-        return '%s@%s' % (folder, snapshot_name)
+        model_update = {'provider_location': '%s@%s' % (folder, snapshot_name)}
+        return model_update
 
     def delete_snapshot(self, share_name, snapshot_name):
         """Deletes snapshot."""
@@ -159,7 +160,7 @@ class RestHelper(object):
             snapshot_name,
             '%s/%s/%s' % (self.volume, self.share, share['name']))
         path = self._get_share_path(share['name'])
-        return self._get_location_path(path, share['share_proto'])
+        return [self._get_location_path(path, share['share_proto'])]
 
     def update_access(self, share_name, access_rules):
         """Update access to the share."""

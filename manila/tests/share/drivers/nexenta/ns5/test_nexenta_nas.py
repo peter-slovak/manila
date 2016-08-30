@@ -102,11 +102,11 @@ class TestNexentaNasDriver(test.TestCase):
         share = {'name': 'share', 'size': 1}
 
         self.assertEqual(
-            {
+            [{
                 'path': '{}:/{}/{}/{}'.format(
                     self.cfg.nexenta_host, self.pool_name,
                     self.fs_prefix, share['name'])
-            },
+            }],
             self.drv.create_share(self.ctx, share))
 
     @patch('%s.delete_share' % DRV_PATH)
@@ -127,11 +127,11 @@ class TestNexentaNasDriver(test.TestCase):
         snapshot = {'name': 'share@first', 'share_name': 'share'}
 
         self.assertEqual(
-            {
+            [{
                 'path': '{}:/{}/{}/{}'.format(
                     self.cfg.nexenta_host, self.pool_name,
                     self.fs_prefix, share['name'])
-            },
+            }],
             self.drv.create_share_from_snapshot(self.ctx, share, snapshot)
         )
 

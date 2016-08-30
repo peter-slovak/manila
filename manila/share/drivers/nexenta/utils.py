@@ -51,4 +51,4 @@ def str2gib_size(s):
 
 
 def bytes_to_gb(size):
-    return int(size) / units.Gi
+    return float(size) / units.Gi

@@ -60,7 +60,7 @@ class RequestParams(object):
             ('%s:%s' % (self.user, self.password)).encode('utf-8'))
         headers = {
             'Content-Type': 'application/json',
-            'Authorization': 'Basic %s' % auth
+            'Authorization': 'Basic %s' % auth,
         }
         return headers
 
@@ -68,7 +68,7 @@ class RequestParams(object):
         data = jsonutils.dumps({
             'object': obj,
             'method': method,
-            'params': args
+            'params': args,
         })
         return data
 
@@ -123,13 +123,13 @@ class TestNexentaNasDriver(test.TestCase):
     @patch(PATH_TO_RPC)
     def test_check_for_setup_error__volume_doesnt_exist(self, post):
         post.return_value = FakeResponse()
+
         self.assertRaises(
             exception.NexentaException, self.drv.check_for_setup_error)
 
     @patch(PATH_TO_RPC)
     def test_check_for_setup_error__folder_doesnt_exist(self, post):
         folder = '%s/%s' % (self.volume, self.share)
-
         create_folder_props = {
             'recordsize': '4K',
             'quota': '1G',
@@ -164,8 +164,8 @@ class TestNexentaNasDriver(test.TestCase):
                 return FakeResponse()
             else:
                 raise exception.ManilaException('Unexpected request')
-
         post.side_effect = my_side_effect
+
         self.assertRaises(
             exception.ManilaException, self.drv.check_for_setup_error)
         post.assert_any_call(
@@ -184,11 +184,12 @@ class TestNexentaNasDriver(test.TestCase):
             'size': 1,
             'share_proto': self.cfg.enabled_share_protocols
         }
-        post.return_value = FakeResponse()
         self.cfg.nexenta_thin_provisioning = False
         path = '%s/%s/%s' % (self.volume, self.share, share['name'])
         location = {'path': '%s:/volumes/%s' % (self.cfg.nexenta_host, path)}
-        self.assertEqual(location,
+        post.return_value = FakeResponse()
+
+        self.assertEqual([location],
                          self.drv.create_share(self.ctx, share))
 
     @patch(PATH_TO_RPC)
@@ -199,6 +200,7 @@ class TestNexentaNasDriver(test.TestCase):
             'share_proto': 'A_VERY_WRONG_PROTO'
         }
         post.return_value = FakeResponse()
+
         self.assertRaises(exception.InvalidShare, self.drv.create_share,
                           self.ctx, share)
 
@@ -214,7 +216,9 @@ class TestNexentaNasDriver(test.TestCase):
         parent_path = '%s/%s' % (self.volume, self.share)
         post.return_value = FakeResponse()
         self.cfg.nexenta_thin_provisioning = True
+
         self.drv.create_share(self.ctx, share)
+
         post.assert_called_with(
             self.request_params.url,
             data=self.request_params.build_post_args(
@@ -242,7 +246,9 @@ class TestNexentaNasDriver(test.TestCase):
         parent_path = '%s/%s' % (self.volume, self.share)
         post.return_value = FakeResponse()
         self.cfg.nexenta_thin_provisioning = False
+
         self.drv.create_share(self.ctx, share)
+
         post.assert_called_with(
             self.request_params.url,
             data=self.request_params.build_post_args(
@@ -264,10 +270,11 @@ class TestNexentaNasDriver(test.TestCase):
         post.return_value = FakeResponse()
         path = '%s/%s/%s' % (self.volume, self.share, share['name'])
         location = {'path': '%s:/volumes/%s' % (self.cfg.nexenta_host, path)}
-        self.assertEqual(location, self.drv.create_share_from_snapshot(
-            self.ctx, share, snapshot))
         snapshot_name = '%s/%s/%s@%s' % (
             self.volume, self.share, snapshot['share_name'], snapshot['name'])
+
+        self.assertEqual([location], self.drv.create_share_from_snapshot(
+            self.ctx, share, snapshot))
         post.assert_any_call(
             self.request_params.url,
             data=self.request_params.build_post_args(
@@ -285,8 +292,10 @@ class TestNexentaNasDriver(test.TestCase):
             'share_proto': self.cfg.enabled_share_protocols
         }
         post.return_value = FakeResponse()
-        self.drv.delete_share(self.ctx, share)
         folder = '%s/%s/%s' % (self.volume, self.share, share['name'])
+
+        self.drv.delete_share(self.ctx, share)
+
         post.assert_any_call(
             self.request_params.url,
             data=self.request_params.build_post_args(
@@ -305,6 +314,7 @@ class TestNexentaNasDriver(test.TestCase):
         }
         post.return_value = FakeResponse()
         post.side_effect = exception.NexentaException('does not exist')
+
         self.drv.delete_share(self.ctx, share)
 
     @patch(PATH_TO_RPC)
@@ -316,6 +326,7 @@ class TestNexentaNasDriver(test.TestCase):
         }
         post.return_value = FakeResponse()
         post.side_effect = exception.ManilaException('Some error')
+
         self.assertRaises(
             exception.ManilaException, self.drv.delete_share, self.ctx, share)
 
@@ -330,7 +341,9 @@ class TestNexentaNasDriver(test.TestCase):
         quota = '%sG' % new_size
         post.return_value = FakeResponse()
         self.cfg.nexenta_thin_provisioning = True
+
         self.drv.extend_share(share, new_size)
+
         post.assert_called_with(
             self.request_params.url,
             data=self.request_params.build_post_args(
@@ -350,15 +363,19 @@ class TestNexentaNasDriver(test.TestCase):
         new_size = 5
         post.return_value = FakeResponse()
         self.cfg.nexenta_thin_provisioning = False
+
         self.drv.extend_share(share, new_size)
+
         post.assert_not_called()
 
     @patch(PATH_TO_RPC)
     def test_create_snapshot(self, post):
         snapshot = {'share_name': 'share', 'name': 'share@first'}
         post.return_value = FakeResponse()
-        self.drv.create_snapshot(self.ctx, snapshot)
         folder = '%s/%s/%s' % (self.volume, self.share, snapshot['share_name'])
+
+        self.drv.create_snapshot(self.ctx, snapshot)
+
         post.assert_called_with(
             self.request_params.url, data=self.request_params.build_post_args(
                 'folder', 'create_snapshot', folder, snapshot['name'], '-r'),
@@ -368,7 +385,9 @@ class TestNexentaNasDriver(test.TestCase):
     def test_delete_snapshot(self, post):
         snapshot = {'share_name': 'share', 'name': 'share@first'}
         post.return_value = FakeResponse()
+
         self.drv.delete_snapshot(self.ctx, snapshot)
+
         post.assert_called_with(
             self.request_params.url, data=self.request_params.build_post_args(
                 'snapshot', 'destroy', '%s@%s' % (
@@ -382,6 +401,7 @@ class TestNexentaNasDriver(test.TestCase):
         snapshot = {'share_name': 'share', 'name': 'share@first'}
         post.return_value = FakeResponse()
         post.side_effect = exception.NexentaException('does not exist')
+
         self.drv.delete_snapshot(self.ctx, snapshot)
 
     @patch(PATH_TO_RPC)
@@ -389,6 +409,7 @@ class TestNexentaNasDriver(test.TestCase):
         snapshot = {'share_name': 'share', 'name': 'share@first'}
         post.return_value = FakeResponse()
         post.side_effect = exception.NexentaException('has dependent clones')
+
         self.drv.delete_snapshot(self.ctx, snapshot)
 
     @patch(PATH_TO_RPC)
@@ -396,6 +417,7 @@ class TestNexentaNasDriver(test.TestCase):
         snapshot = {'share_name': 'share', 'name': 'share@first'}
         post.return_value = FakeResponse()
         post.side_effect = exception.ManilaException('Some error')
+
         self.assertRaises(exception.ManilaException, self.drv.delete_snapshot,
                           self.ctx, snapshot)
 
@@ -410,6 +432,7 @@ class TestNexentaNasDriver(test.TestCase):
             'access_to': 'ordinary_users',
             'access_level': 'rw'
         }
+
         self.assertRaises(exception.InvalidShareAccess,
                           self.drv.update_access,
                           self.ctx,
@@ -457,14 +480,16 @@ class TestNexentaNasDriver(test.TestCase):
                 raise exception.ManilaException('Unexpected request')
 
         post.return_value = FakeResponse()
+        post.side_effect = my_side_effect
+
         self.drv.update_access(self.ctx, share, access_rules, None, None)
+
         post.assert_called_with(
             self.request_params.url, data=self.request_params.build_post_args(
                 'netstorsvc', 'share_folder',
                 'svc:/network/nfs/server:default',
                 self._get_share_path(share['name']), share_opts),
             headers=self.request_params.headers)
-        post.side_effect = my_side_effect
         self.assertRaises(exception.ManilaException, self.drv.update_access,
                           self.ctx, share,
                           [access1, {'access_type': 'ip',
@@ -506,16 +531,19 @@ class TestNexentaNasDriver(test.TestCase):
                 return FakeResponse()
             else:
                 raise exception.ManilaException('Unexpected request')
-
         post.return_value = FakeResponse()
+
         self.drv.update_access(self.ctx, share, [access], None, None)
+
         post.assert_called_with(
             self.request_params.url, data=self.request_params.build_post_args(
                 'netstorsvc', 'share_folder',
                 'svc:/network/nfs/server:default',
                 self._get_share_path(share['name']), share_opts),
             headers=self.request_params.headers)
+
         post.side_effect = my_side_effect
+
         self.assertRaises(exception.ManilaException, self.drv.update_access,
                           self.ctx, share,
                           [{'access_type': 'ip',
@@ -532,6 +560,7 @@ class TestNexentaNasDriver(test.TestCase):
             'access_to': 'ordinary_users',
             'access_level': 'rw'
         }
+
         self.assertRaises(exception.InvalidShareAccess, self.drv.update_access,
                           self.ctx, share, [access], None, None)
 
@@ -542,10 +571,11 @@ class TestNexentaNasDriver(test.TestCase):
     def test_get_capacity_info(self, post):
         post.return_value = FakeResponse({'result': {
             'available': 9 * units.Gi, 'used': 1 * units.Gi}})
+
         self.assertEqual(
             (10, 9, 1), self.drv.helper._get_capacity_info())
 
-    @patch('manila.share.drivers.nexenta.ns4.nexenta_helper.RestHelper.'
+    @patch('manila.share.drivers.nexenta.ns4.nexenta_nfs_helper.NFSHelper.'
            '_get_capacity_info')
     @patch('manila.share.driver.ShareDriver._update_share_stats')
     def test_update_share_stats(self, super_stats, info):
@@ -570,5 +600,7 @@ class TestNexentaNasDriver(test.TestCase):
                         'max_over_subscription_ratio')),
             }],
         }
+
         self.drv._update_share_stats()
+
         self.assertEqual(stats, self.drv._stats)

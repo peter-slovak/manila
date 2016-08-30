@@ -43,13 +43,13 @@ nexenta_connection_opts = [
                secret=True),
     cfg.StrOpt('nexenta_volume',
                default='volume1',
-               help='volume name on NexentaStor.'),
+               help='Volume name on NexentaStor.'),
     cfg.StrOpt('nexenta_pool',
                default='pool1',
-               help='pool name on NexentaStor.'),
+               help='Pool name on NexentaStor.'),
     cfg.BoolOpt('nexenta_nfs',
                 default=True,
-                help='on if share over NFS is enabled.'),
+                help='On if share over NFS is enabled.'),
 ]
 
 nexenta_nfs_opts = [

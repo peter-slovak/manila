@@ -31,54 +31,90 @@ class TestNexentaJSONProxy(test.TestCase):
 
     def setUp(self):
         super(self.__class__, self).setUp()
+        self.nef_get = jsonrpc.NexentaJSONProxy(
+            'http', '1.1.1.1', '8080', 'user', 'pass', 'get')
+        self.nef_post = jsonrpc.NexentaJSONProxy(
+            'https', '1.1.1.1', '8080', 'user', 'pass', 'post')
 
-    @patch('%s.https_auth' % PATH_TO_RPC)
+    @patch('requests.Response.close')
+    @patch('requests.Session.get')
+    def test_call_get_data(self, get, close):
+        data = {'key': 'value'}
+        get.return_value = requests.Response()
+        get.return_value.__setstate__(
+            {'status_code': 200, '_content': jsonutils.dumps(data)})
+
+        self.assertEqual({'key': 'value'}, self.nef_get('url'))
+
+    @patch('requests.Response.close')
+    @patch('requests.Session.get')
+    def test_call_get_created(self, get, close):
+        get.return_value = requests.Response()
+        get.return_value.__setstate__({
+            'status_code': 201, '_content': ''})
+
+        self.assertIsNone(self.nef_get('url'))
+
+    @patch('requests.Response.close')
+    @patch('requests.Session.post')
+    def test_call_post_success(self, post, close):
+        data = {'key': 'value'}
+        post.return_value = requests.Response()
+        post.return_value.__setstate__({
+            'status_code': 200, '_content': ''})
+        self.assertIsNone(self.nef_post('url', data))
+
+    @patch('time.sleep')
     @patch('requests.Response.close')
     @patch('requests.Session.get')
     @patch('requests.Session.post')
-    def test_call(self, post, get, close, auth):
-        nef_get = jsonrpc.NexentaJSONProxy(
-            'http', '1.1.1.1', '8080', 'user', 'pass', 'get')
-        nef_post = jsonrpc.NexentaJSONProxy(
-            'https', '1.1.1.1', '8080', 'user', 'pass', 'post')
+    def test_call_post_202(self, post, get, close, sleep):
         data = {'key': 'value'}
+        data2 = {'links': [{'href': 'redirect_url'}]}
+
         get.return_value = requests.Response()
         post.return_value = requests.Response()
-
-        get.return_value.__setstate__({
-            'status_code': 200, '_content': jsonutils.dumps(data)})
-        self.assertEqual({'key': 'value'}, nef_get('url'))
-
-        get.return_value.__setstate__({
-            'status_code': 201, '_content': ''})
-        self.assertIsNone(nef_get('url'))
-
-        data2 = {'links': [{'href': 'redirect_url'}]}
         post.return_value.__setstate__({
             'status_code': 202, '_content': jsonutils.dumps(data2)})
         get.return_value.__setstate__({
             'status_code': 200, '_content': jsonutils.dumps(data)})
-        self.assertEqual({'key': 'value'}, nef_post('url'))
 
-        get.return_value.__setstate__({
-            'status_code': 200, '_content': ''})
-        self.assertIsNone(nef_post('url', data))
+        self.assertEqual({'key': 'value'}, self.nef_post('url'))
 
+    @patch('requests.Response.close')
+    @patch('requests.Session.get')
+    def test_call_get_not_exist(self, get, close):
+        get.return_value = requests.Response()
         get.return_value.__setstate__({
             'status_code': 400,
             '_content': jsonutils.dumps({'code': 'ENOENT'})})
-        self.assertRaises(exception.NexentaException, lambda: nef_get('url'))
 
+        self.assertRaises(
+            exception.NexentaException, lambda: self.nef_get('url'))
+
+    @patch('requests.Response.close')
+    @patch('requests.Session.get')
+    def test_call_get_unauthorized(self, get, close):
+        get.return_value = requests.Response()
         get.return_value.__setstate__({
             'status_code': 401,
             '_content': jsonutils.dumps({'code': 'unauthorized'})})
-        self.assertRaises(exception.NexentaException, lambda: nef_get('url'))
 
+        self.assertRaises(
+            exception.NexentaException, lambda: self.nef_get('url'))
+
+    @patch('%s.https_auth' % PATH_TO_RPC)
+    @patch('requests.Response.close')
+    @patch('requests.Session.post')
+    def test_call_post_bad_token(self, post, close, auth):
+        post.return_value = requests.Response()
         auth.return_value = {'token': 'tok'}
         post.return_value.__setstate__({
             'status_code': 401,
             '_content': jsonutils.dumps({'code': 'unauthorized'})})
-        self.assertRaises(exception.NexentaException, lambda: nef_post('url'))
+
+        self.assertRaises(
+            exception.NexentaException, lambda: self.nef_post('url'))
 
     @patch('requests.Response.close')
     @patch('requests.Session.post')

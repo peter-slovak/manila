@@ -163,7 +163,7 @@ class NexentaNasDriver(driver.ShareDriver):
                         (self.fs_prefix, share['name'])), 'exc': exc})
             raise
         self.provisioned_capacity += share['size']
-        return location
+        return [location]
 
     def create_share_from_snapshot(self, context, share, snapshot,
                                    share_server=None):
@@ -206,13 +206,13 @@ class NexentaNasDriver(driver.ShareDriver):
             raise
 
         self.provisioned_capacity += share['size']
-        return location
+        return [location]
 
     def delete_share(self, context, share, share_server=None):
         """Delete a share."""
         LOG.debug('Deleting share: %s.', share['name'])
 
-        url = ('storage/pools/%(pool)s/filesystems/%(fs)s') % {
+        url = 'storage/pools/%(pool)s/filesystems/%(fs)s' % {
             'pool': self.pool_name,
             'fs': PATH_DELIMITER.join([self.fs_prefix, share['name']]),
         }

@@ -34,4 +34,5 @@ class TestNexentaJSONProxy(test.TestCase):
         post.return_value = requests.Response()
         post.return_value.__setstate__({
             'status_code': 500, '_content': jsonutils.dumps(data)})
+
         self.assertRaises(exception.NexentaException, nms_post)

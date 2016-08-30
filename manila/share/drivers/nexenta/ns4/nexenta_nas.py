@@ -18,7 +18,7 @@ from oslo_log import log
 from manila import exception
 from manila.i18n import _, _LI
 from manila.share import driver
-from manila.share.drivers.nexenta.ns4 import nexenta_helper
+from manila.share.drivers.nexenta.ns4 import nexenta_nfs_helper
 from manila.share.drivers.nexenta import options
 
 
@@ -46,7 +46,7 @@ class NexentaNasDriver(driver.ShareDriver):
                 options.nexenta_nfs_opts)
             self.configuration.append_config_values(
                 options.nexenta_dataset_opts)
-            self.helper = nexenta_helper.RestHelper(self.configuration)
+            self.helper = nexenta_nfs_helper.NFSHelper(self.configuration)
         else:
             raise exception.BadConfigurationException(
                 reason=_('Nexenta configuration missing.'))
