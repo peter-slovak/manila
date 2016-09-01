@@ -24,7 +24,7 @@ from oslo_utils import units
 from manila import context
 from manila import exception
 from manila.share import configuration as conf
-from manila.share.drivers.nexenta.ns4.nexenta_nas import NexentaNasDriver
+from manila.share.drivers.nexenta.ns4 import nexenta_nas
 from manila import test
 
 PATH_TO_RPC = 'requests.post'
@@ -114,7 +114,7 @@ class TestNexentaNasDriver(test.TestCase):
             'http', self.cfg.nexenta_host, self.cfg.nexenta_rest_port,
             '/rest/nms/', self.cfg.nexenta_user, self.cfg.nexenta_password)
 
-        self.drv = NexentaNasDriver(configuration=self.cfg)
+        self.drv = nexenta_nas.NexentaNasDriver(configuration=self.cfg)
         self.drv.do_setup(self.ctx)
 
         self.volume = self.cfg.nexenta_volume

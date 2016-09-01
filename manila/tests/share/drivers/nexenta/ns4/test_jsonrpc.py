@@ -18,7 +18,7 @@ from oslo_serialization import jsonutils
 import requests
 
 from manila import exception
-from manila.share.drivers.nexenta.ns4.jsonrpc import NexentaJSONProxy
+from manila.share.drivers.nexenta.ns4 import jsonrpc
 from manila import test
 
 
@@ -26,7 +26,7 @@ class TestNexentaJSONProxy(test.TestCase):
 
     @patch('requests.post')
     def test_call(self, post):
-        nms_post = NexentaJSONProxy(
+        nms_post = jsonrpc.NexentaJSONProxy(
             'http', '1.1.1.1', '8080', 'user', 'pass',
             'obj', auto=False, method='get')
         data = {'error': {'message': 'some_error'}}

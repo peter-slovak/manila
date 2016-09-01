@@ -26,8 +26,8 @@ import requests
 from oslo_log import log
 from oslo_serialization import jsonutils
 
-from manila.exception import NexentaException
-from manila.utils import retry
+from manila import exception
+from manila import utils
 
 LOG = log.getLogger(__name__)
 
@@ -69,7 +69,7 @@ class NexentaJSONProxy(object):
     def __repr__(self):
         return 'NMS proxy: %s' % self.url
 
-    @retry(retry_exc_tuple, retries=6)
+    @utils.retry(retry_exc_tuple, retries=6)
     def __call__(self, *args):
         data = jsonutils.dumps({
             'object': self.obj,
@@ -88,5 +88,5 @@ class NexentaJSONProxy(object):
         LOG.debug('Got response: %s', response)
         if response.get('error') is not None:
             message = response['error'].get('message', '')
-            raise NexentaException(reason=message)
+            raise exception.NexentaException(reason=message)
         return response.get('result')
