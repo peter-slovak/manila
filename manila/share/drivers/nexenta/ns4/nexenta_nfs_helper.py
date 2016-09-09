@@ -98,7 +98,7 @@ class NFSHelper(object):
     def _get_location_path(self, path, protocol):
         location = None
         if protocol == 'NFS':
-            location = {'path': '%s:/volumes/%s' % (self.nms_host, path)}
+            location = '%s:/volumes/%s' % (self.nms_host, path)
         else:
             raise exception.InvalidShare(
                 reason=(_('Only NFS protocol is currently supported.')))
@@ -162,32 +162,88 @@ class NFSHelper(object):
         path = self._get_share_path(share['name'])
         return [self._get_location_path(path, share['share_proto'])]
 
-    def update_access(self, share_name, access_rules):
-        """Update access to the share."""
-        rw_list = []
-        ro_list = []
-        for rule in access_rules:
-            if rule['access_type'].lower() != 'ip':
-                msg = _('Only IP access type is supported.')
-                raise exception.InvalidShareAccess(reason=msg)
-            else:
-                if rule['access_level'] == common.ACCESS_LEVEL_RW:
-                    rw_list.append(rule['access_to'])
-                else:
-                    ro_list.append(rule['access_to'])
+    def _allow_access(self, share_name, access, share_proto):
+        """Allow access to the share."""
+        access_to = access['access_to'].strip()
+        access_type = access['access_type'].strip()
+        access_level = access['access_level'].strip()
 
-        share_opts = {
-            'auth_type': 'none',
-            'read_write': ':'.join(rw_list),
-            'read_only': ':'.join(ro_list),
-            'recursive': 'true',
-            'anonymous_rw': 'true',
-            'anonymous': 'true',
-            'extra_options': 'anon=0',
-        }
-        self.nms.netstorsvc.share_folder(
-            'svc:/network/nfs/server:default',
-            self._get_share_path(share_name), share_opts)
+        if access_type == 'ip':
+            opts = self.nms.netstorsvc.get_shareopts(
+                'svc:/network/nfs/server:default',
+                self._get_share_path(share_name))
+
+            rw_list = opts.get('read_write')
+            ro_list = opts.get('read_only')
+            if access_level == common.ACCESS_LEVEL_RW:
+                if rw_list and rw_list != '*':
+                    rw_list += '%s:' % access_to
+                else:
+                    rw_list = '%s:' % access_to
+            else:
+                if ro_list and ro_list != '*':
+                    ro_list += '%s:' % access_to
+                else:
+                    ro_list = '%s:' % access_to
+
+            share_opts = {
+                'auth_type': 'none',
+                'recursive': 'true',
+                'anonymous_rw': 'true',
+                'anonymous': 'true',
+                'extra_options': 'anon=0',
+            }
+            if rw_list:
+                share_opts['read_write'] = rw_list
+            if ro_list:
+                share_opts['read_only'] = ro_list
+            result = self.nms.netstorsvc.share_folder(
+                'svc:/network/nfs/server:default',
+                self._get_share_path(share_name), share_opts)
+            return result
+        msg = _('Only IP access type is supported.')
+        raise exception.InvalidShareAccess(reason=msg)
+
+    def _deny_access(self, share_name, access, share_proto):
+        """Deny access to share."""
+        access_type = access['access_type'].strip()
+        access_to = access['access_to'].strip()
+        access_level = access['access_level'].strip()
+
+        if access_type == 'ip':
+            opts = self.nms.netstorsvc.get_shareopts(
+                'svc:/network/nfs/server:default',
+                self._get_share_path(share_name))
+
+            changed = False
+            rw_list = map(lambda s: s.strip(), opts.get('read_write', '').split(":"))
+            if access_to in rw_list:
+                rw_list.remove(access_to)
+                changed = True
+
+            ro_list = map(lambda s: s.strip(), opts.get('read_only', '').split(":"))
+            if access_to in ro_list:
+                ro_list.remove(access_to)
+                changed = True
+
+            if changed:
+                share_opts = {
+                    'read_write': ':'.join(rw_list),
+                    'read_only': ':'.join(ro_list),
+                    'auth_type': 'none',
+                    'recursive': 'true',
+                    'anonymous_rw': 'true',
+                    'anonymous': 'true',
+                    'extra_options': 'anon=0',
+                }
+
+                result = self.nms.netstorsvc.share_folder(
+                    'svc:/network/nfs/server:default',
+                    self._get_share_path(share_name), share_opts)
+                return result
+            return
+        msg = _('Only IP access type is supported.')
+        raise exception.InvalidShareAccess(reason=msg)
 
     def _get_capacity_info(self):
         """Calculate available space on the NFS share."""

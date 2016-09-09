@@ -145,10 +145,8 @@ class NexentaNasDriver(driver.ShareDriver):
 
         url = 'storage/pools/{}/filesystems'.format(self.pool_name)
         self.nef.post(url, data)
-        location = {
-            'path': '{}:/{}/{}/{}'.format(self.nef_host, self.pool_name,
-                                          self.fs_prefix, share['name'])
-        }
+        location = '{}:/{}/{}/{}'.format(self.nef_host, self.pool_name,
+                                         self.fs_prefix, share['name'])
 
         try:
             self._add_permission(share['name'])
@@ -175,10 +173,8 @@ class NexentaNasDriver(driver.ShareDriver):
             'fs': PATH_DELIMITER.join(
                 (self.fs_prefix, snapshot['share_name'])),
             'snap': snapshot['name']}
-        location = {
-            'path': '{}:/{}/{}/{}'.format(self.nef_host, self.pool_name,
-                                          self.fs_prefix, share['name'])
-        }
+        location = '{}:/{}/{}/{}'.format(self.nef_host, self.pool_name,
+                                         self.fs_prefix, share['name'])
         path = '/'.join((self.pool_name, self.fs_prefix, share['name']))
         data = {
             'targetPath': path,
@@ -274,23 +270,13 @@ class NexentaNasDriver(driver.ShareDriver):
             else:
                 raise
 
-    def update_access(self, context, share, access_rules, add_rules,
-                      delete_rules, share_server=None):
+    def update_access(self, share, access_rules):
         """Update access rules for given share.
 
         Using access_rules list for both adding and deleting rules.
-        :param context: The `context.RequestContext` object for the request
         :param share: Share that will have its access rules updated.
         :param access_rules: All access rules for given share. This list
         is enough to update the access rules for given share.
-        :param add_rules: Empty List or List of access rules which should be
-        added. access_rules already contains these rules. Not used by this
-        driver.
-        :param delete_rules: Empty List or List of access rules which should be
-        removed. access_rules doesn't contain these rules. Not used by
-        this driver.
-        :param share_server: Data structure with share server information.
-        Not used by this driver.
         """
         LOG.debug('Updating access to share %s.', share)
         rw_list = []
@@ -331,6 +317,50 @@ class NexentaNasDriver(driver.ShareDriver):
         url = 'nas/nfs/' + PATH_DELIMITER.join(
             (self.pool_name, self.fs_prefix, share['name']))
         self.nef.put(url, data)
+
+    def get_access_rules(self, share):
+        url = 'nas/nfs/' + PATH_DELIMITER.join(
+            (self.pool_name, self.fs_prefix, share['name']))
+        access_rules = []
+        for sc in self.nef.get(url)["securityContexts"]:
+            if 'readOnlyList' in sc and sc['readOnlyList'] \
+                    and "entity" in sc['readOnlyList'][0]:
+                access_to = sc['readOnlyList'][0]["entity"]
+                access_level = common.ACCESS_LEVEL_RO
+            elif 'readWriteList' in sc and sc['readWriteList'] \
+                    and "entity" in sc['readWriteList'][0]:
+                access_to = sc['readWriteList'][0]["entity"]
+                access_level = common.ACCESS_LEVEL_RW
+            else:
+                continue
+            rule = {
+                'access_type': 'ip',
+                'access_level': access_level,
+                'access_to': access_to
+            }
+            access_rules.append(rule)
+        return access_rules
+
+    def allow_access(self, context, share, access, share_server=None):
+        """Allow access to the share."""
+        LOG.debug("Allow access.")
+        access_rules = self.get_access_rules(share)
+        rule = dict(access_to=access['access_to'].strip(),
+                    access_type=access['access_type'].strip(),
+                    access_level=access['access_level'].strip())
+        access_rules.append(rule)
+        self.update_access(share, access_rules)
+
+    def deny_access(self, context, share, access, share_server=None):
+        """Deny access to the share."""
+        LOG.debug("Deny access.")
+        access_rules = self.get_access_rules(share)
+        rule = dict(access_to=access['access_to'].strip(),
+                    access_type=access['access_type'].strip(),
+                    access_level=access['access_level'].strip())
+        if rule in access_rules:
+            access_rules.remove(rule)
+            self.update_access(share, access_rules)
 
     def _set_quota(self, share_name, new_size):
         quota = new_size * units.Gi
