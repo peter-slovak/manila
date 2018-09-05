@@ -56,7 +56,7 @@ class NexentaNasDriver(driver.ShareDriver):
         else:
             raise exception.BadConfigurationException(
                 reason=_('Nexenta configuration missing.'))
-        required_params = ['nas_host', 'user', 'password', 'pool', 'nfs_share']
+        required_params = ['nas_host', 'user', 'password', 'pool', 'folder']
         for param in required_params:
             if not getattr(self.configuration, 'nexenta_%s' % param):
                 msg = 'Required parameter nexenta_%s is not provided.' % param
@@ -65,14 +65,14 @@ class NexentaNasDriver(driver.ShareDriver):
         self.nef = None
         self.verify_ssl = self.configuration.nexenta_ssl_cert_verify
         self.nef_protocol = self.configuration.nexenta_rest_protocol
-        self.nef_host = self.configuration.nexenta_rest_host
+        self.nef_host = self.configuration.nexenta_rest_address
         self.nas_host = self.configuration.nexenta_nas_host
         self.nef_port = self.configuration.nexenta_rest_port
         self.nef_user = self.configuration.nexenta_user
         self.nef_password = self.configuration.nexenta_password
 
         self.pool_name = self.configuration.nexenta_pool
-        self.fs_prefix = self.configuration.nexenta_nfs_share
+        self.fs_prefix = self.configuration.nexenta_folder
 
         self.storage_protocol = 'NFS'
         self.nfs_mount_point_base = self.configuration.nexenta_mount_point_base
@@ -122,7 +122,7 @@ class NexentaNasDriver(driver.ShareDriver):
         data = self.nef.get(url).get('data')
         if not (data and data[0].get('shareState') == 'online'):
             msg = (_('NFS share %(share)s is not accessible')
-                   % {'share': self.share})
+                   % {'share': self.folder})
             raise exception.NexentaException(msg)
         self._get_provisioned_capacity()
 
@@ -406,7 +406,7 @@ class NexentaNasDriver(driver.ShareDriver):
     def _update_share_stats(self, data=None):
         super(NexentaNasDriver, self)._update_share_stats()
         total, free, allocated = self._get_capacity_info()
-        compression = False if (self.dataset_compression == 'off') else True
+        compression = not self.dataset_compression == 'off'
         data = {
             'vendor_name': 'Nexenta',
             'storage_protocol': self.storage_protocol,
