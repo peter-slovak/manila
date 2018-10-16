@@ -357,8 +357,6 @@ class NexentaNasDriver(driver.ShareDriver):
             snapshot
         :param share_server: Optional -- Share server model or None
         """
-        LOG.warning(snapshot['share'])
-        LOG.warning(dir(snapshot['share']))
         share_id = snapshot['share']['share_id']
         fs_path = '/'.join([self.share_path, share_id])
         LOG.debug('Revert share %(share)s to snapshot %(snapshot)s',
