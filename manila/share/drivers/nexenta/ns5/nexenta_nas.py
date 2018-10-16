@@ -336,6 +336,37 @@ class NexentaNasDriver(driver.ShareDriver):
             urllib.parse.urlencode(params))
         self.nef.delete(url)
 
+    def revert_to_snapshot(self, context, snapshot, share_access_rules,
+                           snapshot_access_rules, share_server=None):
+        """Reverts a share (in place) to the specified snapshot.
+
+        Does not delete the share snapshot.  The share and snapshot must both
+        be 'available' for the restore to be attempted.  The snapshot must be
+        the most recent one taken by Manila; the API layer performs this check
+        so the driver doesn't have to.
+
+        The share must be reverted in place to the contents of the snapshot.
+        Application admins should quiesce or otherwise prepare the application
+        for the shared file system contents to change suddenly.
+
+        :param context: Current context
+        :param snapshot: The snapshot to be restored
+        :param share_access_rules: List of all access rules for the affected
+            share
+        :param snapshot_access_rules: List of all access rules for the affected
+            snapshot
+        :param share_server: Optional -- Share server model or None
+        """
+        LOG.warning(snapshot['share'])
+        LOG.warning(dir(snapshot['share']))
+        share_id = snapshot['share']['share_id']
+        fs_path = '/'.join([self.share_path, share_id])
+        LOG.debug('Revert share %(share)s to snapshot %(snapshot)s',
+                  {'share': fs_path, 'snapshot': snapshot['snapshot_id']})
+        url = 'storage/filesystems/%s/rollback' % urllib.parse.quote_plus(
+            fs_path)
+        self.nef.post(url, {'snapshot': snapshot['snapshot_id']})
+
     def update_access(self, context, share, access_rules, add_rules,
                       delete_rules, share_server=None):
         """Update access rules for given share.
@@ -422,6 +453,7 @@ class NexentaNasDriver(driver.ShareDriver):
             'driver_version': VERSION,
             'snapshot_support': True,
             'create_share_from_snapshot_support': True,
+            'revert_to_snapshot_support': True,
             'pools': [{
                 'pool_name': self.pool_name,
                 'compression': compression,
