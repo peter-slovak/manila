@@ -231,7 +231,7 @@ class NexentaNasDriver(driver.ShareDriver):
         return [location]
 
     def _get_dataset_name(self, share_id):
-        return str('/'.join([self.share_path, share_id]))
+        return '/'.join([self.share_path, share_id])
 
     def delete_share(self, context, share, share_server=None):
         """Delete a share."""
@@ -365,6 +365,61 @@ class NexentaNasDriver(driver.ShareDriver):
             fs_path)
         self.nef.post(url, {'snapshot': snapshot['snapshot_id']})
 
+    def manage_existing(self, share, driver_options):
+        """Brings an existing share under Manila management.
+
+        If the provided share is not valid, then raise a
+        ManageInvalidShare exception, specifying a reason for the failure.
+
+        If the provided share is not in a state that can be managed, such as
+        being replicated on the backend, the driver *MUST* raise
+        ManageInvalidShare exception with an appropriate message.
+
+        The share has a share_type, and the driver can inspect that and
+        compare against the properties of the referenced backend share.
+        If they are incompatible, raise a
+        ManageExistingShareTypeMismatch, specifying a reason for the failure.
+
+        :param share: Share model
+        :param driver_options: Driver-specific options provided by admin.
+        :return: share_update dictionary with required key 'size',
+                 which should contain size of the share.
+        """
+        LOG.debug('Manage share %s.', share['share_id'])
+        export_path = share['export_locations'][0]['path']
+
+        # check that filesystem with provided export exists.
+        fs_path = export_path.split(':/')[1]
+        params = {'path': fs_path}
+        url = 'storage/filesystems?%s' % (
+            urllib.parse.urlencode(params))
+        fs_list = self.nef.get(url).get('data')
+
+        if not fs_list:
+            # wrong export path, raise exception.
+            msg = _('Share %s does not exist on Nexenta Store appliance, '
+                    'cannot manage.') % export_path
+            raise exception.NexentaException(msg)
+
+        # get dataset properties.
+        url = 'storage/filesystems/%s' % urllib.parse.quote_plus(fs_path)
+        fs_data = self.nef.get(url)
+        if fs_data['referencedQuotaSize']:
+            size = (fs_data['referencedQuotaSize'] / units.Gi) + 1
+        else:
+            size = fs_data['bytesReferenced'] / units.Gi + 1
+        # rename filesystem on appliance to correlate with manila ID.
+        url = 'storage/filesystems/%s/rename' % urllib.parse.quote_plus(
+            fs_path)
+        new_path = '%s/%s' % (self.share_path, share['share_id'])
+        self.nef.post(url, {'newPath': new_path})
+        # make sure quotas and reservations are correct.
+        self._set_quota(share['share_id'], size)
+
+        return {'size': size, 'export_locations': [{
+            'path': '%s:/%s' % (self.nas_host, new_path)
+        }]}
+
     def update_access(self, context, share, access_rules, add_rules,
                       delete_rules, share_server=None):
         """Update access rules for given share.
@@ -436,7 +491,8 @@ class NexentaNasDriver(driver.ShareDriver):
         if not self.configuration.nexenta_thin_provisioning:
             data['referencedReservationSize'] = quota
         path = self._get_dataset_name(share_id)
-        url = 'storage/filesystems/' % path
+        LOG.debug('Setting quota for dataset %s.' % path)
+        url = 'storage/filesystems/%s' % urllib.parse.quote_plus(path)
         self.nef.put(url, data)
 
     def _update_share_stats(self, data=None):
