@@ -48,7 +48,6 @@ glusterfs_volume_mapped_opts = [
                      '[remoteuser@]<volserver>, and they are assumed to '
                      'belong to distinct Gluster clusters.'),
     cfg.StrOpt('glusterfs_volume_pattern',
-               default=None,
                help='Regular expression template used to filter '
                     'GlusterFS volumes for share creation. '
                     'The regex template can optionally (ie. with support '
@@ -78,6 +77,7 @@ CONF.register_opts(glusterfs_volume_mapped_opts)
 # Currently we handle only #{size}.
 PATTERN_DICT = {'size': {'pattern': '(?P<size>\d+)', 'trans': int}}
 USER_MANILA_SHARE = 'user.manila-share'
+USER_CLONED_FROM = 'user.manila-cloned-from'
 UUID_RE = re.compile('\A[\da-f]{8}-([\da-f]{4}-){3}[\da-f]{12}\Z', re.I)
 
 
@@ -109,7 +109,7 @@ class GlusterfsVolumeMappedLayout(layout.GlusterfsShareLayoutBase):
         """
 
         subdict = {}
-        for key, val in six.iteritems(PATTERN_DICT):
+        for key, val in PATTERN_DICT.items():
             subdict[key] = val['pattern']
 
         # Using templates with placeholder syntax #{<var>}
@@ -131,7 +131,7 @@ class GlusterfsVolumeMappedLayout(layout.GlusterfsShareLayoutBase):
             except exception.GlusterfsException as exc:
                 exceptions[srvaddr] = six.text_type(exc)
         if exceptions:
-            for srvaddr, excmsg in six.iteritems(exceptions):
+            for srvaddr, excmsg in exceptions.items():
                 LOG.error(_LE("'gluster version' failed on server "
                               "%(server)s with: %(message)s"),
                           {'server': srvaddr, 'message': excmsg})
@@ -139,9 +139,8 @@ class GlusterfsVolumeMappedLayout(layout.GlusterfsShareLayoutBase):
                 "'gluster version' failed on servers %s") % (
                 ','.join(exceptions.keys())))
         notsupp_servers = []
-        for srvaddr, vers in six.iteritems(glusterfs_versions):
-            if common.GlusterManager.numreduct(
-               vers) < self.driver.GLUSTERFS_VERSION_MIN:
+        for srvaddr, vers in glusterfs_versions.items():
+            if common.numreduct(vers) < self.driver.GLUSTERFS_VERSION_MIN:
                 notsupp_servers.append(srvaddr)
         if notsupp_servers:
             gluster_version_min_str = '.'.join(
@@ -187,8 +186,10 @@ class GlusterfsVolumeMappedLayout(layout.GlusterfsShareLayoutBase):
 
     def _share_manager(self, share):
         """Return GlusterManager object representing share's backend."""
-        return self._glustermanager(self.private_storage.get(
-            share['id'], 'volume'))
+        gluster_address = self.private_storage.get(share['id'], 'volume')
+        if gluster_address is None:
+            return
+        return self._glustermanager(gluster_address)
 
     def _fetch_gluster_volumes(self, filter_used=True):
         """Do a 'gluster volume list | grep <volume pattern>'.
@@ -204,16 +205,12 @@ class GlusterfsVolumeMappedLayout(layout.GlusterfsShareLayoutBase):
         volumes_dict = {}
         for srvaddr in self.configuration.glusterfs_servers:
             gluster_mgr = self._glustermanager(srvaddr, False)
-            try:
-                out, err = gluster_mgr.gluster_call('volume', 'list')
-            except exception.ProcessExecutionError as exc:
-                msgdict = {'err': exc.stderr, 'hostinfo': ''}
-                if gluster_mgr.user:
-                    msgdict['hostinfo'] = ' on host %s' % gluster_mgr.host
-                LOG.error(_LE("Error retrieving volume list%(hostinfo)s: "
-                              "%(err)s") % msgdict)
-                raise exception.GlusterfsException(
-                    _('gluster volume list failed'))
+            if gluster_mgr.user:
+                logmsg = _LE("Retrieving volume list "
+                             "on host %s") % gluster_mgr.host
+            else:
+                logmsg = _LE("Retrieving volume list")
+            out, err = gluster_mgr.gluster_call('volume', 'list', log=logmsg)
             for volname in out.split("\n"):
                 patmatch = self.volume_pattern.match(volname)
                 if not patmatch:
@@ -222,7 +219,7 @@ class GlusterfsVolumeMappedLayout(layout.GlusterfsShareLayoutBase):
                 comp_vol.update({'volume': volname})
                 gluster_mgr_vol = self._glustermanager(comp_vol)
                 if filter_used:
-                    vshr = gluster_mgr_vol.get_gluster_vol_option(
+                    vshr = gluster_mgr_vol.get_vol_option(
                         USER_MANILA_SHARE) or ''
                     if UUID_RE.search(vshr):
                         continue
@@ -257,11 +254,11 @@ class GlusterfsVolumeMappedLayout(layout.GlusterfsShareLayoutBase):
 
         if not unused_vols:
             # No volumes available for use as share. Warn user.
-            LOG.warn(_LW("No unused gluster volumes available for use as "
-                         "share! Create share won't be supported unless "
-                         "existing shares are deleted or some gluster "
-                         "volumes are created with names matching "
-                         "'glusterfs_volume_pattern'."))
+            LOG.warning(_LW("No unused gluster volumes available for use as "
+                            "share! Create share won't be supported unless "
+                            "existing shares are deleted or some gluster "
+                            "volumes are created with names matching "
+                            "'glusterfs_volume_pattern'."))
         else:
             LOG.info(_LI("Number of gluster volumes in use:  "
                          "%(inuse-numvols)s. Number of gluster volumes "
@@ -360,8 +357,7 @@ class GlusterfsVolumeMappedLayout(layout.GlusterfsShareLayoutBase):
         # delete the paths of the two directories, but delete their contents
         # along with the rest of the contents of the volume.
         srvaddr = gluster_mgr.host_access
-        if common.GlusterManager.numreduct(self.glusterfs_versions[srvaddr]
-                                           ) < (3, 7):
+        if common.numreduct(self.glusterfs_versions[srvaddr]) < (3, 7):
             cmd = ['find', tmpdir, '-mindepth', '1', '-delete']
         else:
             ignored_dirs = map(lambda x: os.path.join(tmpdir, *x),
@@ -400,6 +396,8 @@ class GlusterfsVolumeMappedLayout(layout.GlusterfsShareLayoutBase):
         gmgr = self._glustermanager(vol)
         export = self.driver._setup_via_manager(
             {'share': share, 'manager': gmgr})
+
+        gmgr.set_vol_option(USER_MANILA_SHARE, share['id'])
         self.private_storage.update(share['id'], {'volume': vol})
 
         args = ('volume', 'set', gmgr.volume, USER_MANILA_SHARE, share['id'])
@@ -425,8 +423,28 @@ class GlusterfsVolumeMappedLayout(layout.GlusterfsShareLayoutBase):
         volume back in the available list.
         """
         gmgr = self._share_manager(share)
+        if not gmgr:
+            # Share does not have a record in private storage.
+            # It means create_share{,_from_snapshot} did not
+            # succeed(*). In that case we should not obstruct
+            # share deletion, so we just return doing nothing.
+            #
+            # (*) or we have a database corruption but then
+            # basically does not matter what we do here
+            return
+        clone_of = gmgr.get_vol_option(USER_CLONED_FROM) or ''
         try:
-            self._wipe_gluster_vol(gmgr)
+            if UUID_RE.search(clone_of):
+                # We take responsibility for the lifecycle
+                # management of those volumes which were
+                # created by us (as snapshot clones) ...
+                gmgr.gluster_call('volume', 'delete', gmgr.volume)
+            else:
+                # ... for volumes that come from the pool, we return
+                # them to the pool (after some purification rituals)
+                self._wipe_gluster_vol(gmgr)
+                gmgr.set_vol_option(USER_MANILA_SHARE, 'NONE')
+
             self._push_gluster_vol(gmgr.qualified)
         except exception.GlusterfsException:
             msg = (_LE("Error during delete_share request for "
@@ -449,12 +467,9 @@ class GlusterfsVolumeMappedLayout(layout.GlusterfsShareLayoutBase):
     @staticmethod
     def _find_actual_backend_snapshot_name(gluster_mgr, snapshot):
         args = ('snapshot', 'list', gluster_mgr.volume, '--mode=script')
-        try:
-            out, err = gluster_mgr.gluster_call(*args)
-        except exception.ProcessExecutionError as exc:
-            LOG.error(_LE("Error retrieving snapshot list: %s"), exc.stderr)
-            raise exception.GlusterfsException(_("gluster %s failed") %
-                                               ' '.join(args))
+        out, err = gluster_mgr.gluster_call(
+            *args,
+            log=_LE("Retrieving snapshot list"))
         snapgrep = list(filter(lambda x: snapshot['id'] in x, out.split("\n")))
         if len(snapgrep) != 1:
             msg = (_("Failed to identify backing GlusterFS object "
@@ -476,7 +491,7 @@ class GlusterfsVolumeMappedLayout(layout.GlusterfsShareLayoutBase):
         # a version check.
         vers = self.glusterfs_versions[old_gmgr.host_access]
         minvers = (3, 7)
-        if common.GlusterManager.numreduct(vers) < minvers:
+        if common.numreduct(vers) < minvers:
             minvers_str = '.'.join(six.text_type(c) for c in minvers)
             vers_str = '.'.join(vers)
             msg = (_("GlusterFS version %(version)s on server %(server)s does "
@@ -495,14 +510,10 @@ class GlusterfsVolumeMappedLayout(layout.GlusterfsShareLayoutBase):
         args_tuple = (('snapshot', 'activate', backend_snapshot_name,
                       'force', '--mode=script'),
                       ('snapshot', 'clone', volume, backend_snapshot_name))
-        try:
-            for args in args_tuple:
-                out, err = old_gmgr.gluster_call(*args)
-        except exception.ProcessExecutionError as exc:
-            LOG.error(_LE("Error creating share from snapshot: %s"),
-                      exc.stderr)
-            raise exception.GlusterfsException(_("gluster %s failed") %
-                                               ' '.join(args))
+        for args in args_tuple:
+            out, err = old_gmgr.gluster_call(
+                *args,
+                log=_LE("Creating share from snapshot"))
 
         # Get a manager for the the new volume/share.
         comp_vol = old_gmgr.components.copy()
@@ -512,26 +523,16 @@ class GlusterfsVolumeMappedLayout(layout.GlusterfsShareLayoutBase):
             {'share': share, 'manager': gmgr},
             {'share': snapshot['share_instance'], 'manager': old_gmgr})
 
-        try:
-            gmgr.gluster_call(
-                'volume', 'start', gmgr.volume)
-        except exception.ProcessExecutionError as exc:
-            msg = (_("Error starting gluster volume. "
-                     "Volume: %(volname)s, Error: %(error)s") %
-                   {'volname': gmgr.volume, 'error': exc.stderr})
-            LOG.error(msg)
-            raise exception.GlusterfsException(msg)
+        argseq = (('set',
+                   [USER_CLONED_FROM, snapshot['share_id']]),
+                  ('set', [USER_MANILA_SHARE, share['id']]),
+                  ('start', []))
+        for op, opargs in argseq:
+            args = ['volume', op, gmgr.volume] + opargs
+            gmgr.gluster_call(*args, log=_LE("Creating share from snapshot"))
 
         self.gluster_used_vols.add(gmgr.qualified)
         self.private_storage.update(share['id'], {'volume': gmgr.qualified})
-
-        args = ('volume', 'set', gmgr.volume, USER_MANILA_SHARE, share['id'])
-        try:
-            gmgr.gluster_call(*args)
-        except exception.ProcessExecutionError:
-            raise exception.GlusterfsException(
-                _("gluster %(cmd)s failed on %(vol)s") %
-                {'cmd': ' '.join(args), 'vol': gmgr.qualified})
 
         return export
 
@@ -545,12 +546,9 @@ class GlusterfsVolumeMappedLayout(layout.GlusterfsShareLayoutBase):
         else:
             args = ('--xml', 'snapshot', 'create', 'manila-' + snapshot['id'],
                     gluster_mgr.volume)
-            try:
-                out, err = gluster_mgr.gluster_call(*args)
-            except exception.ProcessExecutionError as exc:
-                LOG.error(_LE("Error retrieving volume info: %s"), exc.stderr)
-                raise exception.GlusterfsException("gluster %s failed" %
-                                                   ' '.join(args))
+            out, err = gluster_mgr.gluster_call(
+                *args,
+                log=_LE("Retrieving volume info"))
 
             if not out:
                 raise exception.GlusterfsException(
@@ -559,13 +557,13 @@ class GlusterfsVolumeMappedLayout(layout.GlusterfsShareLayoutBase):
                 )
 
             outxml = etree.fromstring(out)
-            opret = int(outxml.find('opRet').text)
-            operrno = int(outxml.find('opErrno').text)
-            operrstr = outxml.find('opErrstr').text
+            opret = int(common.volxml_get(outxml, 'opRet'))
+            operrno = int(common.volxml_get(outxml, 'opErrno'))
+            operrstr = common.volxml_get(outxml, 'opErrstr', None)
 
         if opret == -1:
             vers = self.glusterfs_versions[gluster_mgr.host_access]
-            if common.GlusterManager.numreduct(vers) > (3, 6):
+            if common.numreduct(vers) > (3, 6):
                 # This logic has not yet been implemented in GlusterFS 3.6
                 if operrno == 0:
                     self.gluster_nosnap_vols_dict[
@@ -590,12 +588,9 @@ class GlusterfsVolumeMappedLayout(layout.GlusterfsShareLayoutBase):
             gluster_mgr, snapshot)
         args = ('--xml', 'snapshot', 'delete', backend_snapshot_name,
                 '--mode=script')
-        try:
-            out, err = gluster_mgr.gluster_call(*args)
-        except exception.ProcessExecutionError as exc:
-            LOG.error(_LE("Error deleting snapshot: %s"), exc.stderr)
-            raise exception.GlusterfsException(_("gluster %s failed") %
-                                               ' '.join(args))
+        out, err = gluster_mgr.gluster_call(
+            *args,
+            log=_LE("Error deleting snapshot"))
 
         if not out:
             raise exception.GlusterfsException(
@@ -604,31 +599,14 @@ class GlusterfsVolumeMappedLayout(layout.GlusterfsShareLayoutBase):
             )
 
         outxml = etree.fromstring(out)
-        opret = int(outxml.find('opRet').text)
-        operrno = int(outxml.find('opErrno').text)
-        operrstr = outxml.find('opErrstr').text
-
-        if opret:
-            raise exception.GlusterfsException(
-                _("Deleting snapshot %(snap_id)s of share %(share_id)s failed "
-                  "with %(errno)d: %(errstr)s") % {
-                      'snap_id': snapshot['id'],
-                      'share_id': snapshot['share_id'],
-                      'errno': operrno,
-                      'errstr': operrstr})
+        gluster_mgr.xml_response_check(outxml, args[1:])
 
     def ensure_share(self, context, share, share_server=None):
         """Invoked to ensure that share is exported."""
         gmgr = self._share_manager(share)
         self.gluster_used_vols.add(gmgr.qualified)
 
-        args = ('volume', 'set', gmgr.volume, USER_MANILA_SHARE, share['id'])
-        try:
-            gmgr.gluster_call(*args)
-        except exception.ProcessExecutionError:
-            raise exception.GlusterfsException(
-                _("gluster %(cmd)s failed on %(vol)s") %
-                {'cmd': ' '.join(args), 'vol': gmgr.qualified})
+        gmgr.set_vol_option(USER_MANILA_SHARE, share['id'])
 
     # Debt...
 

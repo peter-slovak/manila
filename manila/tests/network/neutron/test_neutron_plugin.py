@@ -57,6 +57,10 @@ fake_share_network = {
     'name': 'fake name',
     'description': 'fake description',
     'security_services': [],
+    'network_type': 'fake_network_type',
+    'segmentation_id': 1234,
+    'ip_version': 4,
+    'cidr': 'fake_cidr',
 }
 
 fake_share_server = {
@@ -73,6 +77,11 @@ fake_network_allocation = {
     'ip_address': fake_neutron_port['fixed_ips'][0]['ip_address'],
     'mac_address': fake_neutron_port['mac_address'],
     'status': constants.STATUS_ACTIVE,
+    'label': 'user',
+    'network_type': fake_share_network['network_type'],
+    'segmentation_id': fake_share_network['segmentation_id'],
+    'ip_version': fake_share_network['ip_version'],
+    'cidr': fake_share_network['cidr'],
 }
 
 
@@ -388,8 +397,26 @@ class NeutronSingleNetworkPluginTest(test.TestCase):
 
         self.assertEqual(share_network, result)
 
+    def test___update_share_network_net_data_different_values_empty(self):
+        instance = self._get_neutron_single_network_plugin_instance()
+        share_network_input = {
+            'id': 'fake_share_network_id',
+        }
+        share_network_result = {
+            'neutron_net_id': instance.net,
+            'neutron_subnet_id': instance.subnet,
+        }
+        self.mock_object(
+            instance.db, 'share_network_update',
+            mock.Mock(return_value='foo'))
+
+        instance._update_share_network_net_data(
+            self.context, share_network_input)
+
+        instance.db.share_network_update.assert_called_once_with(
+            self.context, share_network_input['id'], share_network_result)
+
     @ddt.data(
-        {'n': 'foo', 's': 'bar'},
         {'n': 'fake_net_id', 's': 'bar'},
         {'n': 'foo', 's': 'fake_subnet_id'})
     @ddt.unpack
@@ -404,12 +431,27 @@ class NeutronSingleNetworkPluginTest(test.TestCase):
             instance.db, 'share_network_update',
             mock.Mock(return_value=share_network))
 
-        result = instance._update_share_network_net_data(
+        self.assertRaises(
+            exception.NetworkBadConfigurationException,
+            instance._update_share_network_net_data,
             self.context, share_network)
+        self.assertFalse(instance.db.share_network_update.called)
 
-        self.assertEqual(share_network, result)
-        instance.db.share_network_update.assert_called_once_with(
-            self.context, share_network['id'], mock.ANY)
+    def test___update_share_network_net_data_nova_net_id_present(self):
+        instance = self._get_neutron_single_network_plugin_instance()
+        share_network = {
+            'id': 'fake_share_network_id',
+            'nova_net_id': 'foo',
+        }
+        self.mock_object(
+            instance.db, 'share_network_update',
+            mock.Mock(return_value=share_network))
+
+        self.assertRaises(
+            exception.NetworkBadConfigurationException,
+            instance._update_share_network_net_data,
+            self.context, share_network)
+        self.assertFalse(instance.db.share_network_update.called)
 
     @mock.patch.object(
         plugin.NeutronNetworkPlugin, "allocate_network", mock.Mock())

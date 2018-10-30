@@ -1,4 +1,4 @@
-# Copyright (c) 2014 Openstack Foundation.
+# Copyright (c) 2014 OpenStack Foundation.
 # Copyright (c) 2015 Tom Barron.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -15,6 +15,7 @@
 
 """Built-in share type properties."""
 
+import re
 
 from oslo_config import cfg
 from oslo_db import exception as db_exception
@@ -81,7 +82,7 @@ def get_all_types(context, inactive=0, search_opts=None):
 
     share_types = db.share_type_get_all(context, inactive, filters=filters)
 
-    for type_name, type_args in six.iteritems(share_types):
+    for type_name, type_args in share_types.items():
         required_extra_specs = {}
         try:
             required_extra_specs = get_valid_required_extra_specs(
@@ -100,7 +101,7 @@ def get_all_types(context, inactive=0, search_opts=None):
         LOG.debug("Searching by: %s", search_opts)
 
         def _check_extra_specs_match(share_type, searchdict):
-            for k, v in six.iteritems(searchdict):
+            for k, v in searchdict.items():
                 if (k not in share_type['extra_specs'].keys()
                         or share_type['extra_specs'][k] != v):
                     return False
@@ -110,9 +111,9 @@ def get_all_types(context, inactive=0, search_opts=None):
         filter_mapping = {'extra_specs': _check_extra_specs_match}
 
         result = {}
-        for type_name, type_args in six.iteritems(share_types):
+        for type_name, type_args in share_types.items():
             # go over all filters in the list
-            for opt, values in six.iteritems(search_opts):
+            for opt, values in search_opts.items():
                 try:
                     filter_func = filter_mapping[opt]
                 except KeyError:
@@ -291,11 +292,11 @@ def share_types_diff(context, share_type_id1, share_type_id2):
             dict1 = {}
         if dict2 is None:
             dict2 = {}
-        for k, v in six.iteritems(dict1):
+        for k, v in dict1.items():
             res[k] = (v, dict2.get(k))
             if k not in dict2 or res[k][0] != res[k][1]:
                 equal = False
-        for k, v in six.iteritems(dict2):
+        for k, v in dict2.items():
             res[k] = (dict1.get(k), v)
             if k not in dict1 or res[k][0] != res[k][1]:
                 equal = False
@@ -318,3 +319,28 @@ def share_types_diff(context, share_type_id1, share_type_id2):
 def get_extra_specs_from_share(share):
     type_id = share.get('share_type_id', None)
     return get_share_type_extra_specs(type_id)
+
+
+def parse_boolean_extra_spec(extra_spec_key, extra_spec_value):
+    """Parse extra spec values of the form '<is> True' or '<is> False'
+
+    This method returns the boolean value of an extra spec value.  If
+    the value does not conform to the standard boolean pattern, it raises
+    an InvalidExtraSpec exception.
+    """
+
+    try:
+        if not isinstance(extra_spec_value, six.string_types):
+            raise ValueError
+
+        match = re.match(r'^<is>\s*(?P<value>True|False)$',
+                         extra_spec_value.strip(),
+                         re.IGNORECASE)
+        if not match:
+            raise ValueError
+        else:
+            return strutils.bool_from_string(match.group('value'), strict=True)
+    except ValueError:
+        msg = (_('Invalid boolean extra spec %(key)s : %(value)s') %
+               {'key': extra_spec_key, 'value': extra_spec_value})
+        raise exception.InvalidExtraSpec(reason=msg)

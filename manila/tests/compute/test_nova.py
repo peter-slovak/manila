@@ -86,6 +86,51 @@ class FakeNovaClient(object):
         self.fixed_ips = self.FixedIPs()
 
 
+@nova.translate_server_exception
+def decorated_by_translate_server_exception(self, context, instance_id, exc):
+    if exc:
+        raise exc(instance_id)
+    else:
+        return 'OK'
+
+
+@ddt.ddt
+class TranslateServerExceptionTestCase(test.TestCase):
+
+    def test_translate_server_exception(self):
+        result = decorated_by_translate_server_exception(
+            'foo_self', 'foo_ctxt', 'foo_instance_id', None)
+        self.assertEqual('OK', result)
+
+    def test_translate_server_exception_not_found(self):
+        self.assertRaises(
+            exception.InstanceNotFound,
+            decorated_by_translate_server_exception,
+            'foo_self', 'foo_ctxt', 'foo_instance_id', nova_exception.NotFound)
+
+    def test_translate_server_exception_bad_request(self):
+        self.assertRaises(
+            exception.InvalidInput,
+            decorated_by_translate_server_exception,
+            'foo_self', 'foo_ctxt', 'foo_instance_id',
+            nova_exception.BadRequest)
+
+    @ddt.data(
+        nova_exception.HTTPNotImplemented,
+        nova_exception.RetryAfterException,
+        nova_exception.Unauthorized,
+        nova_exception.Forbidden,
+        nova_exception.MethodNotAllowed,
+        nova_exception.OverLimit,
+        nova_exception.RateLimit,
+    )
+    def test_translate_server_exception_other_exception(self, exc):
+        self.assertRaises(
+            exception.ManilaException,
+            decorated_by_translate_server_exception,
+            'foo_self', 'foo_ctxt', 'foo_instance_id', exc)
+
+
 @ddt.ddt
 class NovaApiTestCase(test.TestCase):
     def setUp(self):
@@ -102,7 +147,7 @@ class NovaApiTestCase(test.TestCase):
     def test_server_create(self):
         result = self.api.server_create(self.ctx, 'server_name', 'fake_image',
                                         'fake_flavor', None, None, None)
-        self.assertEqual(result['id'], 'created_id')
+        self.assertEqual('created_id', result['id'])
 
     def test_server_delete(self):
         self.mock_object(self.novaclient.servers, 'delete')
@@ -125,6 +170,20 @@ class NovaApiTestCase(test.TestCase):
         self.assertEqual(instance_id, result['id'])
         utils.find_resource.assert_called_once_with(mock.ANY, instance_id)
 
+    def test_server_get_by_name_or_id_failed(self):
+        instance_id = 'instance_id1'
+        server = {'id': instance_id, 'fake_key': 'fake_value'}
+        self.mock_object(utils, 'find_resource',
+                         mock.Mock(return_value=server,
+                                   side_effect=nova_exception.CommandError))
+
+        self.assertRaises(exception.ManilaException,
+                          self.api.server_get_by_name_or_id,
+                          self.ctx, instance_id)
+        utils.find_resource.assert_any_call(mock.ANY, instance_id)
+        utils.find_resource.assert_called_with(mock.ANY, instance_id,
+                                               all_tenants=True)
+
     @ddt.data(
         {'nova_e': nova_exception.NotFound(404),
          'manila_e': exception.InstanceNotFound},
@@ -136,10 +195,6 @@ class NovaApiTestCase(test.TestCase):
         nova.novaclient.side_effect = nova_e
         instance_id = 'instance_id'
         self.assertRaises(manila_e, self.api.server_get, self.ctx, instance_id)
-
-    def test_server_list(self):
-        self.assertEqual([{'id': 'id1'}, {'id': 'id2'}],
-                         self.api.server_list(self.ctx))
 
     def test_server_pause(self):
         self.mock_object(self.novaclient.servers, 'pause')
@@ -202,9 +257,9 @@ class NovaApiTestCase(test.TestCase):
         self.mock_object(cinder, 'cinderclient',
                          mock.Mock(return_value=self.novaclient))
         result = self.api.instance_volumes_list(self.ctx, 'instance_id')
-        self.assertEqual(len(result), 2)
-        self.assertEqual(result[0].id, 'id1')
-        self.assertEqual(result[1].id, 'id2')
+        self.assertEqual(2, len(result))
+        self.assertEqual('id1', result[0].id)
+        self.assertEqual('id2', result[1].id)
 
     def test_server_update(self):
         self.mock_object(self.novaclient.servers, 'update')
@@ -243,7 +298,7 @@ class NovaApiTestCase(test.TestCase):
     def test_fixed_ip_get(self):
         fixed_ip = 'fake_fixed_ip'
         result = self.api.fixed_ip_get(self.ctx, fixed_ip)
-        self.assertTrue(isinstance(result, dict))
+        self.assertIsInstance(result, dict)
         self.assertEqual(fixed_ip, result['address'])
 
     def test_fixed_ip_reserve(self):
@@ -259,7 +314,7 @@ class NovaApiTestCase(test.TestCase):
     def test_network_get(self):
         net_id = 'fake_net_id'
         net = self.api.network_get(self.ctx, net_id)
-        self.assertTrue(isinstance(net, dict))
+        self.assertIsInstance(net, dict)
         self.assertEqual(net_id, net['id'])
 
 

@@ -9,7 +9,7 @@ specs) are not exposed to users -- only Administrators.
 
 Share Types
 -----------
-Refer to the Manila client command-line help for information on how to
+Refer to the manila client command-line help for information on how to
 create a share type and set "extra-spec" key/value pairs for a share type.
 
 Extra-Specs
@@ -37,8 +37,45 @@ enabled by default), the scheduler will only create a share on a backend
 that reports capabilities that match the share type's un-scoped extra-spec
 keys.
 
-Refer to the CapabilitiesFilter for matching operators.  For example, to
-match a boolean capability the extra-spec value would be '<is> True'.
+The CapabilitiesFilter uses the following for matching operators:
+
+* No operator
+  This defaults to doing a python ==. Additionally it will match boolean values.
+
+* **<=, >=, ==, !=**
+
+  This does a float conversion and then uses the python operators as expected.
+
+* **<in>** 
+
+  This either chooses a host that has partially matching string in the capability
+  or chooses a host if it matches any value in a list. For example, if "<in> sse4" 
+  is used, it will match a host that reports capability of "sse4_1" or "sse4_2".
+
+* **<or>**
+
+  This chooses a host that has one of the items specified. If the first word in 
+  the string is <or>, another <or> and value pair can be concatenated. Examples 
+  are "<or> 3", "<or> 3 <or> 5", and "<or> 1 <or> 3 <or> 7". This is for 
+  string values only. 
+
+* **<is>**
+
+  This chooses a host that matches a boolean capability. An example extra-spec value 
+  would be "<is> True".
+
+* **=**
+
+  This does a float conversion and chooses a host that has equal to or greater 
+  than the resource specified. This operator behaves this way for historical
+  reasons.
+
+* **s==, s!=, s>=, s>, s<=, s<**
+
+  The "s" indicates it is a string comparison. These choose a host that satisfies 
+  the comparison of strings in capability and specification. For example, 
+  if "capabilities:replication_type s== dr", a host that reports replication_type of 
+  "dr" will be chosen.
 
 For vendor-specific capabilities (which need to be visible to the
 CapabilityFilter), it is recommended to use the vendor prefix followed
@@ -82,8 +119,19 @@ be created.
   If an array can technically support both thin and thick provisioning in a
   pool, the driver still needs to programmatically determine which to use.
   This should be done by configuring one pool for thin and another pool for
-  thick. So, a Manila pool will always report thin_provisioning as True or
+  thick. So, a manila pool will always report thin_provisioning as True or
   False. Added in Liberty.
+
+* `qos` - indicates that a backend/pool can provide shares using some
+  QoS (Quality of Service) specification. The default value of the qos
+  capability (if a driver doesn't report it) is False. Administrators
+  can make a share type use QoS by setting this extra-spec to '<is> True' and
+  also setting the relevant QoS-related extra specs for the drivers being used.
+  Administrators can prevent a share type from using QoS by setting this
+  extra-spec to '<is> False'. Different drivers have different ways of specifying
+  QoS limits (or guarantees) and this extra spec merely allows the scheduler to
+  filter by pools that either have or don't have QoS support enabled. Added in
+  Mitaka.
 
 Reporting Capabilities
 ----------------------
@@ -113,15 +161,15 @@ example vendor prefix:
         'my_capability_2': True,                 # stats & capabilities
                                                  #/
         'pools': [
-            {'pool_name': 
+            {'pool_name':
                'thin-dedupe-compression pool',   #\
              'total_capacity_gb': 500,           #  mandatory stats for
              'free_capacity_gb': 230,            #  pools
-             'QoS_support': 'False',             # |
              'reserved_percentage': 0,           #/
                                                  #\
              'dedupe': True,                     # common capabilities
              'compression': True,                #
+             'qos': True,                        # this backend supports QoS
              'thin_provisioning': True,          #
              'max_over_subscription_ratio': 10,  # (mandatory for thin)
              'provisioned_capacity_gb': 270,     # (mandatory for thin)
@@ -134,7 +182,7 @@ example vendor prefix:
             {'pool_name': 'thick pool',
              'total_capacity_gb': 1024,
              'free_capacity_gb': 1024,
-             'QoS_support': 'False',
+             'qos': False,
              'reserved_percentage': 0,
              'dedupe': False,
              'compression': False,

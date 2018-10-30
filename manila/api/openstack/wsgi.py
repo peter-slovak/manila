@@ -27,10 +27,12 @@ import webob.exc
 
 from manila.api.openstack import api_version_request as api_version
 from manila.api.openstack import versioned_method
+from manila.common import constants
 from manila import exception
 from manila.i18n import _
 from manila.i18n import _LE
 from manila.i18n import _LI
+from manila import policy
 from manila import wsgi
 
 LOG = log.getLogger(__name__)
@@ -134,9 +136,10 @@ class Request(webob.Request):
         return resources.get(resource_id)
 
     def cache_db_items(self, key, items, item_key='id'):
-        """Allow API methods to store objects from a DB query to be
-        used by API extensions within the same API request.
+        """Cache db items.
 
+        Allow API methods to store objects from a DB query to be
+        used by API extensions within the same API request.
         An instance of this class only lives for the lifetime of a
         single API request, so there's no need to implement full
         cache management.
@@ -144,17 +147,19 @@ class Request(webob.Request):
         self.cache_resource(items, item_key, key)
 
     def get_db_items(self, key):
-        """Allow an API extension to get previously stored objects within
-        the same API request.
+        """Get db item by key.
 
+        Allow an API extension to get previously stored objects within
+        the same API request.
         Note that the object data will be slightly stale.
         """
         return self.cached_resource(key)
 
     def get_db_item(self, key, item_key):
-        """Allow an API extension to get a previously stored object
-        within the same API request.
+        """Get db item by key and item key.
 
+        Allow an API extension to get a previously stored object
+        within the same API request.
         Note that the object data will be slightly stale.
         """
         return self.get_db_items(key).get(item_key)
@@ -259,7 +264,7 @@ class ActionDispatcher(object):
 
 
 class TextDeserializer(ActionDispatcher):
-    """Default request body deserialization"""
+    """Default request body deserialization."""
 
     def deserialize(self, datastring, action='default'):
         return self.dispatch(datastring, action=action)
@@ -282,7 +287,7 @@ class JSONDeserializer(TextDeserializer):
 
 
 class DictSerializer(ActionDispatcher):
-    """Default request body serialization"""
+    """Default request body serialization."""
 
     def serialize(self, data, action='default'):
         return self.dispatch(data, action=action)
@@ -292,7 +297,7 @@ class DictSerializer(ActionDispatcher):
 
 
 class JSONDictSerializer(DictSerializer):
-    """Default JSON request body serialization"""
+    """Default JSON request body serialization."""
 
     def default(self, data):
         return six.b(jsonutils.dumps(data))
@@ -552,7 +557,8 @@ class Resource(wsgi.Application):
     support_api_request_version = True
 
     def __init__(self, controller, action_peek=None, **deserializers):
-        """
+        """init method of Resource.
+
         :param controller: object that implement methods created by routes lib
         :param action_peek: dictionary of routines for peeking into an action
                             request body to determine the desired action
@@ -728,8 +734,8 @@ class Resource(wsgi.Application):
     def __call__(self, request):
         """WSGI method that controls (de)serialization and method dispatch."""
 
-        LOG.info("%(method)s %(url)s" % {"method": request.method,
-                                         "url": request.url})
+        LOG.info(_LI("%(method)s %(url)s") % {"method": request.method,
+                                              "url": request.url})
         if self.support_api_request_version:
             # Set the version of the API requested based on the header
             try:
@@ -1057,7 +1063,7 @@ class Controller(object):
             return object.__getattribute__(self, key)
 
         if (version_meth_dict and
-                    key in object.__getattribute__(self, VER_METHOD_ATTR)):
+                key in object.__getattribute__(self, VER_METHOD_ATTR)):
             return version_select
 
         return object.__getattribute__(self, key)
@@ -1111,6 +1117,43 @@ class Controller(object):
         return decorator
 
     @staticmethod
+    def authorize(arg):
+        """Decorator for checking the policy on API methods.
+
+        Add this decorator to any API method which takes a request object
+        as the first parameter and belongs to a class which inherits from
+        wsgi.Controller. The class must also have a class member called
+        'resource_name' which specifies the resource for the policy check.
+
+        Can be used in any of the following forms
+        @authorize
+        @authorize('my_action_name')
+
+        :param arg: Can either be the function being decorated or a str
+        containing the 'action' for the policy check. If no action name is
+        provided, the function name is assumed to be the action name.
+        """
+        action_name = None
+
+        def decorator(f):
+            @functools.wraps(f)
+            def wrapper(self, req, *args, **kwargs):
+                action = action_name or f.__name__
+                context = req.environ['manila.context']
+                try:
+                    policy.check_policy(context, self.resource_name, action)
+                except exception.PolicyNotAuthorized:
+                    raise webob.exc.HTTPForbidden()
+                return f(self, req, *args, **kwargs)
+            return wrapper
+
+        if callable(arg):
+            return decorator(arg)
+        else:
+            action_name = arg
+            return decorator
+
+    @staticmethod
     def is_valid_body(body, entity_name):
         if not (body and entity_name in body):
             return False
@@ -1126,6 +1169,83 @@ class Controller(object):
             return False
 
         return True
+
+
+class AdminActionsMixin(object):
+    """Mixin class for API controllers with admin actions."""
+
+    body_attributes = {
+        'status': 'reset_status',
+        'replica_state': 'reset_replica_state',
+        'task_state': 'reset_task_state',
+    }
+
+    valid_statuses = {
+        'status': set([
+            constants.STATUS_CREATING,
+            constants.STATUS_AVAILABLE,
+            constants.STATUS_DELETING,
+            constants.STATUS_ERROR,
+            constants.STATUS_ERROR_DELETING,
+        ]),
+        'replica_state': set([
+            constants.REPLICA_STATE_ACTIVE,
+            constants.REPLICA_STATE_IN_SYNC,
+            constants.REPLICA_STATE_OUT_OF_SYNC,
+            constants.STATUS_ERROR,
+        ]),
+        'task_state': set(constants.TASK_STATE_STATUSES),
+    }
+
+    def _update(self, *args, **kwargs):
+        raise NotImplementedError()
+
+    def _get(self, *args, **kwargs):
+        raise NotImplementedError()
+
+    def _delete(self, *args, **kwargs):
+        raise NotImplementedError()
+
+    def validate_update(self, body, status_attr='status'):
+        update = {}
+        try:
+            update[status_attr] = body[status_attr]
+        except (TypeError, KeyError):
+            msg = _("Must specify '%s'") % status_attr
+            raise webob.exc.HTTPBadRequest(explanation=msg)
+        if update[status_attr] not in self.valid_statuses[status_attr]:
+            expl = (_("Invalid state. Valid states: %s.") %
+                    ", ".join(self.valid_statuses[status_attr]))
+            raise webob.exc.HTTPBadRequest(explanation=expl)
+        return update
+
+    @Controller.authorize('reset_status')
+    def _reset_status(self, req, id, body, status_attr='status'):
+        """Reset the status_attr specified on the resource."""
+        context = req.environ['manila.context']
+        body_attr = self.body_attributes[status_attr]
+        update = self.validate_update(
+            body.get(body_attr, body.get('-'.join(('os', body_attr)))),
+            status_attr=status_attr)
+        msg = "Updating %(resource)s '%(id)s' with '%(update)r'"
+        LOG.debug(msg, {'resource': self.resource_name, 'id': id,
+                        'update': update})
+        try:
+            self._update(context, id, update)
+        except exception.NotFound as e:
+            raise webob.exc.HTTPNotFound(six.text_type(e))
+        return webob.Response(status_int=202)
+
+    @Controller.authorize('force_delete')
+    def _force_delete(self, req, id, body):
+        """Delete a resource, bypassing the check for status."""
+        context = req.environ['manila.context']
+        try:
+            resource = self._get(context, id)
+        except exception.NotFound as e:
+            raise webob.exc.HTTPNotFound(six.text_type(e))
+        self._delete(context, resource, force=True)
+        return webob.Response(status_int=202)
 
 
 class Fault(webob.exc.HTTPException):
@@ -1220,7 +1340,6 @@ class OverLimitFault(webob.exc.HTTPException):
         error format.
         """
         content_type = request.best_match_content_type()
-        metadata = {"attributes": {"overLimitFault": "code"}}
 
         serializer = {
             'application/json': JSONDictSerializer(),

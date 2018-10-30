@@ -33,12 +33,13 @@ from oslo_config import cfg
 from oslo_log import log
 from oslo_service import service
 from oslo_utils import excutils
+from oslo_utils import netutils
 from paste import deploy
 import routes.middleware
-import six
 import webob.dec
 import webob.exc
 
+from manila.common import config
 from manila import exception
 from manila.i18n import _
 from manila.i18n import _LE
@@ -64,15 +65,12 @@ socket_opts = [
                help="Sets the value of TCP_KEEPCNT for each "
                     "server socket. Not supported on OS X."),
     cfg.StrOpt('ssl_ca_file',
-               default=None,
                help="CA certificate file to use to verify "
                     "connecting clients."),
     cfg.StrOpt('ssl_cert_file',
-               default=None,
                help="Certificate file to use when starting "
                     "the server securely."),
     cfg.StrOpt('ssl_key_file',
-               default=None,
                help="Private key file to use when starting "
                     "the server securely."),
 ]
@@ -202,7 +200,17 @@ class Server(service.ServiceBase):
         # give bad file descriptor error. So duplicating the socket object,
         # to keep file descriptor usable.
 
+        config.set_middleware_defaults()
         dup_socket = self._socket.dup()
+
+        netutils.set_tcp_keepalive(
+            dup_socket,
+            tcp_keepalive=CONF.tcp_keepalive,
+            tcp_keepidle=CONF.tcp_keepidle,
+            tcp_keepalive_interval=CONF.tcp_keepalive_interval,
+            tcp_keepalive_count=CONF.tcp_keepalive_count
+        )
+
         if self._use_ssl:
             try:
                 ssl_kwargs = {
@@ -221,10 +229,6 @@ class Server(service.ServiceBase):
 
                 dup_socket.setsockopt(socket.SOL_SOCKET,
                                       socket.SO_REUSEADDR, 1)
-
-                # sockets can hang around forever without keepalive
-                dup_socket.setsockopt(socket.SOL_SOCKET,
-                                      socket.SO_KEEPALIVE, 1)
 
             except Exception:
                 with excutils.save_and_reraise_exception():
@@ -443,7 +447,7 @@ class Debug(Middleware):
         resp = req.get_response(self.application)
 
         print(('*' * 40) + ' RESPONSE HEADERS')
-        for (key, value) in six.iteritems(resp.headers):
+        for (key, value) in resp.headers.items():
             print(key, '=', value)
         print()
 

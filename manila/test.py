@@ -31,10 +31,8 @@ from oslo_concurrency import lockutils
 from oslo_config import cfg
 from oslo_config import fixture as config_fixture
 import oslo_i18n
-from oslo_log import log
 from oslo_messaging import conffixture as messaging_conffixture
 import oslotest.base as base_test
-import six
 
 from manila.db import migration
 from manila.db.sqlalchemy import api as db_api
@@ -52,8 +50,6 @@ test_opts = [
 
 CONF = cfg.CONF
 CONF.register_opts(test_opts)
-
-LOG = log.getLogger(__name__)
 
 _DB_CACHE = None
 
@@ -144,6 +140,8 @@ class TestCase(base_test.BaseTestCase):
         self.useFixture(self.messaging_conf)
         rpc.init(CONF)
 
+        mock.patch('keystoneauth1.loading.load_auth_from_conf_options').start()
+
         fake_notifier.stub_notifier(self)
 
     def tearDown(self):
@@ -174,7 +172,7 @@ class TestCase(base_test.BaseTestCase):
 
     def flags(self, **kw):
         """Override flag variables for a test."""
-        for k, v in six.iteritems(kw):
+        for k, v in kw.items():
             CONF.set_override(k, v)
 
     def start_service(self, name, host=None, **kwargs):
@@ -252,7 +250,7 @@ class TestCase(base_test.BaseTestCase):
                 error = abs(float(d1value) - float(d2value))
                 within_tolerance = error <= tolerance
             except (ValueError, TypeError):
-                # If both values aren't convertable to float, just ignore
+                # If both values aren't convertible to float, just ignore
                 # ValueError if arg is a str, TypeError if it's something else
                 # (like None)
                 within_tolerance = False
@@ -328,7 +326,7 @@ class TestCase(base_test.BaseTestCase):
         try:
             f = super(TestCase, self).assertIsInstance
         except AttributeError:
-            self.assertTrue(isinstance(a, b))
+            self.assertIsInstance(a, b)
         else:
             f(a, b, *args, **kwargs)
 
@@ -344,8 +342,8 @@ class TestCase(base_test.BaseTestCase):
     def _dict_from_object(self, obj, ignored_keys):
         if ignored_keys is None:
             ignored_keys = []
-        return dict([(k, v) for k, v in obj.iteritems()
-                     if k not in ignored_keys])
+        return {k: v for k, v in obj.iteritems()
+                if k not in ignored_keys}
 
     def _assertEqualListsOfObjects(self, objs1, objs2, ignored_keys=None):
         obj_to_dict = lambda o: self._dict_from_object(o, ignored_keys)

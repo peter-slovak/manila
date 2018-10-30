@@ -24,10 +24,28 @@ class AvailabilityZonesTest(base.BaseSharesTest):
         self.assertTrue(len(availability_zones) > 0)
         keys = ("created_at", "updated_at", "name", "id")
         for az in availability_zones:
+            self.assertEqual(len(keys), len(az))
             for key in keys:
                 self.assertIn(key, az)
 
     @test.attr(type=["smoke", "gate"])
-    def test_list_availability_zones_extension(self):
+    def test_list_availability_zones_legacy_url_api_v1(self):
+        # NOTE(vponomaryov): remove this test with removal of availability zone
+        # extension url support.
         azs = self.shares_client.list_availability_zones()
+        self._list_availability_zones_assertions(azs)
+
+    @test.attr(type=["smoke", "gate"])
+    @base.skip_if_microversion_not_supported("2.6")
+    def test_list_availability_zones_legacy_url_api_v2(self):
+        # NOTE(vponomaryov): remove this test with removal of availability zone
+        # extension url support.
+        azs = self.shares_v2_client.list_availability_zones(
+            url='os-availability-zone', version='2.6')
+        self._list_availability_zones_assertions(azs)
+
+    @test.attr(type=["smoke", "gate"])
+    @base.skip_if_microversion_not_supported("2.7")
+    def test_list_availability_zones(self):
+        azs = self.shares_v2_client.list_availability_zones(version='2.7')
         self._list_availability_zones_assertions(azs)

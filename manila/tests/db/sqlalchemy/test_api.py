@@ -47,7 +47,7 @@ security_service_dict = {
 class BaseDatabaseAPITestCase(test.TestCase):
     def _check_fields(self, expected, actual):
         for key in expected:
-            self.assertEqual(actual[key], expected[key])
+            self.assertEqual(expected[key], actual[key])
 
 
 @ddt.ddt
@@ -92,43 +92,33 @@ class ShareAccessDatabaseAPITestCase(test.TestCase):
         super(ShareAccessDatabaseAPITestCase, self).setUp()
         self.ctxt = context.get_admin_context()
 
-    @ddt.data(
-        {'statuses': (constants.STATUS_ACTIVE, constants.STATUS_ACTIVE,
-                      constants.STATUS_ACTIVE),
-         'valid': constants.STATUS_ACTIVE},
-        {'statuses': (constants.STATUS_ACTIVE, constants.STATUS_ACTIVE,
-                      constants.STATUS_NEW),
-         'valid': constants.STATUS_NEW},
-        {'statuses': (constants.STATUS_ACTIVE, constants.STATUS_ACTIVE,
-                      constants.STATUS_ERROR),
-         'valid': constants.STATUS_ERROR},
-        {'statuses': (constants.STATUS_DELETING, constants.STATUS_DELETED,
-                      constants.STATUS_ERROR),
-         'valid': constants.STATUS_ERROR},
-        {'statuses': (constants.STATUS_DELETING, constants.STATUS_DELETED,
-                      constants.STATUS_ACTIVE),
-         'valid': constants.STATUS_DELETING},
-        {'statuses': (constants.STATUS_DELETED, constants.STATUS_DELETED,
-                      constants.STATUS_DELETED),
-         'valid': constants.STATUS_DELETED},
-    )
-    @ddt.unpack
-    def test_share_access_state(self, statuses, valid):
+    def test_share_instance_update_access_status(self):
         share = db_utils.create_share()
-        db_utils.create_share_instance(share_id=share['id'])
-        db_utils.create_share_instance(share_id=share['id'])
+        share_instance = db_utils.create_share_instance(share_id=share['id'])
+        db_utils.create_access(share_id=share_instance['share_id'])
 
-        share = db_api.share_get(self.ctxt, share['id'])
-        access = db_utils.create_access(state=constants.STATUS_ACTIVE,
-                                        share_id=share['id'])
+        db_api.share_instance_update_access_status(
+            self.ctxt,
+            share_instance['id'],
+            constants.STATUS_ACTIVE
+        )
 
-        for index, mapping in enumerate(access.instance_mappings):
-            db_api.share_instance_access_update_state(
-                self.ctxt, mapping['id'], statuses[index])
+        result = db_api.share_instance_get(self.ctxt, share_instance['id'])
 
-        access = db_api.share_access_get(self.ctxt, access['id'])
+        self.assertEqual(constants.STATUS_ACTIVE,
+                         result['access_rules_status'])
 
-        self.assertEqual(valid, access.state)
+    def test_share_instance_update_access_status_invalid(self):
+        share = db_utils.create_share()
+        share_instance = db_utils.create_share_instance(share_id=share['id'])
+        db_utils.create_access(share_id=share_instance['share_id'])
+
+        self.assertRaises(
+            db_exception.DBError,
+            db_api.share_instance_update_access_status,
+            self.ctxt, share_instance['id'],
+            "fake_status"
+        )
 
 
 @ddt.ddt
@@ -227,6 +217,344 @@ class ShareDatabaseAPITestCase(test.TestCase):
         self.assertEqual(2, len(actual_result))
         self.assertEqual(shares[0]['id'], actual_result[1]['id'])
 
+    @ddt.data(None, 'writable')
+    def test_share_get_has_replicas_field(self, replication_type):
+        share = db_utils.create_share(replication_type=replication_type)
+
+        db_share = db_api.share_get(self.ctxt, share['id'])
+
+        self.assertTrue('has_replicas' in db_share)
+
+    @ddt.data({'with_share_data': False, 'with_share_server': False},
+              {'with_share_data': False, 'with_share_server': True},
+              {'with_share_data': True, 'with_share_server': False},
+              {'with_share_data': True, 'with_share_server': True})
+    @ddt.unpack
+    def test_share_replicas_get_all(self, with_share_data,
+                                    with_share_server):
+        share_server = db_utils.create_share_server()
+        share_1 = db_utils.create_share()
+        share_2 = db_utils.create_share()
+        db_utils.create_share_replica(
+            replica_state=constants.REPLICA_STATE_ACTIVE,
+            share_id=share_1['id'],
+            share_server_id=share_server['id'])
+        db_utils.create_share_replica(
+            replica_state=constants.REPLICA_STATE_IN_SYNC,
+            share_id=share_1['id'],
+            share_server_id=share_server['id'])
+        db_utils.create_share_replica(
+            replica_state=constants.REPLICA_STATE_OUT_OF_SYNC,
+            share_id=share_2['id'],
+            share_server_id=share_server['id'])
+        db_utils.create_share_replica(share_id=share_2['id'])
+        expected_ss_keys = {
+            'backend_details', 'host', 'id',
+            'share_network_id', 'status',
+        }
+        expected_share_keys = {
+            'project_id', 'share_type_id', 'display_name',
+            'name', 'share_proto', 'is_public',
+            'source_cgsnapshot_member_id',
+        }
+        session = db_api.get_session()
+
+        with session.begin():
+            share_replicas = db_api.share_replicas_get_all(
+                self.ctxt, with_share_server=with_share_server,
+                with_share_data=with_share_data, session=session)
+
+            self.assertEqual(3, len(share_replicas))
+            for replica in share_replicas:
+                if with_share_server:
+                    self.assertTrue(expected_ss_keys.issubset(
+                        replica['share_server'].keys()))
+                else:
+                    self.assertFalse('share_server' in replica.keys())
+                    self.assertEqual(
+                        with_share_data,
+                        expected_share_keys.issubset(replica.keys()))
+
+    @ddt.data({'with_share_data': False, 'with_share_server': False},
+              {'with_share_data': False, 'with_share_server': True},
+              {'with_share_data': True, 'with_share_server': False},
+              {'with_share_data': True, 'with_share_server': True})
+    @ddt.unpack
+    def test_share_replicas_get_all_by_share(self, with_share_data,
+                                             with_share_server):
+        share_server = db_utils.create_share_server()
+        share = db_utils.create_share()
+        db_utils.create_share_replica(
+            replica_state=constants.REPLICA_STATE_ACTIVE,
+            share_id=share['id'],
+            share_server_id=share_server['id'])
+        db_utils.create_share_replica(
+            replica_state=constants.REPLICA_STATE_IN_SYNC,
+            share_id=share['id'],
+            share_server_id=share_server['id'])
+        db_utils.create_share_replica(
+            replica_state=constants.REPLICA_STATE_OUT_OF_SYNC,
+            share_id=share['id'],
+            share_server_id=share_server['id'])
+        expected_ss_keys = {
+            'backend_details', 'host', 'id',
+            'share_network_id', 'status',
+        }
+        expected_share_keys = {
+            'project_id', 'share_type_id', 'display_name',
+            'name', 'share_proto', 'is_public',
+            'source_cgsnapshot_member_id',
+        }
+        session = db_api.get_session()
+
+        with session.begin():
+            share_replicas = db_api.share_replicas_get_all_by_share(
+                self.ctxt, share['id'],
+                with_share_server=with_share_server,
+                with_share_data=with_share_data, session=session)
+
+            self.assertEqual(3, len(share_replicas))
+            for replica in share_replicas:
+                if with_share_server:
+                    self.assertTrue(expected_ss_keys.issubset(
+                        replica['share_server'].keys()))
+                else:
+                    self.assertFalse('share_server' in replica.keys())
+                self.assertEqual(with_share_data,
+                                 expected_share_keys.issubset(replica.keys()))
+
+    def test_share_replicas_get_available_active_replica(self):
+        share_server = db_utils.create_share_server()
+        share_1 = db_utils.create_share()
+        share_2 = db_utils.create_share()
+        share_3 = db_utils.create_share()
+        db_utils.create_share_replica(
+            id='Replica1',
+            share_id=share_1['id'],
+            status=constants.STATUS_AVAILABLE,
+            replica_state=constants.REPLICA_STATE_ACTIVE,
+            share_server_id=share_server['id'])
+        db_utils.create_share_replica(
+            id='Replica2',
+            status=constants.STATUS_AVAILABLE,
+            share_id=share_1['id'],
+            replica_state=constants.REPLICA_STATE_ACTIVE,
+            share_server_id=share_server['id'])
+        db_utils.create_share_replica(
+            id='Replica3',
+            status=constants.STATUS_AVAILABLE,
+            share_id=share_2['id'],
+            replica_state=constants.REPLICA_STATE_ACTIVE)
+        db_utils.create_share_replica(
+            id='Replica4',
+            status=constants.STATUS_ERROR,
+            share_id=share_2['id'],
+            replica_state=constants.REPLICA_STATE_ACTIVE)
+        db_utils.create_share_replica(
+            id='Replica5',
+            status=constants.STATUS_AVAILABLE,
+            share_id=share_2['id'],
+            replica_state=constants.REPLICA_STATE_IN_SYNC)
+        db_utils.create_share_replica(
+            id='Replica6',
+            share_id=share_3['id'],
+            status=constants.STATUS_AVAILABLE,
+            replica_state=constants.REPLICA_STATE_IN_SYNC)
+        session = db_api.get_session()
+        expected_ss_keys = {
+            'backend_details', 'host', 'id',
+            'share_network_id', 'status',
+        }
+        expected_share_keys = {
+            'project_id', 'share_type_id', 'display_name',
+            'name', 'share_proto', 'is_public',
+            'source_cgsnapshot_member_id',
+        }
+
+        with session.begin():
+            replica_share_1 = (
+                db_api.share_replicas_get_available_active_replica(
+                    self.ctxt, share_1['id'], with_share_server=True,
+                    session=session)
+            )
+            replica_share_2 = (
+                db_api.share_replicas_get_available_active_replica(
+                    self.ctxt, share_2['id'], with_share_data=True,
+                    session=session)
+            )
+            replica_share_3 = (
+                db_api.share_replicas_get_available_active_replica(
+                    self.ctxt, share_3['id'], session=session)
+            )
+
+            self.assertIn(replica_share_1.get('id'), ['Replica1', 'Replica2'])
+            self.assertTrue(expected_ss_keys.issubset(
+                replica_share_1['share_server'].keys()))
+            self.assertFalse(
+                expected_share_keys.issubset(replica_share_1.keys()))
+            self.assertEqual(replica_share_2.get('id'), 'Replica3')
+            self.assertFalse(replica_share_2['share_server'])
+            self.assertTrue(
+                expected_share_keys.issubset(replica_share_2.keys()))
+            self.assertIsNone(replica_share_3)
+
+    def test_share_replicas_get_active_replicas_by_share(self):
+        db_utils.create_share_replica(
+            id='Replica1',
+            share_id='FAKE_SHARE_ID1',
+            status=constants.STATUS_AVAILABLE,
+            replica_state=constants.REPLICA_STATE_ACTIVE)
+        db_utils.create_share_replica(
+            id='Replica2',
+            status=constants.STATUS_AVAILABLE,
+            share_id='FAKE_SHARE_ID1',
+            replica_state=constants.REPLICA_STATE_ACTIVE)
+        db_utils.create_share_replica(
+            id='Replica3',
+            status=constants.STATUS_AVAILABLE,
+            share_id='FAKE_SHARE_ID2',
+            replica_state=constants.REPLICA_STATE_ACTIVE)
+        db_utils.create_share_replica(
+            id='Replica4',
+            status=constants.STATUS_ERROR,
+            share_id='FAKE_SHARE_ID2',
+            replica_state=constants.REPLICA_STATE_ACTIVE)
+        db_utils.create_share_replica(
+            id='Replica5',
+            status=constants.STATUS_AVAILABLE,
+            share_id='FAKE_SHARE_ID2',
+            replica_state=constants.REPLICA_STATE_IN_SYNC)
+        db_utils.create_share_replica(
+            id='Replica6',
+            share_id='FAKE_SHARE_ID3',
+            status=constants.STATUS_AVAILABLE,
+            replica_state=constants.REPLICA_STATE_IN_SYNC)
+
+        def get_active_replica_ids(share_id):
+            active_replicas = (
+                db_api.share_replicas_get_active_replicas_by_share(
+                    self.ctxt, share_id)
+            )
+            return [r['id'] for r in active_replicas]
+
+        active_ids_shr1 = get_active_replica_ids('FAKE_SHARE_ID1')
+        active_ids_shr2 = get_active_replica_ids('FAKE_SHARE_ID2')
+        active_ids_shr3 = get_active_replica_ids('FAKE_SHARE_ID3')
+
+        self.assertEqual(active_ids_shr1, ['Replica1', 'Replica2'])
+        self.assertEqual(active_ids_shr2, ['Replica3', 'Replica4'])
+        self.assertEqual([], active_ids_shr3)
+
+    def test_share_replica_get_exception(self):
+        replica = db_utils.create_share_replica(share_id='FAKE_SHARE_ID')
+
+        self.assertRaises(exception.ShareReplicaNotFound,
+                          db_api.share_replica_get,
+                          self.ctxt, replica['id'])
+
+    def test_share_replica_get_without_share_data(self):
+        share = db_utils.create_share()
+        replica = db_utils.create_share_replica(
+            share_id=share['id'],
+            replica_state=constants.REPLICA_STATE_ACTIVE)
+        expected_extra_keys = {
+            'project_id', 'share_type_id', 'display_name',
+            'name', 'share_proto', 'is_public',
+            'source_cgsnapshot_member_id',
+        }
+
+        share_replica = db_api.share_replica_get(self.ctxt, replica['id'])
+
+        self.assertIsNotNone(share_replica['replica_state'])
+        self.assertEqual(share['id'], share_replica['share_id'])
+        self.assertFalse(expected_extra_keys.issubset(share_replica.keys()))
+
+    def test_share_replica_get_with_share_data(self):
+        share = db_utils.create_share()
+        replica = db_utils.create_share_replica(
+            share_id=share['id'],
+            replica_state=constants.REPLICA_STATE_ACTIVE)
+        expected_extra_keys = {
+            'project_id', 'share_type_id', 'display_name',
+            'name', 'share_proto', 'is_public',
+            'source_cgsnapshot_member_id',
+        }
+
+        share_replica = db_api.share_replica_get(
+            self.ctxt, replica['id'], with_share_data=True)
+
+        self.assertIsNotNone(share_replica['replica_state'])
+        self.assertEqual(share['id'], share_replica['share_id'])
+        self.assertTrue(expected_extra_keys.issubset(share_replica.keys()))
+
+    def test_share_replica_get_with_share_server(self):
+        session = db_api.get_session()
+        share_server = db_utils.create_share_server()
+        share = db_utils.create_share()
+        replica = db_utils.create_share_replica(
+            share_id=share['id'],
+            replica_state=constants.REPLICA_STATE_ACTIVE,
+            share_server_id=share_server['id']
+        )
+        expected_extra_keys = {
+            'backend_details', 'host', 'id',
+            'share_network_id', 'status',
+        }
+        with session.begin():
+            share_replica = db_api.share_replica_get(
+                self.ctxt, replica['id'], with_share_server=True,
+                session=session)
+
+            self.assertIsNotNone(share_replica['replica_state'])
+            self.assertEqual(
+                share_server['id'], share_replica['share_server_id'])
+            self.assertTrue(expected_extra_keys.issubset(
+                share_replica['share_server'].keys()))
+
+    def test_share_replica_update(self):
+        share = db_utils.create_share()
+        replica = db_utils.create_share_replica(
+            share_id=share['id'], replica_state=constants.REPLICA_STATE_ACTIVE)
+
+        updated_replica = db_api.share_replica_update(
+            self.ctxt, replica['id'],
+            {'replica_state': constants.REPLICA_STATE_OUT_OF_SYNC})
+
+        self.assertEqual(constants.REPLICA_STATE_OUT_OF_SYNC,
+                         updated_replica['replica_state'])
+
+    def test_share_replica_delete(self):
+        share = db_utils.create_share()
+        share = db_api.share_get(self.ctxt, share['id'])
+        replica = db_utils.create_share_replica(
+            share_id=share['id'], replica_state=constants.REPLICA_STATE_ACTIVE)
+
+        self.assertEqual(1, len(
+            db_api.share_replicas_get_all_by_share(self.ctxt, share['id'])))
+
+        db_api.share_replica_delete(self.ctxt, replica['id'])
+
+        self.assertEqual(
+            [], db_api.share_replicas_get_all_by_share(self.ctxt, share['id']))
+
+    def test_share_instance_access_copy(self):
+        share = db_utils.create_share()
+        rules = []
+        for i in range(0, 5):
+            rules.append(db_utils.create_access(share_id=share['id']))
+
+        instance = db_utils.create_share_instance(share_id=share['id'])
+
+        share_access_rules = db_api.share_instance_access_copy(
+            self.ctxt, share['id'], instance['id'])
+        share_access_rule_ids = [a['id'] for a in share_access_rules]
+
+        self.assertEqual(5, len(share_access_rules))
+        for rule_id in share_access_rule_ids:
+            self.assertIsNotNone(
+                db_api.share_instance_access_get(
+                    self.ctxt, rule_id, instance['id']))
+
 
 @ddt.ddt
 class ConsistencyGroupDatabaseAPITestCase(test.TestCase):
@@ -321,6 +649,20 @@ class ConsistencyGroupDatabaseAPITestCase(test.TestCase):
         self.assertEqual(1, len(cgs))
         cg = cgs[0]
         self.assertEqual(2, len(dict(cg).keys()))
+        self.assertEqual(expected_cg['id'], cg['id'])
+        self.assertEqual(expected_cg['name'], cg['name'])
+
+    def test_consistency_group_get_all_by_share_server(self):
+        fake_server = 123
+        expected_cg = db_utils.create_consistency_group(
+            share_server_id=fake_server)
+        db_utils.create_consistency_group()
+
+        cgs = db_api.consistency_group_get_all_by_share_server(self.ctxt,
+                                                               fake_server)
+
+        self.assertEqual(1, len(cgs))
+        cg = cgs[0]
         self.assertEqual(expected_cg['id'], cg['id'])
         self.assertEqual(expected_cg['name'], cg['name'])
 
@@ -513,12 +855,59 @@ class ConsistencyGroupDatabaseAPITestCase(test.TestCase):
         self.assertEqual(constants.STATUS_AVAILABLE, member['status'])
 
 
+@ddt.ddt
 class ShareSnapshotDatabaseAPITestCase(test.TestCase):
 
     def setUp(self):
         """Run before each test."""
         super(ShareSnapshotDatabaseAPITestCase, self).setUp()
         self.ctxt = context.get_admin_context()
+
+        self.share_instances = [
+            db_utils.create_share_instance(
+                status=constants.STATUS_REPLICATION_CHANGE,
+                share_id='fake_share_id_1'),
+            db_utils.create_share_instance(
+                status=constants.STATUS_AVAILABLE,
+                share_id='fake_share_id_1'),
+            db_utils.create_share_instance(
+                status=constants.STATUS_ERROR_DELETING,
+                share_id='fake_share_id_2'),
+            db_utils.create_share_instance(
+                status=constants.STATUS_MANAGING,
+                share_id='fake_share_id_2'),
+        ]
+        self.share_1 = db_utils.create_share(
+            id='fake_share_id_1', instances=self.share_instances[0:2])
+        self.share_2 = db_utils.create_share(
+            id='fake_share_id_2', instances=self.share_instances[2:-1])
+        self.snapshot_instances = [
+            db_utils.create_snapshot_instance(
+                'fake_snapshot_id_1',
+                status=constants.STATUS_CREATING,
+                share_instance_id=self.share_instances[0]['id']),
+            db_utils.create_snapshot_instance(
+                'fake_snapshot_id_1',
+                status=constants.STATUS_ERROR,
+                share_instance_id=self.share_instances[1]['id']),
+            db_utils.create_snapshot_instance(
+                'fake_snapshot_id_1',
+                status=constants.STATUS_DELETING,
+                share_instance_id=self.share_instances[2]['id']),
+            db_utils.create_snapshot_instance(
+                'fake_snapshot_id_2',
+                status=constants.STATUS_AVAILABLE,
+                id='fake_snapshot_instance_id',
+                provider_location='hogsmeade:snapshot1',
+                progress='87%',
+                share_instance_id=self.share_instances[3]['id']),
+        ]
+        self.snapshot_1 = db_utils.create_snapshot(
+            id='fake_snapshot_id_1', share_id=self.share_1['id'],
+            instances=self.snapshot_instances[0:3])
+        self.snapshot_2 = db_utils.create_snapshot(
+            id='fake_snapshot_id_2', share_id=self.share_2['id'],
+            instances=self.snapshot_instances[3:4])
 
     def test_create(self):
         share = db_utils.create_share(size=1)
@@ -555,12 +944,119 @@ class ShareSnapshotDatabaseAPITestCase(test.TestCase):
         self.assertIn('share_name', instance_dict)
         self.assertIn('share_id', instance_dict)
 
+    @ddt.data(None, constants.STATUS_ERROR)
+    def test_share_snapshot_instance_get_all_with_filters_some(self, status):
+        expected_status = status or (constants.STATUS_CREATING,
+                                     constants.STATUS_DELETING)
+        expected_number = 1 if status else 3
+        filters = {
+            'snapshot_ids': 'fake_snapshot_id_1',
+            'statuses':  expected_status
+        }
+        instances = db_api.share_snapshot_instance_get_all_with_filters(
+            self.ctxt, filters)
+
+        for instance in instances:
+            self.assertEqual('fake_snapshot_id_1', instance['snapshot_id'])
+            self.assertTrue(instance['status'] in filters['statuses'])
+
+        self.assertEqual(expected_number, len(instances))
+
+    def test_share_snapshot_instance_get_all_with_filters_all_filters(self):
+        filters = {
+            'snapshot_ids': 'fake_snapshot_id_2',
+            'instance_ids': 'fake_snapshot_instance_id',
+            'statuses': constants.STATUS_AVAILABLE,
+            'share_instance_ids': self.share_instances[3]['id'],
+        }
+        instances = db_api.share_snapshot_instance_get_all_with_filters(
+            self.ctxt, filters, with_share_data=True)
+        self.assertEqual(1, len(instances))
+        self.assertEqual('fake_snapshot_instance_id', instances[0]['id'])
+        self.assertEqual(
+            self.share_2['id'], instances[0]['share_instance']['share_id'])
+
+    def test_share_snapshot_instance_get_all_with_filters_wrong_filters(self):
+        filters = {
+            'some_key': 'some_value',
+            'some_other_key': 'some_other_value',
+        }
+        instances = db_api.share_snapshot_instance_get_all_with_filters(
+            self.ctxt, filters)
+        self.assertEqual(6, len(instances))
+
+    def test_share_snapshot_instance_create(self):
+        snapshot = db_utils.create_snapshot(with_share=True)
+        share = snapshot['share']
+        share_instance = db_utils.create_share_instance(share_id=share['id'])
+        values = {
+            'snapshot_id': snapshot['id'],
+            'share_instance_id': share_instance['id'],
+            'status': constants.STATUS_MANAGING,
+            'progress': '88%',
+            'provider_location': 'whomping_willow',
+        }
+
+        actual_result = db_api.share_snapshot_instance_create(
+            self.ctxt, snapshot['id'], values)
+
+        snapshot = db_api.share_snapshot_get(self.ctxt, snapshot['id'])
+
+        self.assertSubDictMatch(values, actual_result.to_dict())
+        self.assertEqual(2, len(snapshot['instances']))
+
+    def test_share_snapshot_instance_update(self):
+        snapshot = db_utils.create_snapshot(with_share=True)
+
+        values = {
+            'snapshot_id': snapshot['id'],
+            'status': constants.STATUS_ERROR,
+            'progress': '18%',
+            'provider_location': 'godrics_hollow',
+        }
+
+        actual_result = db_api.share_snapshot_instance_update(
+            self.ctxt, snapshot['instance']['id'], values)
+
+        self.assertSubDictMatch(values, actual_result.to_dict())
+
+    @ddt.data(2, 1)
+    def test_share_snapshot_instance_delete(self, instances):
+        snapshot = db_utils.create_snapshot(with_share=True)
+        first_instance_id = snapshot['instance']['id']
+        if instances > 1:
+            instance = db_utils.create_snapshot_instance(
+                snapshot['id'],
+                share_instance_id=snapshot['share']['instance']['id'])
+        else:
+            instance = snapshot['instance']
+
+        retval = db_api.share_snapshot_instance_delete(
+            self.ctxt, instance['id'])
+
+        self.assertIsNone(retval)
+        if instances == 1:
+            self.assertRaises(exception.ShareSnapshotNotFound,
+                              db_api.share_snapshot_get,
+                              self.ctxt, snapshot['id'])
+        else:
+            snapshot = db_api.share_snapshot_get(self.ctxt, snapshot['id'])
+            self.assertEqual(1, len(snapshot['instances']))
+            self.assertEqual(first_instance_id, snapshot['instance']['id'])
+
+    def test_share_snapshot_destroy_has_instances(self):
+        snapshot = db_utils.create_snapshot(with_share=True)
+
+        self.assertRaises(exception.InvalidShareSnapshot,
+                          db_api.share_snapshot_destroy,
+                          context.get_admin_context(),
+                          snapshot['id'])
+
 
 class ShareExportLocationsDatabaseAPITestCase(test.TestCase):
 
     def setUp(self):
-        """Run before each test."""
-        super(ShareExportLocationsDatabaseAPITestCase, self).setUp()
+        super(self.__class__, self).setUp()
         self.ctxt = context.get_admin_context()
 
     def test_update_valid_order(self):
@@ -590,6 +1086,187 @@ class ShareExportLocationsDatabaseAPITestCase(test.TestCase):
                                                           share['id'])
 
         self.assertTrue(actual_result == [initial_location])
+
+    def test_get_admin_export_locations(self):
+        ctxt_user = context.RequestContext(
+            user_id='fake user', project_id='fake project', is_admin=False)
+        share = db_utils.create_share()
+        locations = [
+            {'path': 'fake1/1/', 'is_admin_only': True},
+            {'path': 'fake2/2/', 'is_admin_only': True},
+            {'path': 'fake3/3/', 'is_admin_only': True},
+        ]
+
+        db_api.share_export_locations_update(
+            self.ctxt, share.instance['id'], locations, delete=False)
+
+        user_result = db_api.share_export_locations_get(ctxt_user, share['id'])
+        self.assertEqual([], user_result)
+
+        admin_result = db_api.share_export_locations_get(
+            self.ctxt, share['id'])
+        self.assertEqual(3, len(admin_result))
+        for location in locations:
+            self.assertIn(location['path'], admin_result)
+
+    def test_get_user_export_locations(self):
+        ctxt_user = context.RequestContext(
+            user_id='fake user', project_id='fake project', is_admin=False)
+        share = db_utils.create_share()
+        locations = [
+            {'path': 'fake1/1/', 'is_admin_only': False},
+            {'path': 'fake2/2/', 'is_admin_only': False},
+            {'path': 'fake3/3/', 'is_admin_only': False},
+        ]
+
+        db_api.share_export_locations_update(
+            self.ctxt, share.instance['id'], locations, delete=False)
+
+        user_result = db_api.share_export_locations_get(ctxt_user, share['id'])
+        self.assertEqual(3, len(user_result))
+        for location in locations:
+            self.assertIn(location['path'], user_result)
+
+        admin_result = db_api.share_export_locations_get(
+            self.ctxt, share['id'])
+        self.assertEqual(3, len(admin_result))
+        for location in locations:
+            self.assertIn(location['path'], admin_result)
+
+    def test_get_user_export_locations_old_view(self):
+        ctxt_user = context.RequestContext(
+            user_id='fake user', project_id='fake project', is_admin=False)
+        share = db_utils.create_share()
+        locations = ['fake1/1/', 'fake2/2', 'fake3/3']
+
+        db_api.share_export_locations_update(
+            self.ctxt, share.instance['id'], locations, delete=False)
+
+        user_result = db_api.share_export_locations_get(ctxt_user, share['id'])
+        self.assertEqual(locations, user_result)
+
+        admin_result = db_api.share_export_locations_get(
+            self.ctxt, share['id'])
+        self.assertEqual(locations, admin_result)
+
+
+@ddt.ddt
+class ShareInstanceExportLocationsMetadataDatabaseAPITestCase(test.TestCase):
+
+    def setUp(self):
+        super(self.__class__, self).setUp()
+        self.ctxt = context.get_admin_context()
+        self.share = db_utils.create_share()
+        self.initial_locations = ['/fake/foo/', '/fake/bar', '/fake/quuz']
+        db_api.share_export_locations_update(
+            self.ctxt, self.share.instance['id'], self.initial_locations,
+            delete=False)
+
+    def _get_export_location_uuid_by_path(self, path):
+        els = db_api.share_export_locations_get_by_share_id(
+            self.ctxt, self.share.id)
+        export_location_uuid = None
+        for el in els:
+            if el.path == path:
+                export_location_uuid = el.uuid
+        self.assertFalse(export_location_uuid is None)
+        return export_location_uuid
+
+    def test_get_export_locations_by_share_id(self):
+        els = db_api.share_export_locations_get_by_share_id(
+            self.ctxt, self.share.id)
+        self.assertEqual(3, len(els))
+        for path in self.initial_locations:
+            self.assertTrue(any([path in el.path for el in els]))
+
+    def test_get_export_locations_by_share_instance_id(self):
+        els = db_api.share_export_locations_get_by_share_instance_id(
+            self.ctxt, self.share.instance.id)
+        self.assertEqual(3, len(els))
+        for path in self.initial_locations:
+            self.assertTrue(any([path in el.path for el in els]))
+
+    def test_export_location_metadata_update_delete(self):
+        export_location_uuid = self._get_export_location_uuid_by_path(
+            self.initial_locations[0])
+        metadata = {
+            'foo_key': 'foo_value',
+            'bar_key': 'bar_value',
+            'quuz_key': 'quuz_value',
+        }
+
+        db_api.export_location_metadata_update(
+            self.ctxt, export_location_uuid, metadata, False)
+
+        db_api.export_location_metadata_delete(
+            self.ctxt, export_location_uuid, list(metadata.keys())[0:-1])
+
+        result = db_api.export_location_metadata_get(
+            self.ctxt, export_location_uuid)
+
+        key = list(metadata.keys())[-1]
+        self.assertEqual({key: metadata[key]}, result)
+
+        db_api.export_location_metadata_delete(
+            self.ctxt, export_location_uuid)
+
+        result = db_api.export_location_metadata_get(
+            self.ctxt, export_location_uuid)
+        self.assertEqual({}, result)
+
+    def test_export_location_metadata_update_get(self):
+
+        # Write metadata for target export location
+        export_location_uuid = self._get_export_location_uuid_by_path(
+            self.initial_locations[0])
+        metadata = {'foo_key': 'foo_value', 'bar_key': 'bar_value'}
+        db_api.export_location_metadata_update(
+            self.ctxt, export_location_uuid, metadata, False)
+
+        # Write metadata for some concurrent export location
+        other_export_location_uuid = self._get_export_location_uuid_by_path(
+            self.initial_locations[1])
+        other_metadata = {'key_from_other_el': 'value_of_key_from_other_el'}
+        db_api.export_location_metadata_update(
+            self.ctxt, other_export_location_uuid, other_metadata, False)
+
+        result = db_api.export_location_metadata_get(
+            self.ctxt, export_location_uuid)
+
+        self.assertEqual(metadata, result)
+
+        updated_metadata = {
+            'foo_key': metadata['foo_key'],
+            'quuz_key': 'quuz_value',
+        }
+
+        db_api.export_location_metadata_update(
+            self.ctxt, export_location_uuid, updated_metadata, True)
+
+        result = db_api.export_location_metadata_get(
+            self.ctxt, export_location_uuid)
+
+        self.assertEqual(updated_metadata, result)
+
+    @ddt.data(
+        ("k", "v"),
+        ("k" * 256, "v"),
+        ("k", "v" * 1024),
+        ("k" * 256, "v" * 1024),
+    )
+    @ddt.unpack
+    def test_set_metadata_with_different_length(self, key, value):
+        export_location_uuid = self._get_export_location_uuid_by_path(
+            self.initial_locations[1])
+        metadata = {key: value}
+
+        db_api.export_location_metadata_update(
+            self.ctxt, export_location_uuid, metadata, False)
+
+        result = db_api.export_location_metadata_get(
+            self.ctxt, export_location_uuid)
+
+        self.assertEqual(metadata, result)
 
 
 @ddt.ddt
@@ -728,8 +1405,8 @@ class ShareNetworkDatabaseAPITestCase(BaseDatabaseAPITestCase):
                                              self.share_nw_dict)
 
         self._check_fields(expected=self.share_nw_dict, actual=result)
-        self.assertEqual(len(result['share_instances']), 0)
-        self.assertEqual(len(result['security_services']), 0)
+        self.assertEqual(0, len(result['share_instances']))
+        self.assertEqual(0, len(result['security_services']))
 
     def test_create_two_networks_in_different_tenants(self):
         share_nw_dict2 = self.share_nw_dict.copy()
@@ -767,8 +1444,8 @@ class ShareNetworkDatabaseAPITestCase(BaseDatabaseAPITestCase):
                                           self.share_nw_dict['id'])
 
         self._check_fields(expected=self.share_nw_dict, actual=result)
-        self.assertEqual(len(result['share_instances']), 0)
-        self.assertEqual(len(result['security_services']), 0)
+        self.assertEqual(0, len(result['share_instances']))
+        self.assertEqual(0, len(result['security_services']))
 
     @ddt.data([{'id': 'fake share id1'}],
               [{'id': 'fake share id1'}, {'id': 'fake share id2'}],)
@@ -784,7 +1461,7 @@ class ShareNetworkDatabaseAPITestCase(BaseDatabaseAPITestCase):
         result = db_api.share_network_get(self.fake_context,
                                           self.share_nw_dict['id'])
 
-        self.assertEqual(len(result['share_instances']), len(shares))
+        self.assertEqual(len(shares), len(result['share_instances']))
         for index, share_instance in enumerate(share_instances):
             self.assertEqual(
                 share_instance['share_network_id'],
@@ -806,8 +1483,9 @@ class ShareNetworkDatabaseAPITestCase(BaseDatabaseAPITestCase):
         result = db_api.share_network_get(self.fake_context,
                                           self.share_nw_dict['id'])
 
-        self.assertEqual(len(result['security_services']),
-                         len(security_services))
+        self.assertEqual(len(security_services),
+                         len(result['security_services']))
+
         for index, service in enumerate(security_services):
             self._check_fields(expected=service,
                                actual=result['security_services'][index])
@@ -843,9 +1521,9 @@ class ShareNetworkDatabaseAPITestCase(BaseDatabaseAPITestCase):
         result_get = db_api.share_network_get(self.fake_context,
                                               self.share_nw_dict['id'])
 
-        self.assertEqual(result_update['name'], new_name)
-        self._check_fields(expected=dict(six.iteritems(result_update)),
-                           actual=dict(six.iteritems(result_get)))
+        self.assertEqual(new_name, result_update['name'])
+        self._check_fields(expected=dict(result_update.items()),
+                           actual=dict(result_get.items()))
 
     def test_update_not_found(self):
         self.assertRaises(exception.ShareNetworkNotFound,
@@ -869,7 +1547,7 @@ class ShareNetworkDatabaseAPITestCase(BaseDatabaseAPITestCase):
 
         result = db_api.share_network_get_all(self.fake_context)
 
-        self.assertEqual(len(result), len(share_networks))
+        self.assertEqual(len(share_networks), len(result))
         for index, net in enumerate(share_networks):
             self._check_fields(expected=net, actual=result[index])
 
@@ -885,7 +1563,7 @@ class ShareNetworkDatabaseAPITestCase(BaseDatabaseAPITestCase):
             self.fake_context,
             share_nw_dict2['project_id'])
 
-        self.assertEqual(len(result), 1)
+        self.assertEqual(1, len(result))
         self._check_fields(expected=share_nw_dict2, actual=result[0])
 
     def test_add_security_service(self):
@@ -973,7 +1651,7 @@ class ShareNetworkDatabaseAPITestCase(BaseDatabaseAPITestCase):
 
         share_nw_ref = db_api.share_network_get(self.fake_context,
                                                 self.share_nw_dict['id'])
-        self.assertEqual(len(share_nw_ref['security_services']), 0)
+        self.assertEqual(0, len(share_nw_ref['security_services']))
 
     def test_remove_security_service_not_found_01(self):
         security_service_id = 'unknown security service'
@@ -1024,7 +1702,7 @@ class ShareNetworkDatabaseAPITestCase(BaseDatabaseAPITestCase):
         result = db_api.share_network_get(self.fake_context,
                                           self.share_nw_dict['id'])
 
-        self.assertEqual(len(result['security_services']), 0)
+        self.assertEqual(0, len(result['security_services']))
 
     def test_shares_relation(self):
         share_dict = {'id': 'fake share id1'}
@@ -1035,7 +1713,7 @@ class ShareNetworkDatabaseAPITestCase(BaseDatabaseAPITestCase):
         result = db_api.share_network_get(self.fake_context,
                                           self.share_nw_dict['id'])
 
-        self.assertEqual(len(result['share_instances']), 0)
+        self.assertEqual(0, len(result['share_instances']))
 
 
 @ddt.ddt
@@ -1051,7 +1729,7 @@ class SecurityServiceDatabaseAPITestCase(BaseDatabaseAPITestCase):
 
     def _check_expected_fields(self, result, expected):
         for key in expected:
-            self.assertEqual(result[key], expected[key])
+            self.assertEqual(expected[key], result[key])
 
     def test_create(self):
         result = db_api.security_service_create(self.fake_context,
@@ -1135,7 +1813,7 @@ class SecurityServiceDatabaseAPITestCase(BaseDatabaseAPITestCase):
     def test_get_all_no_records(self):
         result = db_api.security_service_get_all(self.fake_context)
 
-        self.assertEqual(len(result), 0)
+        self.assertEqual(0, len(result))
 
     @ddt.data(1, 2)
     def test_get_all(self, records_count):
@@ -1150,7 +1828,7 @@ class SecurityServiceDatabaseAPITestCase(BaseDatabaseAPITestCase):
 
         result = db_api.security_service_get_all(self.fake_context)
 
-        self.assertEqual(len(result), len(services))
+        self.assertEqual(len(services), len(result))
         for index, service in enumerate(services):
             self._check_fields(expected=service, actual=result[index])
 
@@ -1165,7 +1843,7 @@ class SecurityServiceDatabaseAPITestCase(BaseDatabaseAPITestCase):
 
         result = db_api.security_service_get_all(self.fake_context)
 
-        self.assertEqual(len(result), 2)
+        self.assertEqual(2, len(result))
 
     def test_get_all_by_project(self):
         dict1 = security_service_dict
@@ -1181,14 +1859,14 @@ class SecurityServiceDatabaseAPITestCase(BaseDatabaseAPITestCase):
             self.fake_context,
             dict1['project_id'])
 
-        self.assertEqual(len(result1), 1)
+        self.assertEqual(1, len(result1))
         self._check_expected_fields(result1[0], dict1)
 
         result2 = db_api.security_service_get_all_by_project(
             self.fake_context,
             dict2['project_id'])
 
-        self.assertEqual(len(result2), 1)
+        self.assertEqual(1, len(result2))
         self._check_expected_fields(result2[0], dict2)
 
 
@@ -1204,9 +1882,9 @@ class ShareServerDatabaseAPITestCase(test.TestCase):
         expected = db_utils.create_share_server()
         server = db_api.share_server_get(self.ctxt, expected['id'])
         self.assertEqual(expected['id'], server['id'])
-        self.assertEqual(server.share_network_id, expected.share_network_id)
-        self.assertEqual(server.host, expected.host)
-        self.assertEqual(server.status, expected.status)
+        self.assertEqual(expected.share_network_id, server.share_network_id)
+        self.assertEqual(expected.host, server.host)
+        self.assertEqual(expected.status, server.status)
 
     def test_get_not_found(self):
         fake_id = 'FAKE_UUID'
@@ -1224,8 +1902,8 @@ class ShareServerDatabaseAPITestCase(test.TestCase):
         server = db_utils.create_share_server()
         num_records = len(db_api.share_server_get_all(self.ctxt))
         db_api.share_server_delete(self.ctxt, server['id'])
-        self.assertEqual(len(db_api.share_server_get_all(self.ctxt)),
-                         num_records - 1)
+        self.assertEqual(num_records - 1,
+                         len(db_api.share_server_get_all(self.ctxt)))
 
     def test_delete_not_found(self):
         fake_id = 'FAKE_UUID'
@@ -1243,10 +1921,10 @@ class ShareServerDatabaseAPITestCase(test.TestCase):
         updated_server = db_api.share_server_update(self.ctxt, server['id'],
                                                     update)
         self.assertEqual(server['id'], updated_server['id'])
-        self.assertEqual(updated_server.share_network_id,
-                         update['share_network_id'])
-        self.assertEqual(updated_server.host, update['host'])
-        self.assertEqual(updated_server.status, update['status'])
+        self.assertEqual(update['share_network_id'],
+                         updated_server.share_network_id)
+        self.assertEqual(update['host'], updated_server.host)
+        self.assertEqual(update['status'], updated_server.status)
 
     def test_update_not_found(self):
         fake_id = 'FAKE_UUID'
@@ -1278,7 +1956,7 @@ class ShareServerDatabaseAPITestCase(test.TestCase):
             self.ctxt,
             host='host1',
             share_net_id='1')
-        self.assertEqual(servers[0]['id'], valid['id'])
+        self.assertEqual(valid['id'], servers[0]['id'])
 
     def test_get_all_by_host_and_share_net_not_found(self):
         self.assertRaises(
@@ -1304,18 +1982,18 @@ class ShareServerDatabaseAPITestCase(test.TestCase):
             'status': constants.STATUS_ACTIVE,
         }
         servers = db_api.share_server_get_all(self.ctxt)
-        self.assertEqual(len(servers), 0)
+        self.assertEqual(0, len(servers))
 
         to_delete = db_utils.create_share_server(**srv1)
         db_utils.create_share_server(**srv2)
         db_utils.create_share_server(**srv3)
 
         servers = db_api.share_server_get_all(self.ctxt)
-        self.assertEqual(len(servers), 3)
+        self.assertEqual(3, len(servers))
 
         db_api.share_server_delete(self.ctxt, to_delete['id'])
         servers = db_api.share_server_get_all(self.ctxt)
-        self.assertEqual(len(servers), 2)
+        self.assertEqual(2, len(servers))
 
     def test_backend_details_set(self):
         details = {
@@ -1351,10 +2029,10 @@ class ShareServerDatabaseAPITestCase(test.TestCase):
         db_api.share_server_backend_details_set(self.ctxt, srv_id, details)
         server = db_api.share_server_get(self.ctxt, srv_id)
         self.assertEqual(srv_id, server['id'])
-        self.assertEqual(server.share_network_id, values['share_network_id'])
-        self.assertEqual(server.host, values['host'])
-        self.assertEqual(server.status, values['status'])
-        self.assertDictMatch(details, server['backend_details'])
+        self.assertEqual(values['share_network_id'], server.share_network_id)
+        self.assertEqual(values['host'], server.host)
+        self.assertEqual(values['status'], server.status)
+        self.assertDictMatch(server['backend_details'], details)
         self.assertTrue('backend_details' in server.to_dict())
 
     def test_delete_with_details(self):
@@ -1365,8 +2043,8 @@ class ShareServerDatabaseAPITestCase(test.TestCase):
 
         num_records = len(db_api.share_server_get_all(self.ctxt))
         db_api.share_server_delete(self.ctxt, server['id'])
-        self.assertEqual(len(db_api.share_server_get_all(self.ctxt)),
-                         num_records - 1)
+        self.assertEqual(num_records - 1,
+                         len(db_api.share_server_get_all(self.ctxt)))
 
 
 class ServiceDatabaseAPITestCase(test.TestCase):
@@ -1444,3 +2122,99 @@ class AvailabilityZonesDatabaseAPITestCase(test.TestCase):
 
         self.assertEqual(1, len(actual_result))
         self.assertEqual('test2', actual_result[0]['name'])
+
+
+@ddt.ddt
+class NetworkAllocationsDatabaseAPITestCase(test.TestCase):
+
+    def setUp(self):
+        super(NetworkAllocationsDatabaseAPITestCase, self).setUp()
+        self.user_id = 'user_id'
+        self.project_id = 'project_id'
+        self.share_server_id = 'foo_share_server_id'
+        self.ctxt = context.RequestContext(
+            user_id=self.user_id, project_id=self.project_id, is_admin=True)
+        self.user_network_allocations = [
+            {'share_server_id': self.share_server_id,
+             'ip_address': '1.1.1.1',
+             'status': constants.STATUS_ACTIVE,
+             'label': None},
+            {'share_server_id': self.share_server_id,
+             'ip_address': '2.2.2.2',
+             'status': constants.STATUS_ACTIVE,
+             'label': 'user'},
+        ]
+        self.admin_network_allocations = [
+            {'share_server_id': self.share_server_id,
+             'ip_address': '3.3.3.3',
+             'status': constants.STATUS_ACTIVE,
+             'label': 'admin'},
+            {'share_server_id': self.share_server_id,
+             'ip_address': '4.4.4.4',
+             'status': constants.STATUS_ACTIVE,
+             'label': 'admin'},
+        ]
+
+    def _setup_network_allocations_get_for_share_server(self):
+        # Create share network
+        share_network_data = {
+            'id': 'foo_share_network_id',
+            'user_id': self.user_id,
+            'project_id': self.project_id,
+        }
+        db_api.share_network_create(self.ctxt, share_network_data)
+
+        # Create share server
+        share_server_data = {
+            'id': self.share_server_id,
+            'share_network_id': share_network_data['id'],
+            'host': 'fake_host',
+            'status': 'active',
+        }
+        db_api.share_server_create(self.ctxt, share_server_data)
+
+        # Create user network allocations
+        for user_network_allocation in self.user_network_allocations:
+            db_api.network_allocation_create(
+                self.ctxt, user_network_allocation)
+
+        # Create admin network allocations
+        for admin_network_allocation in self.admin_network_allocations:
+            db_api.network_allocation_create(
+                self.ctxt, admin_network_allocation)
+
+    def test_get_only_user_network_allocations(self):
+        self._setup_network_allocations_get_for_share_server()
+
+        result = db_api.network_allocations_get_for_share_server(
+            self.ctxt, self.share_server_id, label='user')
+
+        self.assertEqual(
+            len(self.user_network_allocations), len(result))
+        for na in result:
+            self.assertIn(na.label, (None, 'user'))
+
+    def test_get_only_admin_network_allocations(self):
+        self._setup_network_allocations_get_for_share_server()
+
+        result = db_api.network_allocations_get_for_share_server(
+            self.ctxt, self.share_server_id, label='admin')
+
+        self.assertEqual(
+            len(self.admin_network_allocations), len(result))
+        for na in result:
+            self.assertEqual(na.label, 'admin')
+
+    def test_get_all_network_allocations(self):
+        self._setup_network_allocations_get_for_share_server()
+
+        result = db_api.network_allocations_get_for_share_server(
+            self.ctxt, self.share_server_id, label=None)
+
+        self.assertEqual(
+            len(self.user_network_allocations +
+                self.admin_network_allocations),
+            len(result)
+        )
+        for na in result:
+            self.assertIn(na.label, ('admin', 'user', None))

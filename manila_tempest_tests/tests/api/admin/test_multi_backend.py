@@ -14,8 +14,8 @@
 #    under the License.
 
 from tempest import config  # noqa
+from tempest.lib.common.utils import data_utils  # noqa
 from tempest import test  # noqa
-from tempest_lib.common.utils import data_utils  # noqa
 
 from manila_tempest_tests.tests.api import base
 
@@ -69,7 +69,7 @@ class ShareMultiBackendTest(base.BaseSharesAdminTest):
         for i in [0, 1]:
             get = self.shares_v2_client.get_share(self.shares[i]['id'],
                                                   version="2.5")
-            self.assertEqual(get["share_type"], self.sts[i]["name"])
+            self.assertEqual(self.sts[i]["name"], get["share_type"])
 
     @test.attr(type=["gate", "smoke", ])
     def test_share_share_type_v_2_6(self):
@@ -77,28 +77,8 @@ class ShareMultiBackendTest(base.BaseSharesAdminTest):
         for i in [0, 1]:
             get = self.shares_v2_client.get_share(self.shares[i]['id'],
                                                   version="2.6")
-            self.assertEqual(get["share_type"], self.sts[i]["id"])
-            self.assertEqual(get["share_type_name"], self.sts[i]["name"])
-
-    @test.attr(type=["gate", ])
-    def test_share_export_locations(self):
-        # Different backends have different IPs on interfaces
-        # and export locations should be different too.
-        if CONF.share.backend_names[0] == CONF.share.backend_names[1]:
-            raise self.skipException("Share backends "
-                                     "configured with same name. Skipping.")
-        ips = []
-        for share in self.shares:
-            get = self.shares_client.get_share(share['id'])
-            if get["share_proto"].lower() == "nfs":
-                # %ip%:/%share_path%
-                ip = get["export_location"].split(":")[0]
-                ips.append(ip)
-            elif get["share_proto"].lower() == "cifs":
-                # //%ip%/%share_path%
-                ip = get["export_location"][2:].split("/")[0]
-                ips.append(ip)
-        self.assertNotEqual(ips[0], ips[1])
+            self.assertEqual(self.sts[i]["id"], get["share_type"])
+            self.assertEqual(self.sts[i]["name"], get["share_type_name"])
 
     @test.attr(type=["gate", ])
     def test_share_backend_name_distinction(self):

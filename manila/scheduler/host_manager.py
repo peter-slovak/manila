@@ -34,8 +34,8 @@ import six
 from manila import db
 from manila import exception
 from manila.i18n import _LI, _LW
-from manila.openstack.common.scheduler import filters
-from manila.openstack.common.scheduler import weights
+from manila.scheduler.filters import base_host as base_host_filter
+from manila.scheduler.weighers import base_host as base_host_weigher
 from manila.share import utils as share_utils
 from manila import utils
 
@@ -46,6 +46,7 @@ host_manager_opts = [
                     'CapacityFilter',
                     'CapabilitiesFilter',
                     'ConsistencyGroupFilter',
+                    'ShareReplicationFilter',
                 ],
                 help='Which filter class names to use for filtering hosts '
                      'when not specified in the request.'),
@@ -108,7 +109,7 @@ class HostState(object):
         self.vendor_name = None
         self.driver_version = 0
         self.storage_protocol = None
-        self.QoS_support = False
+        self.qos = False
         # Mutable available resources.
         # These will change as resources are virtually "consumed".
         self.total_capacity_gb = 0
@@ -126,6 +127,9 @@ class HostState(object):
         self.snapshot_support = True
         self.consistency_group_support = False
         self.dedupe = False
+        self.compression = False
+        self.replication_type = None
+        self.replication_domain = None
 
         # PoolState for all pools
         self.pools = {}
@@ -163,7 +167,7 @@ class HostState(object):
                  'total_capacity_gb': 500,        #  mandatory stats for
                  'free_capacity_gb': 230,         #  pools
                  'allocated_capacity_gb': 270,    # |
-                 'QoS_support': 'False',          # |
+                 'qos': 'False',                  # |
                  'reserved_percentage': 0,        #/
 
                  'dying_disks': 100,              #\
@@ -175,7 +179,7 @@ class HostState(object):
                  'total_capacity_gb': 1024,
                  'free_capacity_gb': 1024,
                  'allocated_capacity_gb': 0,
-                 'QoS_support': 'False',
+                 'qos': 'False',
                  'reserved_percentage': 0,
 
                  'dying_disks': 200,
@@ -288,6 +292,15 @@ class HostState(object):
         if 'dedupe' not in pool_cap:
             pool_cap['dedupe'] = self.dedupe
 
+        if 'compression' not in pool_cap:
+            pool_cap['compression'] = self.compression
+
+        if not pool_cap.get('replication_type'):
+            pool_cap['replication_type'] = self.replication_type
+
+        if not pool_cap.get('replication_domain'):
+            pool_cap['replication_domain'] = self.replication_domain
+
     def update_backend(self, capability):
         self.share_backend_name = capability.get('share_backend_name')
         self.vendor_name = capability.get('vendor_name')
@@ -299,6 +312,8 @@ class HostState(object):
         self.consistency_group_support = capability.get(
             'consistency_group_support', False)
         self.updated = capability['timestamp']
+        self.replication_type = capability.get('replication_type')
+        self.replication_domain = capability.get('replication_domain')
 
     def consume_from_share(self, share):
         """Incrementally update host state from an share."""
@@ -342,7 +357,7 @@ class PoolState(HostState):
             self.free_capacity_gb = capability['free_capacity_gb']
             self.allocated_capacity_gb = capability.get(
                 'allocated_capacity_gb', 0)
-            self.QoS_support = capability.get('QoS_support', False)
+            self.qos = capability.get('qos', False)
             self.reserved_percentage = capability['reserved_percentage']
             # NOTE(xyang): provisioned_capacity_gb is the apparent total
             # capacity of all the shares created on a backend, which is
@@ -359,6 +374,12 @@ class PoolState(HostState):
                 'thin_provisioning', False)
             self.dedupe = capability.get(
                 'dedupe', False)
+            self.compression = capability.get(
+                'compression', False)
+            self.replication_type = capability.get(
+                'replication_type', self.replication_type)
+            self.replication_domain = capability.get(
+                'replication_domain')
 
     def update_pools(self, capability):
         # Do nothing, since we don't have pools within pool, yet
@@ -373,11 +394,11 @@ class HostManager(object):
     def __init__(self):
         self.service_states = {}  # { <host>: {<service>: {cap k : v}}}
         self.host_state_map = {}
-        self.filter_handler = filters.HostFilterHandler('manila.scheduler.'
-                                                        'filters')
+        self.filter_handler = base_host_filter.HostFilterHandler(
+            'manila.scheduler.filters')
         self.filter_classes = self.filter_handler.get_all_classes()
-        self.weight_handler = weights.HostWeightHandler('manila.scheduler.'
-                                                        'weights')
+        self.weight_handler = base_host_weigher.HostWeightHandler(
+            'manila.scheduler.weighers')
         self.weight_classes = self.weight_handler.get_all_classes()
 
     def _choose_host_filters(self, filter_cls_names):
@@ -481,15 +502,13 @@ class HostManager(object):
         topic = CONF.share_topic
         share_services = db.service_get_all_by_topic(context, topic)
 
+        active_hosts = set()
         for service in share_services:
             host = service['host']
 
             # Warn about down services and remove them from host_state_map
             if not utils.service_is_up(service) or service['disabled']:
-                LOG.warn(_LW("Share service is down. (host: %s)") % host)
-                if self.host_state_map.pop(host, None):
-                    LOG.info(_LI("Removing non-active host: %s from "
-                                 "scheduler cache.") % host)
+                LOG.warning(_LW("Share service is down. (host: %s).") % host)
                 continue
 
             # Create and register host_state if not in host_state_map
@@ -499,12 +518,20 @@ class HostManager(object):
                 host_state = self.host_state_cls(
                     host,
                     capabilities=capabilities,
-                    service=dict(six.iteritems(service)))
+                    service=dict(service.items()))
                 self.host_state_map[host] = host_state
 
             # Update capabilities and attributes in host_state
             host_state.update_from_share_capability(
-                capabilities, service=dict(six.iteritems(service)))
+                capabilities, service=dict(service.items()))
+            active_hosts.add(host)
+
+        # remove non-active hosts from host_state_map
+        nonactive_hosts = set(self.host_state_map.keys()) - active_hosts
+        for host in nonactive_hosts:
+            LOG.info(_LI("Removing non-active host: %(host)s from"
+                         "scheduler cache."), {'host': host})
+            self.host_state_map.pop(host, None)
 
     def get_all_host_states_share(self, context):
         """Returns a dict of all the hosts the HostManager knows about.
@@ -573,7 +600,7 @@ class HostManager(object):
         if not filter_dict:
             return True
 
-        for filter_key, filter_value in six.iteritems(filter_dict):
+        for filter_key, filter_value in filter_dict.items():
             if filter_key not in dict_to_check:
                 return False
             if not re.match(filter_value, dict_to_check.get(filter_key)):

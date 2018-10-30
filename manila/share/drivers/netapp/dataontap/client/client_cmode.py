@@ -35,6 +35,7 @@ LOG = log.getLogger(__name__)
 DELETED_PREFIX = 'deleted_manila_'
 DEFAULT_IPSPACE = 'Default'
 DEFAULT_BROADCAST_DOMAIN = 'OpenStack'
+DEFAULT_MAX_PAGE_LENGTH = 50
 
 
 class NetAppCmodeClient(client_base.NetAppBaseClient):
@@ -56,11 +57,14 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         super(NetAppCmodeClient, self)._init_features()
 
         ontapi_version = self.get_ontapi_version(cached=True)
+        ontapi_1_20 = ontapi_version >= (1, 20)
         ontapi_1_30 = ontapi_version >= (1, 30)
 
+        self.features.add_feature('SNAPMIRROR_V2', supported=ontapi_1_20)
         self.features.add_feature('BROADCAST_DOMAINS', supported=ontapi_1_30)
         self.features.add_feature('IPSPACES', supported=ontapi_1_30)
         self.features.add_feature('SUBNETS', supported=ontapi_1_30)
+        self.features.add_feature('CLUSTER_PEER_POLICY', supported=ontapi_1_30)
 
     def _invoke_vserver_api(self, na_element, vserver):
         server = copy.copy(self.connection)
@@ -75,13 +79,64 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         else:
             return True
 
+    def _get_record_count(self, api_result_element):
+        try:
+            return int(api_result_element.get_child_content('num-records'))
+        except TypeError:
+            msg = _('Missing record count for NetApp iterator API invocation.')
+            raise exception.NetAppException(msg)
+
     def set_vserver(self, vserver):
         self.vserver = vserver
         self.connection.set_vserver(vserver)
 
+    def send_iter_request(self, api_name, api_args=None,
+                          max_page_length=DEFAULT_MAX_PAGE_LENGTH):
+        """Invoke an iterator-style getter API."""
+
+        if not api_args:
+            api_args = {}
+
+        api_args['max-records'] = max_page_length
+
+        # Get first page
+        result = self.send_request(api_name, api_args)
+
+        # Most commonly, we can just return here if there is no more data
+        next_tag = result.get_child_content('next-tag')
+        if not next_tag:
+            return result
+
+        # Ensure pagination data is valid and prepare to store remaining pages
+        num_records = self._get_record_count(result)
+        attributes_list = result.get_child_by_name('attributes-list')
+        if not attributes_list:
+            msg = _('Missing attributes list for API %s.') % api_name
+            raise exception.NetAppException(msg)
+
+        # Get remaining pages, saving data into first page
+        while next_tag is not None:
+            next_api_args = copy.deepcopy(api_args)
+            next_api_args['tag'] = next_tag
+            next_result = self.send_request(api_name, next_api_args)
+
+            next_attributes_list = next_result.get_child_by_name(
+                'attributes-list') or netapp_api.NaElement('none')
+
+            for record in next_attributes_list.get_children():
+                attributes_list.add_child_elem(record)
+
+            num_records += self._get_record_count(next_result)
+            next_tag = next_result.get_child_content('next-tag')
+
+        result.get_child_by_name('num-records').set_content(
+            six.text_type(num_records))
+        result.get_child_by_name('next-tag').set_content('')
+        return result
+
     @na_utils.trace
     def create_vserver(self, vserver_name, root_volume_aggregate_name,
-                       root_volume_name, aggregate_names):
+                       root_volume_name, aggregate_names, ipspace_name):
         """Creates new vserver and assigns aggregates."""
         create_args = {
             'vserver-name': vserver_name,
@@ -92,6 +147,14 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 'nsswitch': 'file',
             },
         }
+
+        if ipspace_name:
+            if not self.features.IPSPACES:
+                msg = 'IPSpaces are not supported on this backend.'
+                raise exception.NetAppException(msg)
+            else:
+                create_args['ipspace'] = ipspace_name
+
         self.send_request('vserver-create', create_args)
 
         aggr_list = [{'aggr-name': aggr_name} for aggr_name in aggregate_names]
@@ -118,7 +181,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 },
             },
         }
-        result = self.send_request('vserver-get-iter', api_args)
+        result = self.send_iter_request('vserver-get-iter', api_args)
         return self._has_records(result)
 
     @na_utils.trace
@@ -136,7 +199,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 },
             },
         }
-        vserver_info = self.send_request('vserver-get-iter', api_args)
+        vserver_info = self.send_iter_request('vserver-get-iter', api_args)
 
         try:
             root_volume_name = vserver_info.get_child_by_name(
@@ -147,6 +210,57 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                     'for Vserver %s.') % vserver_name
             raise exception.NetAppException(msg)
         return root_volume_name
+
+    @na_utils.trace
+    def get_vserver_ipspace(self, vserver_name):
+        """Get the IPspace of the vserver, or None if not supported."""
+        if not self.features.IPSPACES:
+            return None
+
+        api_args = {
+            'query': {
+                'vserver-info': {
+                    'vserver-name': vserver_name,
+                },
+            },
+            'desired-attributes': {
+                'vserver-info': {
+                    'ipspace': None,
+                },
+            },
+        }
+        vserver_info = self.send_iter_request('vserver-get-iter', api_args)
+
+        try:
+            ipspace = vserver_info.get_child_by_name(
+                'attributes-list').get_child_by_name(
+                    'vserver-info').get_child_content('ipspace')
+        except AttributeError:
+            msg = _('Could not determine IPspace for Vserver %s.')
+            raise exception.NetAppException(msg % vserver_name)
+        return ipspace
+
+    @na_utils.trace
+    def ipspace_has_data_vservers(self, ipspace_name):
+        """Check whether an IPspace has any data Vservers assigned to it."""
+        if not self.features.IPSPACES:
+            return False
+
+        api_args = {
+            'query': {
+                'vserver-info': {
+                    'ipspace': ipspace_name,
+                    'vserver-type': 'data'
+                },
+            },
+            'desired-attributes': {
+                'vserver-info': {
+                    'vserver-name': None,
+                },
+            },
+        }
+        result = self.send_iter_request('vserver-get-iter', api_args)
+        return self._has_records(result)
 
     @na_utils.trace
     def list_vservers(self, vserver_type='data'):
@@ -167,21 +281,20 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         if query:
             api_args['query'] = query
 
-        result = self.send_request('vserver-get-iter', api_args)
+        result = self.send_iter_request('vserver-get-iter', api_args)
         vserver_info_list = result.get_child_by_name(
             'attributes-list') or netapp_api.NaElement('none')
         return [vserver_info.get_child_content('vserver-name')
                 for vserver_info in vserver_info_list.get_children()]
 
     @na_utils.trace
-    def get_vserver_volume_count(self, max_records=20):
+    def get_vserver_volume_count(self):
         """Get the number of volumes present on a cluster or vserver.
 
         Call this on a vserver client to see how many volumes exist
         on that vserver.
         """
         api_args = {
-            'max-records': max_records,
             'desired-attributes': {
                 'volume-attributes': {
                     'volume-id-attributes': {
@@ -190,8 +303,8 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 },
             },
         }
-        volumes_data = self.send_request('volume-get-iter', api_args)
-        return int(volumes_data.get_child_content('num-records'))
+        volumes_data = self.send_iter_request('volume-get-iter', api_args)
+        return self._get_record_count(volumes_data)
 
     @na_utils.trace
     def delete_vserver(self, vserver_name, vserver_client,
@@ -206,7 +319,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
             return
 
         root_volume_name = self.get_vserver_root_volume_name(vserver_name)
-        volumes_count = vserver_client.get_vserver_volume_count(max_records=2)
+        volumes_count = vserver_client.get_vserver_volume_count()
 
         if volumes_count == 1:
             try:
@@ -257,7 +370,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 },
             },
         }
-        result = self.send_request('system-node-get-iter', api_args)
+        result = self.send_iter_request('system-node-get-iter', api_args)
         nodes_info_list = result.get_child_by_name(
             'attributes-list') or netapp_api.NaElement('none')
         return [node_info.get_child_content('node') for node_info
@@ -289,7 +402,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 },
             },
         }
-        result = self.send_request('net-port-get-iter', api_args)
+        result = self.send_iter_request('net-port-get-iter', api_args)
         net_port_info_list = result.get_child_by_name(
             'attributes-list') or netapp_api.NaElement('none')
 
@@ -338,7 +451,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                     },
                 },
             }
-            result = self.send_request('aggr-get-iter', api_args)
+            result = self.send_iter_request('aggr-get-iter', api_args)
             aggr_list = result.get_child_by_name(
                 'attributes-list').get_children()
         except AttributeError:
@@ -357,8 +470,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
 
     @na_utils.trace
     def create_network_interface(self, ip, netmask, vlan, node, port,
-                                 vserver_name, allocation_id,
-                                 lif_name_template):
+                                 vserver_name, lif_name, ipspace_name):
         """Creates LIF on VLAN port."""
 
         home_port_name = port
@@ -367,13 +479,11 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
             home_port_name = '%(port)s-%(tag)s' % {'port': port, 'tag': vlan}
 
         if self.features.BROADCAST_DOMAINS:
-            self._ensure_broadcast_domain_for_port(node, home_port_name)
-
-        interface_name = (lif_name_template %
-                          {'node': node, 'net_allocation_id': allocation_id})
+            self._ensure_broadcast_domain_for_port(node, home_port_name,
+                                                   ipspace=ipspace_name)
 
         LOG.debug('Creating LIF %(lif)s for Vserver %(vserver)s ',
-                  {'lif': interface_name, 'vserver': vserver_name})
+                  {'lif': lif_name, 'vserver': vserver_name})
 
         api_args = {
             'address': ip,
@@ -385,7 +495,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
             'home-node': node,
             'home-port': home_port_name,
             'netmask': netmask,
-            'interface-name': interface_name,
+            'interface-name': lif_name,
             'role': 'data',
             'vserver': vserver_name,
         }
@@ -416,14 +526,34 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
     def _ensure_broadcast_domain_for_port(self, node, port,
                                           domain=DEFAULT_BROADCAST_DOMAIN,
                                           ipspace=DEFAULT_IPSPACE):
-        """Ensure a port is in a broadcast domain.  Create one if necessary."""
+        """Ensure a port is in a broadcast domain.  Create one if necessary.
 
-        if self._get_broadcast_domain_for_port(node, port):
+        If the IPspace:domain pair match for the given port, which commonly
+        happens in multi-node clusters, then there isn't anything to do.
+        Otherwise, we can assume the IPspace is correct and extant by this
+        point, so the remaining task is to remove the port from any domain it
+        is already in, create the desired domain if it doesn't exist, and add
+        the port to the desired domain.
+        """
+
+        port_info = self._get_broadcast_domain_for_port(node, port)
+
+        # Port already in desired ipspace and broadcast domain.
+        if (port_info['ipspace'] == ipspace
+                and port_info['broadcast-domain'] == domain):
             return
 
+        # If in another broadcast domain, remove port from it.
+        if port_info['broadcast-domain']:
+            self._remove_port_from_broadcast_domain(
+                node, port, port_info['broadcast-domain'],
+                port_info['ipspace'])
+
+        # If desired broadcast domain doesn't exist, create it.
         if not self._broadcast_domain_exists(domain, ipspace):
             self._create_broadcast_domain(domain, ipspace)
 
+        # Move the port into the broadcast domain where it is needed.
         self._add_port_to_broadcast_domain(node, port, domain, ipspace)
 
     @na_utils.trace
@@ -439,10 +569,11 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
             'desired-attributes': {
                 'net-port-info': {
                     'broadcast-domain': None,
+                    'ipspace': None,
                 },
             },
         }
-        result = self.send_request('net-port-get-iter', api_args)
+        result = self.send_iter_request('net-port-get-iter', api_args)
 
         net_port_info_list = result.get_child_by_name(
             'attributes-list') or netapp_api.NaElement('none')
@@ -452,7 +583,12 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
             msg_args = {'port': port, 'node': node}
             raise exception.NetAppException(msg % msg_args)
 
-        return port_info[0].get_child_content('broadcast-domain')
+        port = {
+            'broadcast-domain':
+            port_info[0].get_child_content('broadcast-domain'),
+            'ipspace': port_info[0].get_child_content('ipspace')
+        }
+        return port
 
     @na_utils.trace
     def _broadcast_domain_exists(self, domain, ipspace):
@@ -468,8 +604,8 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 'net-port-broadcast-domain-info': None,
             },
         }
-        result = self.send_request('net-port-broadcast-domain-get-iter',
-                                   api_args)
+        result = self.send_iter_request('net-port-broadcast-domain-get-iter',
+                                        api_args)
         return self._has_records(result)
 
     @na_utils.trace
@@ -481,6 +617,25 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
             'mtu': mtu,
         }
         self.send_request('net-port-broadcast-domain-create', api_args)
+
+    @na_utils.trace
+    def _delete_broadcast_domain(self, domain, ipspace):
+        """Delete a broadcast domain."""
+        api_args = {
+            'ipspace': ipspace,
+            'broadcast-domain': domain,
+        }
+        self.send_request('net-port-broadcast-domain-destroy', api_args)
+
+    def _delete_broadcast_domains_for_ipspace(self, ipspace_name):
+        """Deletes all broadcast domains in an IPspace."""
+        ipspaces = self.get_ipspaces(ipspace_name=ipspace_name)
+        if not ipspaces:
+            return
+
+        ipspace = ipspaces[0]
+        for broadcast_domain_name in ipspace['broadcast-domains']:
+            self._delete_broadcast_domain(broadcast_domain_name, ipspace_name)
 
     @na_utils.trace
     def _add_port_to_broadcast_domain(self, node, port, domain, ipspace):
@@ -511,6 +666,19 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 raise exception.NetAppException(msg % msg_args)
 
     @na_utils.trace
+    def _remove_port_from_broadcast_domain(self, node, port, domain, ipspace):
+
+        qualified_port_name = ':'.join([node, port])
+        api_args = {
+            'ipspace': ipspace,
+            'broadcast-domain': domain,
+            'ports': {
+                'net-qualified-port-name': qualified_port_name,
+            }
+        }
+        self.send_request('net-port-broadcast-domain-remove-ports', api_args)
+
+    @na_utils.trace
     def network_interface_exists(self, vserver_name, node, port, ip, netmask,
                                  vlan):
         """Checks if LIF exists."""
@@ -534,7 +702,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 },
             },
         }
-        result = self.send_request('net-interface-get-iter', api_args)
+        result = self.send_iter_request('net-interface-get-iter', api_args)
         return self._has_records(result)
 
     @na_utils.trace
@@ -547,7 +715,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 },
             },
         }
-        result = self.send_request('net-interface-get-iter', api_args)
+        result = self.send_iter_request('net-interface-get-iter', api_args)
         lif_info_list = result.get_child_by_name(
             'attributes-list') or netapp_api.NaElement('none')
         return [lif_info.get_child_content('interface-name') for lif_info
@@ -569,7 +737,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
             }
         } if protocols else None
 
-        result = self.send_request('net-interface-get-iter', api_args)
+        result = self.send_iter_request('net-interface-get-iter', api_args)
         lif_info_list = result.get_child_by_name(
             'attributes-list') or netapp_api.NaElement('none')
 
@@ -593,6 +761,103 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         """Deletes LIF."""
         api_args = {'vserver': None, 'interface-name': interface_name}
         self.send_request('net-interface-delete', api_args)
+
+    @na_utils.trace
+    def get_ipspaces(self, ipspace_name=None):
+        """Gets one or more IPSpaces."""
+
+        if not self.features.IPSPACES:
+            return []
+
+        api_args = {}
+        if ipspace_name:
+            api_args['query'] = {
+                'net-ipspaces-info': {
+                    'ipspace': ipspace_name,
+                }
+            }
+
+        result = self.send_iter_request('net-ipspaces-get-iter', api_args)
+        if not self._has_records(result):
+            return []
+
+        ipspaces = []
+
+        for net_ipspaces_info in result.get_child_by_name(
+                'attributes-list').get_children():
+
+            ipspace = {
+                'ports': [],
+                'vservers': [],
+                'broadcast-domains': [],
+            }
+
+            ports = net_ipspaces_info.get_child_by_name(
+                'ports') or netapp_api.NaElement('none')
+            for port in ports.get_children():
+                ipspace['ports'].append(port.get_content())
+
+            vservers = net_ipspaces_info.get_child_by_name(
+                'vservers') or netapp_api.NaElement('none')
+            for vserver in vservers.get_children():
+                ipspace['vservers'].append(vserver.get_content())
+
+            broadcast_domains = net_ipspaces_info.get_child_by_name(
+                'broadcast-domains') or netapp_api.NaElement('none')
+            for broadcast_domain in broadcast_domains.get_children():
+                ipspace['broadcast-domains'].append(
+                    broadcast_domain.get_content())
+
+            ipspace['ipspace'] = net_ipspaces_info.get_child_content('ipspace')
+            ipspace['id'] = net_ipspaces_info.get_child_content('id')
+            ipspace['uuid'] = net_ipspaces_info.get_child_content('uuid')
+
+            ipspaces.append(ipspace)
+
+        return ipspaces
+
+    @na_utils.trace
+    def ipspace_exists(self, ipspace_name):
+        """Checks if IPspace exists."""
+
+        if not self.features.IPSPACES:
+            return False
+
+        api_args = {
+            'query': {
+                'net-ipspaces-info': {
+                    'ipspace': ipspace_name,
+                },
+            },
+            'desired-attributes': {
+                'net-ipspaces-info': {
+                    'ipspace': None,
+                },
+            },
+        }
+        result = self.send_iter_request('net-ipspaces-get-iter', api_args)
+        return self._has_records(result)
+
+    @na_utils.trace
+    def create_ipspace(self, ipspace_name):
+        """Creates an IPspace."""
+        api_args = {'ipspace': ipspace_name}
+        self.send_request('net-ipspaces-create', api_args)
+
+    @na_utils.trace
+    def delete_ipspace(self, ipspace_name):
+        """Deletes an IPspace."""
+
+        self._delete_broadcast_domains_for_ipspace(ipspace_name)
+
+        api_args = {'ipspace': ipspace_name}
+        self.send_request('net-ipspaces-destroy', api_args)
+
+    @na_utils.trace
+    def add_vserver_to_ipspace(self, ipspace_name, vserver_name):
+        """Assigns a vserver to an IPspace."""
+        api_args = {'ipspace': ipspace_name, 'vserver': vserver_name}
+        self.send_request('net-ipspaces-assign-vserver', api_args)
 
     @na_utils.trace
     def get_node_for_aggregate(self, aggregate_name):
@@ -738,7 +1003,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         if desired_attributes:
             api_args['desired-attributes'] = desired_attributes
 
-        result = self.send_request('aggr-get-iter', api_args)
+        result = self.send_iter_request('aggr-get-iter', api_args)
         if not self._has_records(result):
             return []
         else:
@@ -916,21 +1181,27 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
     def create_volume(self, aggregate_name, volume_name, size_gb,
                       thin_provisioned=False, snapshot_policy=None,
                       language=None, dedup_enabled=False,
-                      compression_enabled=False, max_files=None):
+                      compression_enabled=False, max_files=None,
+                      snapshot_reserve=None, volume_type='rw'):
 
         """Creates a volume."""
         api_args = {
             'containing-aggr-name': aggregate_name,
             'size': six.text_type(size_gb) + 'g',
             'volume': volume_name,
-            'junction-path': '/%s' % volume_name,
+            'volume-type': volume_type,
         }
+        if volume_type != 'dp':
+            api_args['junction-path'] = '/%s' % volume_name
         if thin_provisioned:
             api_args['space-reserve'] = 'none'
         if snapshot_policy is not None:
             api_args['snapshot-policy'] = snapshot_policy
         if language is not None:
             api_args['language-code'] = language
+        if snapshot_reserve is not None:
+            api_args['percentage-snapshot-reserve'] = six.text_type(
+                snapshot_reserve)
         self.send_request('volume-create', api_args)
 
         # cDOT compression requires that deduplication be enabled.
@@ -987,7 +1258,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 },
             },
         }
-        result = self.send_request('sis-get-iter', api_args)
+        result = self.send_iter_request('sis-get-iter', api_args)
 
         attributes_list = result.get_child_by_name(
             'attributes-list') or netapp_api.NaElement('none')
@@ -1145,7 +1416,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 },
             },
         }
-        result = self.send_request('volume-get-iter', api_args)
+        result = self.send_iter_request('volume-get-iter', api_args)
         return self._has_records(result)
 
     @na_utils.trace
@@ -1169,7 +1440,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 },
             },
         }
-        result = self.send_request('volume-get-iter', api_args)
+        result = self.send_iter_request('volume-get-iter', api_args)
 
         attributes_list = result.get_child_by_name(
             'attributes-list') or netapp_api.NaElement('none')
@@ -1204,7 +1475,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 },
             },
         }
-        result = self.send_request('lun-get-iter', api_args)
+        result = self.send_iter_request('lun-get-iter', api_args)
         return self._has_records(result)
 
     @na_utils.trace
@@ -1230,7 +1501,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 },
             },
         }
-        result = self.send_request('volume-get-iter', api_args)
+        result = self.send_iter_request('volume-get-iter', api_args)
         return self._has_records(result)
 
     @na_utils.trace
@@ -1262,7 +1533,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 },
             },
         }
-        result = self.send_request('volume-get-iter', api_args)
+        result = self.send_iter_request('volume-get-iter', api_args)
         if not self._has_records(result):
             return None
 
@@ -1315,7 +1586,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 },
             },
         }
-        result = self.send_request('volume-get-iter', api_args)
+        result = self.send_iter_request('volume-get-iter', api_args)
         if not self._has_records(result):
             return None
 
@@ -1355,8 +1626,55 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
     @na_utils.trace
     def split_volume_clone(self, volume_name):
         """Begins splitting a clone from its parent."""
-        api_args = {'volume': volume_name}
-        self.send_request('volume-clone-split-start', api_args)
+        try:
+            api_args = {'volume': volume_name}
+            self.send_request('volume-clone-split-start', api_args)
+        except netapp_api.NaApiError as e:
+            if e.code == netapp_api.EVOL_CLONE_BEING_SPLIT:
+                return
+            raise
+
+    @na_utils.trace
+    def get_clone_children_for_snapshot(self, volume_name, snapshot_name):
+        """Returns volumes that are keeping a snapshot locked."""
+
+        api_args = {
+            'query': {
+                'volume-attributes': {
+                    'volume-clone-attributes': {
+                        'volume-clone-parent-attributes': {
+                            'name': volume_name,
+                            'snapshot-name': snapshot_name,
+                        },
+                    },
+                },
+            },
+            'desired-attributes': {
+                'volume-attributes': {
+                    'volume-id-attributes': {
+                        'name': None,
+                    },
+                },
+            },
+        }
+        result = self.send_iter_request('volume-get-iter', api_args)
+        if not self._has_records(result):
+            return []
+
+        volume_list = []
+        attributes_list = result.get_child_by_name(
+            'attributes-list') or netapp_api.NaElement('none')
+
+        for volume_attributes in attributes_list.get_children():
+
+            volume_id_attributes = volume_attributes.get_child_by_name(
+                'volume-id-attributes') or netapp_api.NaElement('none')
+
+            volume_list.append({
+                'name': volume_id_attributes.get_child_content('name'),
+            })
+
+        return volume_list
 
     @na_utils.trace
     def get_volume_junction_path(self, volume_name, is_style_cifs=False):
@@ -1452,6 +1770,56 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         self.send_request('snapshot-create', api_args)
 
     @na_utils.trace
+    def snapshot_exists(self, snapshot_name, volume_name):
+        """Checks if Snapshot exists for a specified volume."""
+        LOG.debug('Checking if snapshot %(snapshot)s exists for '
+                  'volume %(volume)s',
+                  {'snapshot': snapshot_name, 'volume': volume_name})
+
+        """Gets a single snapshot."""
+        api_args = {
+            'query': {
+                'snapshot-info': {
+                    'name': snapshot_name,
+                    'volume': volume_name,
+                },
+            },
+            'desired-attributes': {
+                'snapshot-info': {
+                    'name': None,
+                    'volume': None,
+                    'busy': None,
+                    'snapshot-owners-list': {
+                        'snapshot-owner': None,
+                    }
+                },
+            },
+        }
+        result = self.send_request('snapshot-get-iter', api_args)
+
+        error_record_list = result.get_child_by_name(
+            'volume-errors') or netapp_api.NaElement('none')
+        errors = error_record_list.get_children()
+
+        if errors:
+            error = errors[0]
+            error_code = error.get_child_content('errno')
+            error_reason = error.get_child_content('reason')
+            msg = _('Could not read information for snapshot %(name)s. '
+                    'Code: %(code)s. Reason: %(reason)s')
+            msg_args = {
+                'name': snapshot_name,
+                'code': error_code,
+                'reason': error_reason
+            }
+            if error_code == netapp_api.ESNAPSHOTNOTALLOWED:
+                raise exception.SnapshotUnavailable(msg % msg_args)
+            else:
+                raise exception.NetAppException(msg % msg_args)
+
+        return self._has_records(result)
+
+    @na_utils.trace
     def get_snapshot(self, volume_name, snapshot_name):
         """Gets a single snapshot."""
         api_args = {
@@ -1499,7 +1867,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         snapshot_info_list = attributes_list.get_children()
 
         if not self._has_records(result):
-            raise exception.SnapshotNotFound(name=snapshot_name)
+            raise exception.SnapshotResourceNotFound(name=snapshot_name)
         elif len(snapshot_info_list) > 1:
             msg = _('Could not find unique snapshot %(snap)s on '
                     'volume %(vol)s.')
@@ -1524,10 +1892,92 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         return snapshot
 
     @na_utils.trace
+    def rename_snapshot(self, volume_name, snapshot_name, new_snapshot_name):
+        api_args = {
+            'volume': volume_name,
+            'current-name': snapshot_name,
+            'new-name': new_snapshot_name
+        }
+        self.send_request('snapshot-rename', api_args)
+
+    @na_utils.trace
     def delete_snapshot(self, volume_name, snapshot_name):
         """Deletes a volume snapshot."""
         api_args = {'volume': volume_name, 'snapshot': snapshot_name}
         self.send_request('snapshot-delete', api_args)
+
+    @na_utils.trace
+    def soft_delete_snapshot(self, volume_name, snapshot_name):
+        """Deletes a volume snapshot, or renames it if delete fails."""
+        try:
+            self.delete_snapshot(volume_name, snapshot_name)
+        except netapp_api.NaApiError:
+            self.rename_snapshot(volume_name,
+                                 snapshot_name,
+                                 DELETED_PREFIX + snapshot_name)
+            msg = _('Soft-deleted snapshot %(snapshot)s on volume %(volume)s.')
+            msg_args = {'snapshot': snapshot_name, 'volume': volume_name}
+            LOG.info(msg, msg_args)
+
+    @na_utils.trace
+    def prune_deleted_snapshots(self):
+        """Deletes non-busy snapshots that were previously soft-deleted."""
+
+        deleted_snapshots_map = self._get_deleted_snapshots()
+
+        for vserver in deleted_snapshots_map:
+            client = copy.deepcopy(self)
+            client.set_vserver(vserver)
+
+            for snapshot in deleted_snapshots_map[vserver]:
+                try:
+                    client.delete_snapshot(snapshot['volume'],
+                                           snapshot['name'])
+                except netapp_api.NaApiError:
+                    msg = _('Could not delete snapshot %(snap)s on '
+                            'volume %(volume)s.')
+                    msg_args = {
+                        'snap': snapshot['name'],
+                        'volume': snapshot['volume'],
+                    }
+                    LOG.exception(msg, msg_args)
+
+    @na_utils.trace
+    def _get_deleted_snapshots(self):
+        """Returns non-busy, soft-deleted snapshots suitable for reaping."""
+        api_args = {
+            'query': {
+                'snapshot-info': {
+                    'name': DELETED_PREFIX + '*',
+                    'busy': 'false',
+                },
+            },
+            'desired-attributes': {
+                'snapshot-info': {
+                    'name': None,
+                    'vserver': None,
+                    'volume': None,
+                },
+            },
+        }
+        result = self.send_iter_request('snapshot-get-iter', api_args)
+
+        attributes_list = result.get_child_by_name(
+            'attributes-list') or netapp_api.NaElement('none')
+
+        # Build a map of snapshots, one list of snapshots per vserver
+        snapshot_map = {}
+        for snapshot_info in attributes_list.get_children():
+            vserver = snapshot_info.get_child_content('vserver')
+            snapshot_list = snapshot_map.get(vserver, [])
+            snapshot_list.append({
+                'name': snapshot_info.get_child_content('name'),
+                'volume': snapshot_info.get_child_content('volume'),
+                'vserver': vserver,
+            })
+            snapshot_map[vserver] = snapshot_list
+
+        return snapshot_map
 
     @na_utils.trace
     def create_cg_snapshot(self, volume_names, snapshot_name):
@@ -1562,13 +2012,52 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         self.send_request('cifs-share-create', api_args)
 
     @na_utils.trace
-    def add_cifs_share_access(self, share_name, user_name):
+    def get_cifs_share_access(self, share_name):
         api_args = {
-            'permission': 'full_control',
+            'query': {
+                'cifs-share-access-control': {
+                    'share': share_name,
+                },
+            },
+            'desired-attributes': {
+                'cifs-share-access-control': {
+                    'user-or-group': None,
+                    'permission': None,
+                },
+            },
+        }
+        result = self.send_iter_request('cifs-share-access-control-get-iter',
+                                        api_args)
+
+        attributes_list = result.get_child_by_name(
+            'attributes-list') or netapp_api.NaElement('none')
+
+        rules = {}
+
+        for rule in attributes_list.get_children():
+            user_or_group = rule.get_child_content('user-or-group')
+            permission = rule.get_child_content('permission')
+            rules[user_or_group] = permission
+
+        return rules
+
+    @na_utils.trace
+    def add_cifs_share_access(self, share_name, user_name, readonly):
+        api_args = {
+            'permission': 'read' if readonly else 'full_control',
             'share': share_name,
             'user-or-group': user_name,
         }
         self.send_request('cifs-share-access-control-create', api_args)
+
+    @na_utils.trace
+    def modify_cifs_share_access(self, share_name, user_name, readonly):
+        api_args = {
+            'permission': 'read' if readonly else 'full_control',
+            'share': share_name,
+            'user-or-group': user_name,
+        }
+        self.send_request('cifs-share-access-control-modify', api_args)
 
     @na_utils.trace
     def remove_cifs_share_access(self, share_name, user_name):
@@ -1580,21 +2069,22 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         self.send_request('cifs-share-delete', {'share-name': share_name})
 
     @na_utils.trace
-    def add_nfs_export_rule(self, policy_name, rule, readonly):
-        rule_indices = self._get_nfs_export_rule_indices(policy_name, rule)
+    def add_nfs_export_rule(self, policy_name, client_match, readonly):
+        rule_indices = self._get_nfs_export_rule_indices(policy_name,
+                                                         client_match)
         if not rule_indices:
-            self._add_nfs_export_rule(policy_name, rule, readonly)
+            self._add_nfs_export_rule(policy_name, client_match, readonly)
         else:
             # Update first rule and delete the rest
             self._update_nfs_export_rule(
-                policy_name, rule, readonly, rule_indices.pop(0))
+                policy_name, client_match, readonly, rule_indices.pop(0))
             self._remove_nfs_export_rules(policy_name, rule_indices)
 
     @na_utils.trace
-    def _add_nfs_export_rule(self, policy_name, rule, readonly):
+    def _add_nfs_export_rule(self, policy_name, client_match, readonly):
         api_args = {
             'policy-name': policy_name,
-            'client-match': rule,
+            'client-match': client_match,
             'ro-rule': {
                 'security-flavor': 'sys',
             },
@@ -1608,11 +2098,12 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         self.send_request('export-rule-create', api_args)
 
     @na_utils.trace
-    def _update_nfs_export_rule(self, policy_name, rule, readonly, rule_index):
+    def _update_nfs_export_rule(self, policy_name, client_match, readonly,
+                                rule_index):
         api_args = {
             'policy-name': policy_name,
             'rule-index': rule_index,
-            'client-match': rule,
+            'client-match': client_match,
             'ro-rule': {
                 'security-flavor': 'sys'
             },
@@ -1626,12 +2117,12 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         self.send_request('export-rule-modify', api_args)
 
     @na_utils.trace
-    def _get_nfs_export_rule_indices(self, policy_name, rule):
+    def _get_nfs_export_rule_indices(self, policy_name, client_match):
         api_args = {
             'query': {
                 'export-rule-info': {
                     'policy-name': policy_name,
-                    'client-match': rule,
+                    'client-match': client_match,
                 },
             },
             'desired-attributes': {
@@ -1643,7 +2134,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 },
             },
         }
-        result = self.send_request('export-rule-get-iter', api_args)
+        result = self.send_iter_request('export-rule-get-iter', api_args)
 
         attributes_list = result.get_child_by_name(
             'attributes-list') or netapp_api.NaElement('none')
@@ -1655,8 +2146,9 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         return [six.text_type(rule_index) for rule_index in rule_indices]
 
     @na_utils.trace
-    def remove_nfs_export_rule(self, policy_name, rule):
-        rule_indices = self._get_nfs_export_rule_indices(policy_name, rule)
+    def remove_nfs_export_rule(self, policy_name, client_match):
+        rule_indices = self._get_nfs_export_rule_indices(policy_name,
+                                                         client_match)
         self._remove_nfs_export_rules(policy_name, rule_indices)
 
     @na_utils.trace
@@ -1716,7 +2208,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 },
             },
         }
-        result = self.send_request('volume-get-iter', api_args)
+        result = self.send_iter_request('volume-get-iter', api_args)
 
         attributes_list = result.get_child_by_name(
             'attributes-list') or netapp_api.NaElement('none')
@@ -1797,7 +2289,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 },
             },
         }
-        result = self.send_request('export-policy-get-iter', api_args)
+        result = self.send_iter_request('export-policy-get-iter', api_args)
 
         attributes_list = result.get_child_by_name(
             'attributes-list') or netapp_api.NaElement('none')
@@ -1932,3 +2424,493 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 return False
             else:
                 raise e
+
+    @na_utils.trace
+    def create_cluster_peer(self, addresses, username=None, password=None,
+                            passphrase=None):
+        """Creates a cluster peer relationship."""
+
+        api_args = {
+            'peer-addresses': [
+                {'remote-inet-address': address} for address in addresses
+            ],
+        }
+        if username:
+            api_args['user-name'] = username
+        if password:
+            api_args['password'] = password
+        if passphrase:
+            api_args['passphrase'] = passphrase
+
+        self.send_request('cluster-peer-create', api_args)
+
+    @na_utils.trace
+    def get_cluster_peers(self, remote_cluster_name=None):
+        """Gets one or more cluster peer relationships."""
+
+        api_args = {}
+        if remote_cluster_name:
+            api_args['query'] = {
+                'cluster-peer-info': {
+                    'remote-cluster-name': remote_cluster_name,
+                }
+            }
+
+        result = self.send_iter_request('cluster-peer-get-iter', api_args)
+        if not self._has_records(result):
+            return []
+
+        cluster_peers = []
+
+        for cluster_peer_info in result.get_child_by_name(
+                'attributes-list').get_children():
+
+            cluster_peer = {
+                'active-addresses': [],
+                'peer-addresses': []
+            }
+
+            active_addresses = cluster_peer_info.get_child_by_name(
+                'active-addresses') or netapp_api.NaElement('none')
+            for address in active_addresses.get_children():
+                cluster_peer['active-addresses'].append(address.get_content())
+
+            peer_addresses = cluster_peer_info.get_child_by_name(
+                'peer-addresses') or netapp_api.NaElement('none')
+            for address in peer_addresses.get_children():
+                cluster_peer['peer-addresses'].append(address.get_content())
+
+            cluster_peer['availability'] = cluster_peer_info.get_child_content(
+                'availability')
+            cluster_peer['cluster-name'] = cluster_peer_info.get_child_content(
+                'cluster-name')
+            cluster_peer['cluster-uuid'] = cluster_peer_info.get_child_content(
+                'cluster-uuid')
+            cluster_peer['remote-cluster-name'] = (
+                cluster_peer_info.get_child_content('remote-cluster-name'))
+            cluster_peer['serial-number'] = (
+                cluster_peer_info.get_child_content('serial-number'))
+            cluster_peer['timeout'] = cluster_peer_info.get_child_content(
+                'timeout')
+
+            cluster_peers.append(cluster_peer)
+
+        return cluster_peers
+
+    @na_utils.trace
+    def delete_cluster_peer(self, cluster_name):
+        """Deletes a cluster peer relationship."""
+
+        api_args = {'cluster-name': cluster_name}
+        self.send_request('cluster-peer-delete', api_args)
+
+    @na_utils.trace
+    def get_cluster_peer_policy(self):
+        """Gets the cluster peering policy configuration."""
+
+        if not self.features.CLUSTER_PEER_POLICY:
+            return {}
+
+        result = self.send_request('cluster-peer-policy-get')
+
+        attributes = result.get_child_by_name(
+            'attributes') or netapp_api.NaElement('none')
+        cluster_peer_policy = attributes.get_child_by_name(
+            'cluster-peer-policy') or netapp_api.NaElement('none')
+
+        policy = {
+            'is-unauthenticated-access-permitted':
+            cluster_peer_policy.get_child_content(
+                'is-unauthenticated-access-permitted'),
+            'passphrase-minimum-length':
+            cluster_peer_policy.get_child_content(
+                'passphrase-minimum-length'),
+        }
+
+        if policy['is-unauthenticated-access-permitted'] is not None:
+            policy['is-unauthenticated-access-permitted'] = (
+                strutils.bool_from_string(
+                    policy['is-unauthenticated-access-permitted']))
+        if policy['passphrase-minimum-length'] is not None:
+            policy['passphrase-minimum-length'] = int(
+                policy['passphrase-minimum-length'])
+
+        return policy
+
+    @na_utils.trace
+    def set_cluster_peer_policy(self, is_unauthenticated_access_permitted=None,
+                                passphrase_minimum_length=None):
+        """Modifies the cluster peering policy configuration."""
+
+        if not self.features.CLUSTER_PEER_POLICY:
+            return
+
+        if (is_unauthenticated_access_permitted is None and
+                passphrase_minimum_length is None):
+            return
+
+        api_args = {}
+        if is_unauthenticated_access_permitted is not None:
+            api_args['is-unauthenticated-access-permitted'] = (
+                'true' if strutils.bool_from_string(
+                    is_unauthenticated_access_permitted) else 'false')
+        if passphrase_minimum_length is not None:
+            api_args['passphrase-minlength'] = six.text_type(
+                passphrase_minimum_length)
+
+        self.send_request('cluster-peer-policy-modify', api_args)
+
+    @na_utils.trace
+    def create_vserver_peer(self, vserver_name, peer_vserver_name):
+        """Creates a Vserver peer relationship for SnapMirrors."""
+        api_args = {
+            'vserver': vserver_name,
+            'peer-vserver': peer_vserver_name,
+            'applications': [
+                {'vserver-peer-application': 'snapmirror'},
+            ],
+        }
+        self.send_request('vserver-peer-create', api_args)
+
+    @na_utils.trace
+    def delete_vserver_peer(self, vserver_name, peer_vserver_name):
+        """Deletes a Vserver peer relationship."""
+
+        api_args = {'vserver': vserver_name, 'peer-vserver': peer_vserver_name}
+        self.send_request('vserver-peer-delete', api_args)
+
+    @na_utils.trace
+    def accept_vserver_peer(self, vserver_name, peer_vserver_name):
+        """Accepts a pending Vserver peer relationship."""
+
+        api_args = {'vserver': vserver_name, 'peer-vserver': peer_vserver_name}
+        self.send_request('vserver-peer-accept', api_args)
+
+    @na_utils.trace
+    def get_vserver_peers(self, vserver_name=None, peer_vserver_name=None):
+        """Gets one or more Vserver peer relationships."""
+
+        api_args = None
+        if vserver_name or peer_vserver_name:
+            api_args = {'query': {'vserver-peer-info': {}}}
+            if vserver_name:
+                api_args['query']['vserver-peer-info']['vserver'] = (
+                    vserver_name)
+            if peer_vserver_name:
+                api_args['query']['vserver-peer-info']['peer-vserver'] = (
+                    peer_vserver_name)
+
+        result = self.send_iter_request('vserver-peer-get-iter', api_args)
+        if not self._has_records(result):
+            return []
+
+        vserver_peers = []
+
+        for vserver_peer_info in result.get_child_by_name(
+                'attributes-list').get_children():
+
+            vserver_peer = {
+                'vserver': vserver_peer_info.get_child_content('vserver'),
+                'peer-vserver':
+                vserver_peer_info.get_child_content('peer-vserver'),
+                'peer-state':
+                vserver_peer_info.get_child_content('peer-state'),
+                'peer-cluster':
+                vserver_peer_info.get_child_content('peer-cluster'),
+            }
+            vserver_peers.append(vserver_peer)
+
+        return vserver_peers
+
+    def _ensure_snapmirror_v2(self):
+        """Verify support for SnapMirror control plane v2."""
+        if not self.features.SNAPMIRROR_V2:
+            msg = _('SnapMirror features require Data ONTAP 8.2 or later.')
+            raise exception.NetAppException(msg)
+
+    @na_utils.trace
+    def create_snapmirror(self, source_vserver, source_volume,
+                          destination_vserver, destination_volume,
+                          schedule=None, policy=None,
+                          relationship_type='data_protection'):
+        """Creates a SnapMirror relationship (cDOT 8.2 or later only)."""
+        self._ensure_snapmirror_v2()
+
+        api_args = {
+            'source-volume': source_volume,
+            'source-vserver': source_vserver,
+            'destination-volume': destination_volume,
+            'destination-vserver': destination_vserver,
+            'relationship-type': relationship_type,
+        }
+        if schedule:
+            api_args['schedule'] = schedule
+        if policy:
+            api_args['policy'] = policy
+
+        try:
+            self.send_request('snapmirror-create', api_args)
+        except netapp_api.NaApiError as e:
+            if e.code != netapp_api.ERELATION_EXISTS:
+                raise
+
+    @na_utils.trace
+    def initialize_snapmirror(self, source_vserver, source_volume,
+                              destination_vserver, destination_volume,
+                              source_snapshot=None, transfer_priority=None):
+        """Initializes a SnapMirror relationship (cDOT 8.2 or later only)."""
+        self._ensure_snapmirror_v2()
+
+        api_args = {
+            'source-volume': source_volume,
+            'source-vserver': source_vserver,
+            'destination-volume': destination_volume,
+            'destination-vserver': destination_vserver,
+        }
+        if source_snapshot:
+            api_args['source-snapshot'] = source_snapshot
+        if transfer_priority:
+            api_args['transfer-priority'] = transfer_priority
+
+        result = self.send_request('snapmirror-initialize', api_args)
+
+        result_info = {}
+        result_info['operation-id'] = result.get_child_content(
+            'result-operation-id')
+        result_info['status'] = result.get_child_content('result-status')
+        result_info['jobid'] = result.get_child_content('result-jobid')
+        result_info['error-code'] = result.get_child_content(
+            'result-error-code')
+        result_info['error-message'] = result.get_child_content(
+            'result-error-message')
+
+        return result_info
+
+    @na_utils.trace
+    def release_snapmirror(self, source_vserver, source_volume,
+                           destination_vserver, destination_volume,
+                           relationship_info_only=False):
+        """Removes a SnapMirror relationship on the source endpoint."""
+        self._ensure_snapmirror_v2()
+
+        api_args = {
+            'query': {
+                'snapmirror-destination-info': {
+                    'source-volume': source_volume,
+                    'source-vserver': source_vserver,
+                    'destination-volume': destination_volume,
+                    'destination-vserver': destination_vserver,
+                    'relationship-info-only': ('true' if relationship_info_only
+                                               else 'false'),
+                }
+            }
+        }
+        self.send_request('snapmirror-release-iter', api_args)
+
+    @na_utils.trace
+    def quiesce_snapmirror(self, source_vserver, source_volume,
+                           destination_vserver, destination_volume):
+        """Disables future transfers to a SnapMirror destination."""
+        self._ensure_snapmirror_v2()
+
+        api_args = {
+            'source-volume': source_volume,
+            'source-vserver': source_vserver,
+            'destination-volume': destination_volume,
+            'destination-vserver': destination_vserver,
+        }
+        self.send_request('snapmirror-quiesce', api_args)
+
+    @na_utils.trace
+    def abort_snapmirror(self, source_vserver, source_volume,
+                         destination_vserver, destination_volume,
+                         clear_checkpoint=False):
+        """Stops ongoing transfers for a SnapMirror relationship."""
+        self._ensure_snapmirror_v2()
+
+        api_args = {
+            'source-volume': source_volume,
+            'source-vserver': source_vserver,
+            'destination-volume': destination_volume,
+            'destination-vserver': destination_vserver,
+            'clear-checkpoint': 'true' if clear_checkpoint else 'false',
+        }
+        try:
+            self.send_request('snapmirror-abort', api_args)
+        except netapp_api.NaApiError as e:
+            if e.code != netapp_api.ENOTRANSFER_IN_PROGRESS:
+                raise
+
+    @na_utils.trace
+    def break_snapmirror(self, source_vserver, source_volume,
+                         destination_vserver, destination_volume):
+        """Breaks a data protection SnapMirror relationship."""
+        self._ensure_snapmirror_v2()
+
+        api_args = {
+            'source-volume': source_volume,
+            'source-vserver': source_vserver,
+            'destination-volume': destination_volume,
+            'destination-vserver': destination_vserver,
+        }
+        self.send_request('snapmirror-break', api_args)
+
+    @na_utils.trace
+    def modify_snapmirror(self, source_vserver, source_volume,
+                          destination_vserver, destination_volume,
+                          schedule=None, policy=None, tries=None,
+                          max_transfer_rate=None):
+        """Modifies a SnapMirror relationship."""
+        self._ensure_snapmirror_v2()
+
+        api_args = {
+            'source-volume': source_volume,
+            'source-vserver': source_vserver,
+            'destination-volume': destination_volume,
+            'destination-vserver': destination_vserver,
+        }
+        if schedule:
+            api_args['schedule'] = schedule
+        if policy:
+            api_args['policy'] = policy
+        if tries is not None:
+            api_args['tries'] = tries
+        if max_transfer_rate is not None:
+            api_args['max-transfer-rate'] = max_transfer_rate
+
+        self.send_request('snapmirror-modify', api_args)
+
+    @na_utils.trace
+    def delete_snapmirror(self, source_vserver, source_volume,
+                          destination_vserver, destination_volume):
+        """Destroys a SnapMirror relationship."""
+        self._ensure_snapmirror_v2()
+
+        api_args = {
+            'query': {
+                'snapmirror-info': {
+                    'source-volume': source_volume,
+                    'source-vserver': source_vserver,
+                    'destination-volume': destination_volume,
+                    'destination-vserver': destination_vserver,
+                }
+            }
+        }
+        self.send_request('snapmirror-destroy-iter', api_args)
+
+    @na_utils.trace
+    def update_snapmirror(self, source_vserver, source_volume,
+                          destination_vserver, destination_volume):
+        """Schedules a snapmirror update."""
+        self._ensure_snapmirror_v2()
+
+        api_args = {
+            'source-volume': source_volume,
+            'source-vserver': source_vserver,
+            'destination-volume': destination_volume,
+            'destination-vserver': destination_vserver,
+        }
+        try:
+            self.send_request('snapmirror-update', api_args)
+        except netapp_api.NaApiError as e:
+            if (e.code != netapp_api.ETRANSFER_IN_PROGRESS and
+                    e.code != netapp_api.EANOTHER_OP_ACTIVE):
+                raise
+
+    @na_utils.trace
+    def resume_snapmirror(self, source_vserver, source_volume,
+                          destination_vserver, destination_volume):
+        """Resume a SnapMirror relationship if it is quiesced."""
+        self._ensure_snapmirror_v2()
+
+        api_args = {
+            'source-volume': source_volume,
+            'source-vserver': source_vserver,
+            'destination-volume': destination_volume,
+            'destination-vserver': destination_vserver,
+        }
+        try:
+            self.send_request('snapmirror-resume', api_args)
+        except netapp_api.NaApiError as e:
+            if e.code != netapp_api.ERELATION_NOT_QUIESCED:
+                raise
+
+    @na_utils.trace
+    def resync_snapmirror(self, source_vserver, source_volume,
+                          destination_vserver, destination_volume):
+        """Resync a SnapMirror relationship."""
+        self._ensure_snapmirror_v2()
+
+        api_args = {
+            'source-volume': source_volume,
+            'source-vserver': source_vserver,
+            'destination-volume': destination_volume,
+            'destination-vserver': destination_vserver,
+        }
+        self.send_request('snapmirror-resync', api_args)
+
+    @na_utils.trace
+    def _get_snapmirrors(self, source_vserver=None, source_volume=None,
+                         destination_vserver=None, destination_volume=None,
+                         desired_attributes=None):
+
+        query = None
+        if (source_vserver or source_volume or destination_vserver or
+                destination_volume):
+            query = {'snapmirror-info': {}}
+            if source_volume:
+                query['snapmirror-info']['source-volume'] = source_volume
+            if destination_volume:
+                query['snapmirror-info']['destination-volume'] = (
+                    destination_volume)
+            if source_vserver:
+                query['snapmirror-info']['source-vserver'] = source_vserver
+            if destination_vserver:
+                query['snapmirror-info']['destination-vserver'] = (
+                    destination_vserver)
+
+        api_args = {}
+        if query:
+            api_args['query'] = query
+        if desired_attributes:
+            api_args['desired-attributes'] = desired_attributes
+
+        result = self.send_iter_request('snapmirror-get-iter', api_args)
+        if not self._has_records(result):
+            return []
+        else:
+            return result.get_child_by_name('attributes-list').get_children()
+
+    @na_utils.trace
+    def get_snapmirrors(self, source_vserver, source_volume,
+                        destination_vserver, destination_volume,
+                        desired_attributes=None):
+        """Gets one or more SnapMirror relationships.
+
+        Either the source or destination info may be omitted.
+        Desired attributes should be a flat list of attribute names.
+        """
+        self._ensure_snapmirror_v2()
+
+        if desired_attributes is not None:
+            desired_attributes = {
+                'snapmirror-info': {attr: None for attr in desired_attributes},
+            }
+
+        result = self._get_snapmirrors(
+            source_vserver=source_vserver,
+            source_volume=source_volume,
+            destination_vserver=destination_vserver,
+            destination_volume=destination_volume,
+            desired_attributes=desired_attributes)
+
+        snapmirrors = []
+
+        for snapmirror_info in result:
+            snapmirror = {}
+            for child in snapmirror_info.get_children():
+                name = self._strip_xml_namespace(child.get_name())
+                snapmirror[name] = child.get_content()
+            snapmirrors.append(snapmirror)
+
+        return snapmirrors

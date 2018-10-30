@@ -45,15 +45,18 @@ PER_HOUR = 60 * 60
 PER_DAY = 60 * 60 * 24
 
 
-class LimitsController(object):
+class LimitsController(wsgi.Controller):
     """Controller for accessing limits in the OpenStack API."""
 
     def index(self, req):
         """Return all global and rate limit information."""
         context = req.environ['manila.context']
         quotas = QUOTAS.get_project_quotas(context, context.project_id,
-                                           usages=False)
-        abs_limits = dict((k, v['limit']) for k, v in quotas.items())
+                                           usages=True)
+        abs_limits = {'in_use': {}, 'limit': {}}
+        for k, v in quotas.items():
+            abs_limits['limit'][k] = v['limit']
+            abs_limits['in_use'][k] = v['in_use']
         rate_limits = req.environ.get("manila.limits", [])
 
         builder = self._get_view_builder(req)
@@ -77,7 +80,7 @@ class Limit(object):
         60 * 60 * 24: "DAY",
     }
 
-    UNIT_MAP = dict([(v, k) for k, v in UNITS.items()])
+    UNIT_MAP = {v: k for k, v in UNITS.items()}
 
     def __init__(self, verb, uri, regex, value, unit):
         """Initialize a new `Limit`.
@@ -105,9 +108,11 @@ class Limit(object):
         self.water_level = 0
         self.capacity = self.unit
         self.request_value = float(self.capacity) / float(self.value)
-        msg = _("Only %(value)s %(verb)s request(s) can be "
-                "made to %(uri)s every %(unit_string)s.")
-        self.error_message = msg % self.__dict__
+        msg = (_("Only %(value)s %(verb)s request(s) can be "
+               "made to %(uri)s every %(unit_string)s.") %
+               {'value': self.value, 'verb': self.verb,
+                'uri': self.uri, 'unit_string': self.unit_string})
+        self.error_message = msg
 
     def __call__(self, verb, url):
         """Represents a call to this limit from a relevant request.

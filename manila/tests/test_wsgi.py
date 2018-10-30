@@ -24,6 +24,7 @@ import ddt
 import eventlet
 import mock
 from oslo_config import cfg
+from oslo_utils import netutils
 import six
 from six.moves import urllib
 import testtools
@@ -114,6 +115,32 @@ class TestWSGIServer(test.TestCase):
         self.assertNotEqual(0, server.port)
         server.stop()
         server.wait()
+
+    def test_start_with_default_tcp_options(self):
+        server = manila.wsgi.Server("test_tcp_options",
+                                    None,
+                                    host="127.0.0.1")
+        self.mock_object(
+            netutils, 'set_tcp_keepalive')
+        server.start()
+        netutils.set_tcp_keepalive.assert_called_once_with(
+            mock.ANY, tcp_keepalive=True, tcp_keepalive_count=None,
+            tcp_keepalive_interval=None, tcp_keepidle=600)
+
+    def test_start_with_custom_tcp_options(self):
+        CONF.set_default("tcp_keepalive", False)
+        CONF.set_default("tcp_keepalive_count", 33)
+        CONF.set_default("tcp_keepalive_interval", 22)
+        CONF.set_default("tcp_keepidle", 11)
+        server = manila.wsgi.Server("test_tcp_options",
+                                    None,
+                                    host="127.0.0.1")
+        self.mock_object(
+            netutils, 'set_tcp_keepalive')
+        server.start()
+        netutils.set_tcp_keepalive.assert_called_once_with(
+            mock.ANY, tcp_keepalive=False, tcp_keepalive_count=33,
+            tcp_keepalive_interval=22, tcp_keepidle=11)
 
     def test_app(self):
         self.mock_object(
@@ -254,7 +281,7 @@ class ExceptionTest(test.TestCase):
                     'The server has either erred or is incapable '
                     'of performing the requested operation.')
         self.assertIn(expected, six.text_type(resp.body), resp.body)
-        self.assertEqual(resp.status_int, 500, resp.body)
+        self.assertEqual(500, resp.status_int, resp.body)
 
     def test_safe_exceptions_are_described_in_faults(self):
         self._do_test_exception_safety_reflected_in_faults(True)
@@ -270,12 +297,12 @@ class ExceptionTest(test.TestCase):
         api = self._wsgi_app(fail)
         resp = webob.Request.blank('/').get_response(api)
         self.assertIn(msg, six.text_type(resp.body), resp.body)
-        self.assertEqual(resp.status_int, exception_type.code, resp.body)
+        self.assertEqual(exception_type.code, resp.status_int, resp.body)
 
         if hasattr(exception_type, 'headers'):
-            for (key, value) in six.iteritems(exception_type.headers):
+            for (key, value) in exception_type.headers.items():
                 self.assertTrue(key in resp.headers)
-                self.assertEqual(resp.headers[key], value)
+                self.assertEqual(value, resp.headers[key])
 
     def test_quota_error_mapping(self):
         self._do_test_exception_mapping(exception.QuotaError, 'too many used')

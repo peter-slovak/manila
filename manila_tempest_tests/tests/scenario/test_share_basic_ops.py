@@ -15,11 +15,12 @@
 
 from oslo_log import log as logging
 from tempest import config  # noqa
+from tempest.lib.common.utils import data_utils
+from tempest.lib import exceptions
 from tempest import test  # noqa
-from tempest_lib.common.utils import data_utils
-from tempest_lib import exceptions
 
 from manila_tempest_tests.tests.scenario import manager_share as manager
+from manila_tempest_tests import utils
 
 CONF = config.CONF
 
@@ -47,7 +48,7 @@ class ShareBasicOpsBase(manager.ShareScenarioTest):
         if not hasattr(self, 'flavor_ref'):
             self.flavor_ref = CONF.share.client_vm_flavor_ref
         if CONF.share.image_with_share_tools:
-            images = self.images_client.list_images()["images"]
+            images = self.compute_images_client.list_images()["images"]
             for img in images:
                 if img["name"] == CONF.share.image_with_share_tools:
                     self.image_ref = img['id']
@@ -68,23 +69,23 @@ class ShareBasicOpsBase(manager.ShareScenarioTest):
         create_kwargs = {
             'key_name': self.keypair['name'],
             'security_groups': security_groups,
+            'wait_until': 'ACTIVE',
         }
         if CONF.share.multitenancy_enabled:
             create_kwargs['networks'] = [{'uuid': self.net['id']}, ]
-        instance = self.create_server(image=self.image_ref,
-                                      create_kwargs=create_kwargs,
-                                      flavor=self.flavor_ref)
+        instance = self.create_server(
+            image_id=self.image_ref, flavor=self.flavor_ref, **create_kwargs)
         return instance
 
     def init_ssh(self, instance, do_ping=False):
         # Obtain a floating IP
-        floating_ip = (self.floating_ips_client.create_floating_ip()
+        floating_ip = (self.compute_floating_ips_client.create_floating_ip()
                        ['floating_ip'])
         self.addCleanup(self.delete_wrapper,
-                        self.floating_ips_client.delete_floating_ip,
+                        self.compute_floating_ips_client.delete_floating_ip,
                         floating_ip['id'])
         # Attach a floating IP
-        self.floating_ips_client.associate_floating_ip_to_server(
+        self.compute_floating_ips_client.associate_floating_ip_to_server(
             floating_ip['ip'], instance['id'])
         # Check ssh
         ssh_client = self.get_remote_client(
@@ -172,9 +173,18 @@ class ShareBasicOpsBase(manager.ShareScenarioTest):
         self.security_group = self._create_security_group()
         self.create_share()
         instance = self.boot_instance()
-        self.allow_access_ip(self.share['id'], instance=instance)
+        self.allow_access_ip(self.share['id'], instance=instance,
+                             cleanup=False)
         ssh_client = self.init_ssh(instance)
-        for location in self.share['export_locations']:
+
+        if utils.is_microversion_lt(CONF.share.max_api_microversion, "2.9"):
+            locations = self.share['export_locations']
+        else:
+            exports = self.shares_v2_client.list_share_export_locations(
+                self.share['id'])
+            locations = [x['path'] for x in exports]
+
+        for location in locations:
             self.mount_share(location, ssh_client)
             self.umount_share(ssh_client)
         self.servers_client.delete_server(instance['id'])
@@ -188,10 +198,18 @@ class ShareBasicOpsBase(manager.ShareScenarioTest):
 
         # boot first VM and write data
         instance1 = self.boot_instance()
-        self.allow_access_ip(self.share['id'], instance=instance1)
+        self.allow_access_ip(self.share['id'], instance=instance1,
+                             cleanup=False)
         ssh_client_inst1 = self.init_ssh(instance1)
-        first_location = self.share['export_locations'][0]
-        self.mount_share(first_location, ssh_client_inst1)
+
+        if utils.is_microversion_lt(CONF.share.max_api_microversion, "2.9"):
+            locations = self.share['export_locations']
+        else:
+            exports = self.shares_v2_client.list_share_export_locations(
+                self.share['id'])
+            locations = [x['path'] for x in exports]
+
+        self.mount_share(locations[0], ssh_client_inst1)
         self.addCleanup(self.umount_share,
                         ssh_client_inst1)
         self.write_data(test_data, ssh_client_inst1)
@@ -200,7 +218,7 @@ class ShareBasicOpsBase(manager.ShareScenarioTest):
         instance2 = self.boot_instance()
         self.allow_access_ip(self.share['id'], instance=instance2)
         ssh_client_inst2 = self.init_ssh(instance2)
-        self.mount_share(first_location, ssh_client_inst2)
+        self.mount_share(locations[0], ssh_client_inst2)
         self.addCleanup(self.umount_share,
                         ssh_client_inst2)
         data = self.read_data(ssh_client_inst2)
@@ -235,14 +253,19 @@ class ShareBasicOpsBase(manager.ShareScenarioTest):
 
         dest_pool = dest_pool['name']
 
-        old_export_location = share['export_locations'][0]
-
         instance1 = self.boot_instance()
         self.allow_access_ip(self.share['id'], instance=instance1,
                              cleanup=False)
         ssh_client = self.init_ssh(instance1)
-        first_location = self.share['export_locations'][0]
-        self.mount_share(first_location, ssh_client)
+
+        if utils.is_microversion_lt(CONF.share.max_api_microversion, "2.9"):
+            locations = self.share['export_locations']
+        else:
+            exports = self.shares_v2_client.list_share_export_locations(
+                self.share['id'])
+            locations = [x['path'] for x in exports]
+
+        self.mount_share(locations[0], ssh_client)
 
         ssh_client.exec_command("mkdir -p /mnt/f1")
         ssh_client.exec_command("mkdir -p /mnt/f2")
@@ -266,13 +289,20 @@ class ShareBasicOpsBase(manager.ShareScenarioTest):
         self.umount_share(ssh_client)
 
         share = self.migrate_share(share['id'], dest_pool)
+        if utils.is_microversion_lt(CONF.share.max_api_microversion, "2.9"):
+            new_locations = self.share['export_locations']
+        else:
+            new_exports = self.shares_v2_client.list_share_export_locations(
+                self.share['id'])
+            new_locations = [x['path'] for x in new_exports]
 
         self.assertEqual(dest_pool, share['host'])
-        self.assertNotEqual(old_export_location, share['export_locations'][0])
+        locations.sort()
+        new_locations.sort()
+        self.assertNotEqual(locations, new_locations)
         self.assertEqual('migration_success', share['task_state'])
 
-        second_location = share['export_locations'][0]
-        self.mount_share(second_location, ssh_client)
+        self.mount_share(new_locations[0], ssh_client)
 
         output = ssh_client.exec_command("ls -lRA --ignore=lost+found /mnt")
 
@@ -289,7 +319,7 @@ class TestShareBasicOpsNFS(ShareBasicOpsBase):
     protocol = "NFS"
 
     def mount_share(self, location, ssh_client):
-        ssh_client.exec_command("sudo mount \"%s\" /mnt" % location)
+        ssh_client.exec_command("sudo mount -vt nfs \"%s\" /mnt" % location)
 
 
 class TestShareBasicOpsCIFS(ShareBasicOpsBase):

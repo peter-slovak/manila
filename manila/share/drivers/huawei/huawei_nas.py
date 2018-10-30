@@ -52,12 +52,16 @@ class HuaweiNasDriver(driver.ShareDriver):
               Add share level(ro).
               Add smartx capabilities.
               Support multi pools in one backend.
+        1.2 - Add share server support.
+              Add ensure share.
+              Add QoS support.
+              Add create share from snapshot.
     """
 
     def __init__(self, *args, **kwargs):
         """Do initialization."""
         LOG.debug("Enter into init function.")
-        super(HuaweiNasDriver, self).__init__(False, *args, **kwargs)
+        super(HuaweiNasDriver, self).__init__((True, False), *args, **kwargs)
         self.configuration = kwargs.get('configuration', None)
         if self.configuration:
             self.configuration.append_config_values(huawei_opts)
@@ -65,7 +69,8 @@ class HuaweiNasDriver(driver.ShareDriver):
             self.plugin = importutils.import_object(backend_driver,
                                                     self.configuration)
         else:
-            raise exception.InvalidShare(_("Huawei configuration missing."))
+            raise exception.InvalidShare(
+                reason=_("Huawei configuration missing."))
 
     def check_for_setup_error(self):
         """Returns an error if prerequisites aren't met."""
@@ -109,6 +114,13 @@ class HuaweiNasDriver(driver.ShareDriver):
         LOG.debug("Extend a share.")
         self.plugin.extend_share(share, new_size, share_server)
 
+    def create_share_from_snapshot(self, context, share, snapshot,
+                                   share_server=None):
+        """Create a share from snapshot."""
+        LOG.debug("Create a share from snapshot %s.", snapshot['snapshot_id'])
+        location = self.plugin.create_share_from_snapshot(share, snapshot)
+        return location
+
     def shrink_share(self, share, new_size, share_server=None):
         """Shrinks size of existing share."""
         LOG.debug("Shrink a share.")
@@ -117,11 +129,11 @@ class HuaweiNasDriver(driver.ShareDriver):
     def delete_share(self, context, share, share_server=None):
         """Delete a share."""
         LOG.debug("Delete a share.")
-
         self.plugin.delete_share(share, share_server)
 
     def create_snapshot(self, context, snapshot, share_server=None):
         """Create a snapshot."""
+        LOG.debug("Create a snapshot.")
         self.plugin.create_snapshot(snapshot, share_server)
 
     def delete_snapshot(self, context, snapshot, share_server=None):
@@ -130,20 +142,27 @@ class HuaweiNasDriver(driver.ShareDriver):
         self.plugin.delete_snapshot(snapshot, share_server)
 
     def ensure_share(self, context, share, share_server=None):
-        """Ensure that storages are mounted and exported."""
+        """Ensure that share is exported."""
         LOG.debug("Ensure share.")
+        location = self.plugin.ensure_share(share, share_server)
+        return location
 
     def allow_access(self, context, share, access, share_server=None):
         """Allow access to the share."""
         LOG.debug("Allow access.")
-
         self.plugin.allow_access(share, access, share_server)
 
     def deny_access(self, context, share, access, share_server=None):
         """Deny access to the share."""
         LOG.debug("Deny access.")
-
         self.plugin.deny_access(share, access, share_server)
+
+    def update_access(self, context, share, access_rules, add_rules,
+                      delete_rules, share_server=None):
+        """Update access rules list."""
+        LOG.debug("Update access.")
+        self.plugin.update_access(share, access_rules,
+                                  add_rules, delete_rules, share_server)
 
     def get_pool(self, share):
         """Return pool name where the share resides on."""
@@ -169,10 +188,19 @@ class HuaweiNasDriver(driver.ShareDriver):
         data = dict(
             share_backend_name=backend_name or 'HUAWEI_NAS_Driver',
             vendor_name='Huawei',
-            driver_version='1.1',
+            driver_version='1.2',
             storage_protocol='NFS_CIFS',
+            qos=True,
             total_capacity_gb=0.0,
             free_capacity_gb=0.0)
 
         self.plugin.update_share_stats(data)
         super(HuaweiNasDriver, self)._update_share_stats(data)
+
+    def _setup_server(self, network_info, metadata=None):
+        """Set up share server with given network parameters."""
+        return self.plugin.setup_server(network_info, metadata)
+
+    def _teardown_server(self, server_details, security_services=None):
+        """Teardown share server."""
+        return self.plugin.teardown_server(server_details, security_services)

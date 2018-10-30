@@ -17,12 +17,12 @@
 Isilon Driver
 =============
 
-The EMC Manila driver framework (EMCShareDriver) utilizes EMC storage products
-to provide shared filesystems to OpenStack. The EMC Manila driver is a plugin
+The EMC manila driver framework (EMCShareDriver) utilizes EMC storage products
+to provide shared filesystems to OpenStack. The EMC manila driver is a plugin
 based driver which is designed to use different plugins to manage different EMC
 storage products.
 
-The Isilon manila driver is a plugin for the EMC Manila driver framework which
+The Isilon manila driver is a plugin for the EMC manila driver framework which
 allows manila to interface with an Isilon backend to provide a shared
 filesystem. The EMC driver framework with the Isilon plugin is referred to as
 the "Isilon Driver" in this document.
@@ -38,17 +38,18 @@ Requirements
 Supported Operations
 --------------------
 
-The following operations will be supported on an Isilon cluster:
+The following operations are supported on an Isilon cluster:
 
-- Create CIFS/NFS Share
-- Delete CIFS/NFS Share
-- Allow CIFS/NFS Share access
-  * Only IP access type is supported for NFS and CIFS.
-  * Only RW access supported
-- Deny CIFS/NFS Share access
-- Create snapshot
-- Delete snapshot
-- Create share from snapshot
+* Create CIFS/NFS Share
+* Delete CIFS/NFS Share
+* Allow CIFS/NFS Share access
+   * Only IP access type is supported for NFS and CIFS
+   * Only RW access supported
+* Deny CIFS/NFS Share access
+* Create snapshot
+* Delete snapshot
+* Create share from snapshot
+* Extend share
 
 Backend Configuration
 ---------------------
@@ -56,12 +57,14 @@ Backend Configuration
 The following parameters need to be configured in the manila configuration file
 for the Isilon driver:
 
-    share_driver = manila.share.drivers.emc.driver.EMCShareDriver
-    emc_share_backend = isilon
-    emc_nas_server = <IP address of Isilon cluster>
-    emc_nas_login = <username>
-    emc_nas_password = <password>
-    isilon_share_root_dir = <directory on Isilon where shares will be created>
+* share_driver = manila.share.drivers.emc.driver.EMCShareDriver
+* driver_handles_share_servers = False
+* emc_share_backend = isilon
+* emc_nas_server = <IP address of Isilon cluster>
+* emc_nas_server_port = <port to use for Isilon cluster (optional)>
+* emc_nas_login = <username>
+* emc_nas_password = <password>
+* emc_nas_root_dir = <root directory path to create shares (e.g./ifs/manila)>
 
 Restart of :term:`manila-share` service is needed for the configuration changes to take
 effect.
@@ -74,8 +77,6 @@ The Isilon driver has the following restrictions:
 - Only IP access type is supported for NFS and CIFS.
 
 - Only FLAT network is supported.
-
-- Quotas are not yet supported
 
 The :mod:`manila.share.drivers.emc.driver` Module
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -61,18 +61,22 @@ iniset $TEMPEST_CONFIG share share_creation_retry_number 2
 SUPPRESS_ERRORS=${SUPPRESS_ERRORS_IN_CLEANUP:-True}
 iniset $TEMPEST_CONFIG share suppress_errors_in_cleanup $SUPPRESS_ERRORS
 
-# Enable consistency group tests
-RUN_MANILA_CG_TESTS=${RUN_MANILA_CG_TESTS:-True}
-iniset $TEMPEST_CONFIG share run_consistency_group_tests $RUN_MANILA_CG_TESTS
+USERNAME_FOR_USER_RULES=${USERNAME_FOR_USER_RULES:-"manila"}
+PASSWORD_FOR_SAMBA_USER=${PASSWORD_FOR_SAMBA_USER:-$USERNAME_FOR_USER_RULES}
 
-# Enable manage/unmanage tests
+RUN_MANILA_CG_TESTS=${RUN_MANILA_CG_TESTS:-True}
 RUN_MANILA_MANAGE_TESTS=${RUN_MANILA_MANAGE_TESTS:-True}
-iniset $TEMPEST_CONFIG share run_manage_unmanage_tests $RUN_MANILA_MANAGE_TESTS
+RUN_MANILA_MANAGE_SNAPSHOT_TESTS=${RUN_MANILA_MANAGE_SNAPSHOT_TESTS:-False}
+
+MANILA_CONF=${MANILA_CONF:-/etc/manila/manila.conf}
+
+# Enable replication tests
+RUN_MANILA_REPLICATION_TESTS=${RUN_MANILA_REPLICATION_TESTS:-False}
+iniset $TEMPEST_CONFIG share run_replication_tests $RUN_MANILA_REPLICATION_TESTS
 
 if [[ -z "$MULTITENANCY_ENABLED" ]]; then
     # Define whether share drivers handle share servers or not.
     # Requires defined config option 'driver_handles_share_servers'.
-    MANILA_CONF=${MANILA_CONF:-/etc/manila/manila.conf}
     NO_SHARE_SERVER_HANDLING_MODES=0
     WITH_SHARE_SERVER_HANDLING_MODES=0
 
@@ -101,7 +105,7 @@ if [[ -z "$MULTITENANCY_ENABLED" ]]; then
     elif [[ $WITH_SHARE_SERVER_HANDLING_MODES -ge 1 ]]; then
         MULTITENANCY_ENABLED='True'
     else
-        echo 'Should never get here. If get, then error occured.'
+        echo 'Should never get here unless an error occurred.'
         exit 1
     fi
 else
@@ -115,20 +119,21 @@ if [[ "$MULTITENANCY_ENABLED" == "False"  ]]; then
     # volume creation in Cinder using Generic driver. So, reduce amount of
     # threads to avoid errors for Cinder volume creations that appear
     # because of lack of free space.
-    MANILA_TEMPEST_CONCURRENCY=8
+    MANILA_TEMPEST_CONCURRENCY=${MANILA_TEMPEST_CONCURRENCY:-8}
 fi
 
 # let us control if we die or not
 set +o errexit
 cd $BASE/new/tempest
 
-export MANILA_TEMPEST_CONCURRENCY=${MANILA_TEMPEST_CONCURRENCY:-12}
+export MANILA_TEMPEST_CONCURRENCY=${MANILA_TEMPEST_CONCURRENCY:-20}
 export MANILA_TESTS=${MANILA_TESTS:-'manila_tempest_tests.tests.api'}
 
 if [[ "$TEST_TYPE" == "scenario" ]]; then
     echo "Set test set to scenario only"
     MANILA_TESTS='manila_tempest_tests.tests.scenario'
 elif [[ "$DRIVER" == "generic" ]]; then
+    RUN_MANILA_MANAGE_SNAPSHOT_TESTS=True
     if [[ "$POSTGRES_ENABLED" == "True" ]]; then
         # Run only CIFS tests on PostgreSQL DB backend
         # to reduce amount of tests per job using 'generic' share driver.
@@ -140,8 +145,85 @@ elif [[ "$DRIVER" == "generic" ]]; then
     fi
 fi
 
+if [[ "$DRIVER" == "lvm" ]]; then
+    MANILA_TEMPEST_CONCURRENCY=8
+    RUN_MANILA_CG_TESTS=False
+    RUN_MANILA_MANAGE_TESTS=False
+    iniset $TEMPEST_CONFIG share run_shrink_tests False
+    iniset $TEMPEST_CONFIG share enable_ip_rules_for_protocols 'nfs'
+    iniset $TEMPEST_CONFIG share enable_user_rules_for_protocols 'cifs'
+    if ! grep $USERNAME_FOR_USER_RULES "/etc/passwd"; then
+        sudo useradd $USERNAME_FOR_USER_RULES
+    fi
+    (echo $PASSWORD_FOR_SAMBA_USER; echo $PASSWORD_FOR_SAMBA_USER) | sudo smbpasswd -s -a $USERNAME_FOR_USER_RULES
+    sudo smbpasswd -e $USERNAME_FOR_USER_RULES
+    samba_daemon_name=smbd
+    if is_fedora; then
+        samba_daemon_name=smb
+    fi
+    sudo service $samba_daemon_name restart
+elif [[ "$DRIVER" == "zfsonlinux" ]]; then
+    MANILA_TEMPEST_CONCURRENCY=8
+    RUN_MANILA_CG_TESTS=False
+    RUN_MANILA_MANAGE_TESTS=False
+    iniset $TEMPEST_CONFIG share run_migration_tests False
+    iniset $TEMPEST_CONFIG share run_quota_tests True
+    iniset $TEMPEST_CONFIG share run_replication_tests True
+    iniset $TEMPEST_CONFIG share run_shrink_tests True
+    iniset $TEMPEST_CONFIG share enable_ip_rules_for_protocols 'nfs'
+    iniset $TEMPEST_CONFIG share enable_user_rules_for_protocols ''
+    iniset $TEMPEST_CONFIG share enable_cert_rules_for_protocols ''
+    iniset $TEMPEST_CONFIG share enable_ro_access_level_for_protocols 'nfs'
+    iniset $TEMPEST_CONFIG share build_timeout 180
+    iniset $TEMPEST_CONFIG share share_creation_retry_number 0
+    iniset $TEMPEST_CONFIG share capability_storage_protocol 'NFS'
+    iniset $TEMPEST_CONFIG share enable_protocols 'nfs'
+    iniset $TEMPEST_CONFIG share suppress_errors_in_cleanup False
+    iniset $TEMPEST_CONFIG share multitenancy_enabled False
+    iniset $TEMPEST_CONFIG share multi_backend True
+    iniset $TEMPEST_CONFIG share backend_replication_type 'readable'
+fi
+
+# Enable consistency group tests
+iniset $TEMPEST_CONFIG share run_consistency_group_tests $RUN_MANILA_CG_TESTS
+
+# Enable manage/unmanage tests
+iniset $TEMPEST_CONFIG share run_manage_unmanage_tests $RUN_MANILA_MANAGE_TESTS
+
+# Enable manage/unmanage snapshot tests
+iniset $TEMPEST_CONFIG share run_manage_unmanage_snapshot_tests $RUN_MANILA_MANAGE_SNAPSHOT_TESTS
+
 # check if tempest plugin was installed correctly
 echo 'import pkg_resources; print list(pkg_resources.iter_entry_points("tempest.test_plugins"))' | python
+
+# Workaround for Tempest architectural changes
+# See bugs:
+# 1) https://bugs.launchpad.net/manila/+bug/1531049
+# 2) https://bugs.launchpad.net/tempest/+bug/1524717
+TEMPEST_CONFIG=$BASE/new/tempest/etc/tempest.conf
+ADMIN_TENANT_NAME=${ADMIN_TENANT_NAME:-"admin"}
+ADMIN_DOMAIN_NAME=${ADMIN_DOMAIN_NAME:-"Default"}
+ADMIN_PASSWORD=${ADMIN_PASSWORD:-"secretadmin"}
+iniset $TEMPEST_CONFIG auth admin_username ${ADMIN_USERNAME:-"admin"}
+iniset $TEMPEST_CONFIG auth admin_password $ADMIN_PASSWORD
+iniset $TEMPEST_CONFIG auth admin_tenant_name $ADMIN_TENANT_NAME
+iniset $TEMPEST_CONFIG auth admin_domain_name $ADMIN_DOMAIN_NAME
+iniset $TEMPEST_CONFIG identity username ${TEMPEST_USERNAME:-"demo"}
+iniset $TEMPEST_CONFIG identity password $ADMIN_PASSWORD
+iniset $TEMPEST_CONFIG identity tenant_name ${TEMPEST_TENANT_NAME:-"demo"}
+iniset $TEMPEST_CONFIG identity alt_username ${ALT_USERNAME:-"alt_demo"}
+iniset $TEMPEST_CONFIG identity alt_password $ADMIN_PASSWORD
+iniset $TEMPEST_CONFIG identity alt_tenant_name ${ALT_TENANT_NAME:-"alt_demo"}
+iniset $TEMPEST_CONFIG validation ip_version_for_ssh 4
+iniset $TEMPEST_CONFIG validation network_for_ssh ${PRIVATE_NETWORK_NAME:-"private"}
+
+export OS_PROJECT_DOMAIN_NAME=$ADMIN_DOMAIN_NAME
+export OS_USER_DOMAIN_NAME=$ADMIN_DOMAIN_NAME
+
+# Also, we should wait until service VM is available
+# before running Tempest tests using Generic driver in DHSS=False mode.
+source $BASE/new/manila/contrib/ci/common.sh
+manila_wait_for_drivers_init $MANILA_CONF
 
 echo "Running tempest manila test suites"
 sudo -H -u jenkins tox -eall-plugin $MANILA_TESTS -- --concurrency=$MANILA_TEMPEST_CONCURRENCY

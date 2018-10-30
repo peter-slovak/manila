@@ -14,8 +14,8 @@
 #    under the License.
 
 from tempest import config  # noqa
+from tempest.lib import exceptions as lib_exc  # noqa
 from tempest import test  # noqa
-from tempest_lib import exceptions as lib_exc  # noqa
 import testtools  # noqa
 
 from manila_tempest_tests import clients_share as clients
@@ -45,7 +45,7 @@ class AdminActionsNegativeTest(base.BaseSharesAdminTest):
 
     @test.attr(type=["gate", "negative", ])
     def test_reset_nonexistent_share_instance_state(self):
-        self.assertRaises(lib_exc.NotFound, self.shares_client.reset_state,
+        self.assertRaises(lib_exc.NotFound, self.shares_v2_client.reset_state,
                           "fake", s_type="share_instances")
 
     @test.attr(type=["gate", "negative", ])
@@ -65,7 +65,7 @@ class AdminActionsNegativeTest(base.BaseSharesAdminTest):
     def test_reset_share_instance_state_to_unacceptable_state(self):
         self.assertRaises(
             lib_exc.BadRequest,
-            self.shares_client.reset_state,
+            self.shares_v2_client.reset_state,
             self.sh_instance["id"],
             s_type="share_instances",
             status="fake"
@@ -90,7 +90,7 @@ class AdminActionsNegativeTest(base.BaseSharesAdminTest):
     def test_try_reset_share_instance_state_with_member(self):
         # Even if member from another tenant, it should be unauthorized
         self.assertRaises(lib_exc.Forbidden,
-                          self.member_shares_client.reset_state,
+                          self.member_shares_v2_client.reset_state,
                           self.sh_instance["id"], s_type="share_instances")
 
     @test.attr(type=["gate", "negative", ])
@@ -110,7 +110,7 @@ class AdminActionsNegativeTest(base.BaseSharesAdminTest):
     @test.attr(type=["gate", "negative", ])
     def test_force_delete_nonexistent_share_instance(self):
         self.assertRaises(lib_exc.NotFound,
-                          self.shares_client.force_delete,
+                          self.shares_v2_client.force_delete,
                           "fake",
                           s_type="share_instances")
 
@@ -134,7 +134,7 @@ class AdminActionsNegativeTest(base.BaseSharesAdminTest):
     def test_try_force_delete_share_instance_with_member(self):
         # If a non-admin tries to do force_delete, it should be unauthorized
         self.assertRaises(lib_exc.Forbidden,
-                          self.member_shares_client.force_delete,
+                          self.member_shares_v2_client.force_delete,
                           self.sh_instance["id"], s_type="share_instances")
 
     @test.attr(type=["gate", "negative", ])
@@ -166,3 +166,24 @@ class AdminActionsNegativeTest(base.BaseSharesAdminTest):
         self.assertRaises(lib_exc.Forbidden,
                           self.member_shares_v2_client.get_instances_of_share,
                           self.sh['id'])
+
+    @test.attr(type=["gate", "negative", ])
+    @base.skip_if_microversion_lt("2.15")
+    def test_reset_task_state_share_not_found(self):
+        self.assertRaises(
+            lib_exc.NotFound, self.shares_v2_client.reset_task_state,
+            'fake_share', 'migration_error')
+
+    @test.attr(type=["gate", "negative", ])
+    @base.skip_if_microversion_lt("2.15")
+    def test_reset_task_state_empty(self):
+        self.assertRaises(
+            lib_exc.BadRequest, self.shares_v2_client.reset_task_state,
+            self.sh['id'], None)
+
+    @test.attr(type=["gate", "negative", ])
+    @base.skip_if_microversion_lt("2.15")
+    def test_reset_task_state_invalid_state(self):
+        self.assertRaises(
+            lib_exc.BadRequest, self.shares_v2_client.reset_task_state,
+            self.sh['id'], 'fake_state')

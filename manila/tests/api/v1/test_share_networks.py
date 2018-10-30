@@ -86,28 +86,28 @@ class ShareNetworkAPITest(test.TestCase):
         self.context = self.req.environ['manila.context']
 
     def _check_share_network_view_shortened(self, view, share_nw):
-        self.assertEqual(view['id'], share_nw['id'])
-        self.assertEqual(view['name'], share_nw['name'])
+        self.assertEqual(share_nw['id'], view['id'])
+        self.assertEqual(share_nw['name'], view['name'])
 
     def _check_share_network_view(self, view, share_nw):
-        self.assertEqual(view['id'], share_nw['id'])
-        self.assertEqual(view['project_id'], share_nw['project_id'])
-        self.assertEqual(view['created_at'], share_nw['created_at'])
-        self.assertEqual(view['updated_at'], share_nw['updated_at'])
-        self.assertEqual(view['neutron_net_id'],
-                         share_nw['neutron_net_id'])
-        self.assertEqual(view['neutron_subnet_id'],
-                         share_nw['neutron_subnet_id'])
-        self.assertEqual(view['network_type'], share_nw['network_type'])
-        self.assertEqual(view['segmentation_id'],
-                         share_nw['segmentation_id'])
-        self.assertEqual(view['cidr'], share_nw['cidr'])
-        self.assertEqual(view['ip_version'], share_nw['ip_version'])
-        self.assertEqual(view['name'], share_nw['name'])
-        self.assertEqual(view['description'], share_nw['description'])
+        self.assertEqual(share_nw['id'], view['id'])
+        self.assertEqual(share_nw['project_id'], view['project_id'])
+        self.assertEqual(share_nw['created_at'], view['created_at'])
+        self.assertEqual(share_nw['updated_at'], view['updated_at'])
+        self.assertEqual(share_nw['neutron_net_id'],
+                         view['neutron_net_id'])
+        self.assertEqual(share_nw['neutron_subnet_id'],
+                         view['neutron_subnet_id'])
+        self.assertEqual(share_nw['network_type'], view['network_type'])
+        self.assertEqual(share_nw['segmentation_id'],
+                         view['segmentation_id'])
+        self.assertEqual(share_nw['cidr'], view['cidr'])
+        self.assertEqual(share_nw['ip_version'], view['ip_version'])
+        self.assertEqual(share_nw['name'], view['name'])
+        self.assertEqual(share_nw['description'], view['description'])
 
-        self.assertEqual(view['created_at'], share_nw['created_at'])
-        self.assertEqual(view['updated_at'], share_nw['updated_at'])
+        self.assertEqual(share_nw['created_at'], view['created_at'])
+        self.assertEqual(share_nw['updated_at'], view['updated_at'])
         self.assertFalse('shares' in view)
         self.assertFalse('network_allocations' in view)
         self.assertFalse('security_services' in view)
@@ -238,6 +238,8 @@ class ShareNetworkAPITest(test.TestCase):
     def test_quota_delete_reservation_failed(self):
         share_nw = fake_share_network.copy()
         share_nw['share_servers'] = ['foo', 'bar']
+        share_nw['user_id'] = 'fake_user_id'
+
         self.mock_object(db_api, 'share_network_get',
                          mock.Mock(return_value=share_nw))
         self.mock_object(db_api, 'share_instances_get_all_by_share_network',
@@ -262,7 +264,12 @@ class ShareNetworkAPITest(test.TestCase):
             mock.call(self.req.environ['manila.context'], 'bar')])
         db_api.share_network_delete.assert_called_once_with(
             self.req.environ['manila.context'], share_nw['id'])
-        self.assertTrue(share_networks.QUOTAS.reserve.called)
+        share_networks.QUOTAS.reserve.assert_called_once_with(
+            self.req.environ['manila.context'],
+            project_id=share_nw['project_id'],
+            share_networks=-1,
+            user_id=share_nw['user_id']
+        )
         self.assertFalse(share_networks.QUOTAS.commit.called)
 
     def test_delete_in_use_by_share(self):
@@ -337,7 +344,7 @@ class ShareNetworkAPITest(test.TestCase):
                 self.context,
                 self.context.project_id)
 
-            self.assertEqual(len(result[share_networks.RESOURCES_NAME]), 1)
+            self.assertEqual(1, len(result[share_networks.RESOURCES_NAME]))
             self._check_share_network_view_shortened(
                 result[share_networks.RESOURCES_NAME][0],
                 fake_share_network_shortened)
@@ -354,7 +361,7 @@ class ShareNetworkAPITest(test.TestCase):
                 self.context,
                 self.context.project_id)
 
-            self.assertEqual(len(result[share_networks.RESOURCES_NAME]), 1)
+            self.assertEqual(1, len(result[share_networks.RESOURCES_NAME]))
             self._check_share_network_view(
                 result[share_networks.RESOURCES_NAME][0],
                 fake_share_network)

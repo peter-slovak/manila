@@ -34,7 +34,6 @@ LOG = log.getLogger(__name__)
 
 glusterfs_common_opts = [
     cfg.StrOpt('glusterfs_server_password',
-               default=None,
                secret=True,
                deprecated_name='glusterfs_native_server_password',
                help='Remote GlusterFS server node\'s login password. '
@@ -42,7 +41,6 @@ glusterfs_common_opts = [
                     '\'glusterfs_path_to_private_key\' is '
                     'configured.'),
     cfg.StrOpt('glusterfs_path_to_private_key',
-               default=None,
                deprecated_name='glusterfs_native_path_to_private_key',
                help='Path of Manila host\'s private SSH key file.'),
 ]
@@ -52,12 +50,41 @@ CONF = cfg.CONF
 CONF.register_opts(glusterfs_common_opts)
 
 
+def _check_volume_presence(f):
+
+    def wrapper(self, *args, **kwargs):
+        if not self.components.get('volume'):
+            raise exception.GlusterfsException(
+                _("Gluster address does not have a volume component."))
+        return f(self, *args, **kwargs)
+
+    return wrapper
+
+
+def volxml_get(xmlout, path, *default):
+    """Extract a value by a path from XML."""
+    value = xmlout.find(path)
+    if value is None:
+        if default:
+            return default[0]
+        raise exception.InvalidShare(
+            _('Xpath %s not found in volume query response XML') % path)
+    return value.text
+
+
 class GlusterManager(object):
     """Interface with a GlusterFS volume."""
 
     scheme = re.compile('\A(?:(?P<user>[^:@/]+)@)?'
                         '(?P<host>[^:@/]+)'
                         '(?::/(?P<volume>[^/]+)(?P<path>/.*)?)?\Z')
+
+    # See this about GlusterFS' convention for Boolean interpretation
+    # of strings:
+    # https://github.com/gluster/glusterfs/blob/v3.7.8/
+    #         libglusterfs/src/common-utils.c#L1680-L1708
+    GLUSTERFS_TRUE_VALUES = ('ON', 'YES', 'TRUE', 'ENABLE', '1')
+    GLUSTERFS_FALSE_VALUES = ('OFF', 'NO', 'FALSE', 'DISABLE', '0')
 
     @classmethod
     def parse(cls, address):
@@ -91,9 +118,30 @@ class GlusterManager(object):
                          given component in the uri will be enforced.
         """
 
-        self.components = (address if isinstance(address, dict) else
-                           self.parse(address))
-        for k, v in six.iteritems(requires):
+        if isinstance(address, dict):
+            tmp_addr = ""
+            if address.get('user') is not None:
+                tmp_addr = address.get('user') + '@'
+            if address.get('host') is not None:
+                tmp_addr += address.get('host')
+            if address.get('volume') is not None:
+                tmp_addr += ':/' + address.get('volume')
+            if address.get('path') is not None:
+                tmp_addr += address.get('path')
+            self.components = self.parse(tmp_addr)
+            # Verify that the original dictionary matches the parsed
+            # dictionary. This will flag typos such as {'volume': 'vol/err'}
+            # in the original dictionary as errors.  Additionally,
+            # extra keys will need to be flagged as an error.
+            sanitized_address = {key: None for key in self.scheme.groupindex}
+            sanitized_address.update(address)
+            if sanitized_address != self.components:
+                raise exception.GlusterfsException(
+                    _('Invalid gluster address %s.') % address)
+        else:
+            self.components = self.parse(address)
+
+        for k, v in requires.items():
             if v is None:
                 continue
             if (self.components.get(k) is not None) != v:
@@ -135,18 +183,70 @@ class GlusterManager(object):
                 privatekey=self.path_to_private_key)
         else:
             gluster_execf = ganesha_utils.RootExecutor(execf)
-        return lambda *args, **kwargs: gluster_execf(*(('gluster',) + args),
-                                                     **kwargs)
 
-    def get_gluster_vol_option(self, option):
-        """Get the value of an option set on a GlusterFS volume."""
+        def _gluster_call(*args, **kwargs):
+            logmsg = kwargs.pop('log', None)
+            error_policy = kwargs.pop('error_policy', 'coerce')
+            if (error_policy not in ('raw', 'coerce', 'suppress') and
+               not isinstance(error_policy[0], int)):
+                raise TypeError(_("undefined error_policy %s") %
+                                repr(error_policy))
+
+            try:
+                return gluster_execf(*(('gluster',) + args), **kwargs)
+            except exception.ProcessExecutionError as exc:
+                if error_policy == 'raw':
+                    raise
+                elif error_policy == 'coerce':
+                    pass
+                elif (error_policy == 'suppress' or
+                      exc.exit_code in error_policy):
+                    return
+                if logmsg:
+                    LOG.error(_LE("%s: GlusterFS instrumentation failed.") %
+                              logmsg)
+                raise exception.GlusterfsException(
+                    _("GlusterFS management command '%(cmd)s' failed "
+                      "with details as follows:\n%(details)s.") % {
+                        'cmd': ' '.join(args),
+                        'details': exc})
+
+        return _gluster_call
+
+    def xml_response_check(self, xmlout, command, countpath=None):
+        """Sanity check for GlusterFS XML response."""
+        commandstr = ' '.join(command)
+        ret = {}
+        for e in 'opRet', 'opErrno':
+            ret[e] = int(volxml_get(xmlout, e))
+        if ret == {'opRet': -1, 'opErrno': 0}:
+            raise exception.GlusterfsException(_(
+                'GlusterFS command %(command)s on volume %(volume)s failed'
+            ) % {'volume': self.volume, 'command': command})
+        if list(six.itervalues(ret)) != [0, 0]:
+            errdct = {'volume': self.volume, 'command': commandstr,
+                      'opErrstr': volxml_get(xmlout, 'opErrstr', None)}
+            errdct.update(ret)
+            raise exception.InvalidShare(_(
+                'GlusterFS command %(command)s on volume %(volume)s got '
+                'unexpected response: '
+                'opRet=%(opRet)s, opErrno=%(opErrno)s, opErrstr=%(opErrstr)s'
+            ) % errdct)
+        if not countpath:
+            return
+        count = volxml_get(xmlout, countpath)
+        if count != '1':
+            raise exception.InvalidShare(
+                _('GlusterFS command %(command)s on volume %(volume)s got '
+                  'ambiguous response: '
+                  '%(count)s records') % {
+                    'volume': self.volume, 'command': commandstr,
+                    'count': count})
+
+    def _get_vol_option_via_info(self, option):
+        """Get the value of an option set on a GlusterFS volume via volinfo."""
         args = ('--xml', 'volume', 'info', self.volume)
-        try:
-            out, err = self.gluster_call(*args)
-        except exception.ProcessExecutionError as exc:
-            LOG.error(_LE("Error retrieving volume info: %s"), exc.stderr)
-            raise exception.GlusterfsException("gluster %s failed" %
-                                               ' '.join(args))
+        out, err = self.gluster_call(*args, log=_LE("retrieving volume info"))
 
         if not out:
             raise exception.GlusterfsException(
@@ -154,26 +254,80 @@ class GlusterManager(object):
                 self.volume
             )
 
-        vix = etree.fromstring(out)
-        if int(vix.find('./volInfo/volumes/count').text) != 1:
-            raise exception.InvalidShare('Volume name ambiguity')
-        for e in vix.findall(".//option"):
-            o, v = (e.find(a).text for a in ('name', 'value'))
+        volxml = etree.fromstring(out)
+        self.xml_response_check(volxml, args[1:], './volInfo/volumes/count')
+        for e in volxml.findall(".//option"):
+            o, v = (volxml_get(e, a) for a in ('name', 'value'))
             if o == option:
                 return v
+
+    @_check_volume_presence
+    def _get_vol_user_option(self, useropt):
+        """Get the value of an user option set on a GlusterFS volume."""
+        option = '.'.join(('user', useropt))
+        return self._get_vol_option_via_info(option)
+
+    @_check_volume_presence
+    def _get_vol_regular_option(self, option):
+        """Get the value of a regular option set on a GlusterFS volume."""
+        args = ('--xml', 'volume', 'get', self.volume, option)
+
+        out, err = self.gluster_call(*args, check_exit_code=False)
+
+        if not out:
+            # all input is valid, but the option has not been set
+            # (nb. some options do come by a null value, but some
+            # don't even have that, see eg. cluster.nufa)
+            return
+
+        try:
+            optxml = etree.fromstring(out)
+        except Exception:
+            # non-xml output indicates that GlusterFS backend does not support
+            # 'vol get', we fall back to 'vol info' based retrieval (glusterfs
+            # < 3.7).
+            return self._get_vol_option_via_info(option)
+
+        self.xml_response_check(optxml, args[1:], './volGetopts/count')
+        return volxml_get(optxml, './volGetopts/Value')
+
+    def get_vol_option(self, option, boolean=False):
+        """Get the value of an option set on a GlusterFS volume."""
+        useropt = re.sub('\Auser\.', '', option)
+        if option == useropt:
+            value = self._get_vol_regular_option(option)
+        else:
+            value = self._get_vol_user_option(useropt)
+        if not boolean or value is None:
+            return value
+        if value.upper() in self.GLUSTERFS_TRUE_VALUES:
+            return True
+        if value.upper() in self.GLUSTERFS_FALSE_VALUES:
+            return False
+        raise exception.GlusterfsException(_(
+            "GlusterFS volume option on volume %(volume)s: "
+            "%(option)s=%(value)s cannot be interpreted as Boolean") % {
+                'volume': self.volume, 'option': option, 'value': value})
+
+    @_check_volume_presence
+    def set_vol_option(self, option, value, ignore_failure=False):
+        value = {True: self.GLUSTERFS_TRUE_VALUES[0],
+                 False: self.GLUSTERFS_FALSE_VALUES[0]}.get(value, value)
+        if value is None:
+            args = ('reset', (option,))
+        else:
+            args = ('set', (option, value))
+        policy = (1,) if ignore_failure else 'coerce'
+        self.gluster_call(
+            'volume', args[0], self.volume, *args[1], error_policy=policy)
 
     def get_gluster_version(self):
         """Retrieve GlusterFS version.
 
         :returns: version (as tuple of strings, example: ('3', '6', '0beta2'))
         """
-        try:
-            out, err = self.gluster_call('--version')
-        except exception.ProcessExecutionError as exc:
-            raise exception.GlusterfsException(
-                _("'gluster version' failed on server "
-                  "%(server)s: %(message)s") %
-                {'server': self.host, 'message': six.text_type(exc)})
+        out, err = self.gluster_call('--version',
+                                     log=_LE("GlusterFS version query"))
         try:
             owords = out.split()
             if owords[0] != 'glusterfs':
@@ -196,7 +350,7 @@ class GlusterManager(object):
                         (given as tuple of integers, example: (3, 6))
         """
         vers = self.get_gluster_version()
-        if self.numreduct(vers) < minvers:
+        if numreduct(vers) < minvers:
             raise exception.GlusterfsException(_(
                 "Unsupported GlusterFS version %(version)s on server "
                 "%(server)s, minimum requirement: %(minvers)s") % {
@@ -204,20 +358,20 @@ class GlusterManager(object):
                 'version': '.'.join(vers),
                 'minvers': '.'.join(six.text_type(c) for c in minvers)})
 
-    @staticmethod
-    def numreduct(vers):
-        """The numeric reduct of a tuple of strings.
 
-        That is, applying an integer conversion map on the longest
-        initial segment of vers which consists of numerals.
-        """
-        numvers = []
-        for c in vers:
-            try:
-                numvers.append(int(c))
-            except ValueError:
-                break
-        return tuple(numvers)
+def numreduct(vers):
+    """The numeric reduct of a tuple of strings.
+
+    That is, applying an integer conversion map on the longest
+    initial segment of vers which consists of numerals.
+    """
+    numvers = []
+    for c in vers:
+        try:
+            numvers.append(int(c))
+        except ValueError:
+            break
+    return tuple(numvers)
 
 
 def _mount_gluster_vol(execute, gluster_export, mount_path, ensure=False):
@@ -234,7 +388,7 @@ def _mount_gluster_vol(execute, gluster_export, mount_path, ensure=False):
         execute(*command, run_as_root=True)
     except exception.ProcessExecutionError as exc:
         if ensure and 'already mounted' in exc.stderr:
-            LOG.warn(_LW("%s is already mounted"), gluster_export)
+            LOG.warning(_LW("%s is already mounted."), gluster_export)
         else:
             raise exception.GlusterfsException(
                 'Unable to mount Gluster volume'
@@ -264,28 +418,16 @@ def _restart_gluster_vol(gluster_mgr):
     :param gluster_mgr: GlusterManager instance
     """
 
-    try:
-        # TODO(csaba): '--mode=script' ensures that the Gluster CLI runs in
-        # script mode. This seems unnecessary as the Gluster CLI is
-        # expected to run in non-interactive mode when the stdin is not
-        # a terminal, as is the case below. But on testing, found the
-        # behaviour of Gluster-CLI to be the contrary. Need to investigate
-        # this odd-behaviour of Gluster-CLI.
-        gluster_mgr.gluster_call(
-            'volume', 'stop', gluster_mgr.volume, '--mode=script')
-    except exception.ProcessExecutionError as exc:
-        msg = (_("Error stopping gluster volume. "
-                 "Volume: %(volname)s, Error: %(error)s") %
-               {'volname': gluster_mgr.volume, 'error': exc.stderr})
-        LOG.error(msg)
-        raise exception.GlusterfsException(msg)
+    # TODO(csaba): '--mode=script' ensures that the Gluster CLI runs in
+    # script mode. This seems unnecessary as the Gluster CLI is
+    # expected to run in non-interactive mode when the stdin is not
+    # a terminal, as is the case below. But on testing, found the
+    # behaviour of Gluster-CLI to be the contrary. Need to investigate
+    # this odd-behaviour of Gluster-CLI.
+    gluster_mgr.gluster_call(
+        'volume', 'stop', gluster_mgr.volume, '--mode=script',
+        log=_LE("stopping GlusterFS volume %s") % gluster_mgr.volume)
 
-    try:
-        gluster_mgr.gluster_call(
-            'volume', 'start', gluster_mgr.volume)
-    except exception.ProcessExecutionError as exc:
-        msg = (_("Error starting gluster volume. "
-                 "Volume: %(volname)s, Error: %(error)s") %
-               {'volname': gluster_mgr.volume, 'error': exc.stderr})
-        LOG.error(msg)
-        raise exception.GlusterfsException(msg)
+    gluster_mgr.gluster_call(
+        'volume', 'start', gluster_mgr.volume,
+        log=_LE("starting GlusterFS volume %s") % gluster_mgr.volume)

@@ -20,15 +20,20 @@ import copy
 import math
 import socket
 import time
+import uuid
 
 import ddt
 import mock
 from oslo_log import log
 from oslo_service import loopingcall
+from oslo_utils import timeutils
 from oslo_utils import units
 
+from manila.common import constants
 from manila import exception
+from manila.share.drivers.netapp.dataontap.client import api as netapp_api
 from manila.share.drivers.netapp.dataontap.client import client_cmode
+from manila.share.drivers.netapp.dataontap.cluster_mode import data_motion
 from manila.share.drivers.netapp.dataontap.cluster_mode import lib_base
 from manila.share.drivers.netapp.dataontap.protocols import cifs_cmode
 from manila.share.drivers.netapp.dataontap.protocols import nfs_cmode
@@ -73,6 +78,15 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
         self.library._client = mock.Mock()
         self.client = self.library._client
         self.context = mock.Mock()
+        self.fake_replica = copy.deepcopy(fake.SHARE)
+        self.fake_replica_2 = copy.deepcopy(fake.SHARE)
+        self.fake_replica_2['id'] = fake.SHARE_ID2
+        self.fake_replica_2['replica_state'] = (
+            constants.REPLICA_STATE_OUT_OF_SYNC)
+        self.mock_dm_session = mock.Mock()
+        self.mock_object(data_motion, "DataMotionSession",
+                         mock.Mock(return_value=self.mock_dm_session))
+        self.mock_object(data_motion, 'get_client_for_backend')
 
     def test_init(self):
         self.assertEqual(fake.DRIVER_NAME, self.library.driver_name)
@@ -234,18 +248,25 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
         self.assertTrue(mock_ems_periodic_task.start.called)
         self.assertTrue(mock_housekeeping_periodic_task.start.called)
 
-    def test_get_valid_share_name(self):
+    def test_get_backend_share_name(self):
 
-        result = self.library._get_valid_share_name(fake.SHARE_ID)
+        result = self.library._get_backend_share_name(fake.SHARE_ID)
         expected = (fake.VOLUME_NAME_TEMPLATE %
                     {'share_id': fake.SHARE_ID.replace('-', '_')})
 
         self.assertEqual(expected, result)
 
-    def test_get_valid_snapshot_name(self):
+    def test_get_backend_snapshot_name(self):
 
-        result = self.library._get_valid_snapshot_name(fake.SNAPSHOT_ID)
+        result = self.library._get_backend_snapshot_name(fake.SNAPSHOT_ID)
         expected = 'share_snapshot_' + fake.SNAPSHOT_ID.replace('-', '_')
+
+        self.assertEqual(expected, result)
+
+    def test_get_backend_cg_snapshot_name(self):
+
+        result = self.library._get_backend_cg_snapshot_name(fake.SNAPSHOT_ID)
+        expected = 'share_cg_snapshot_' + fake.SNAPSHOT_ID.replace('-', '_')
 
         self.assertEqual(expected, result)
 
@@ -322,6 +343,31 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
             'total_capacity_gb': 0.0,
             'free_capacity_gb': 0.0,
             'consistency_group_support': 'host',
+            'pools': fake.POOLS,
+        }
+        self.assertDictEqual(expected, result)
+
+    def test_get_share_stats_with_replication(self):
+
+        self.library.configuration.replication_domain = "fake_domain"
+        self.mock_object(self.library,
+                         '_get_pools',
+                         mock.Mock(return_value=fake.POOLS))
+
+        result = self.library.get_share_stats()
+
+        expected = {
+            'share_backend_name': fake.BACKEND_NAME,
+            'driver_name': fake.DRIVER_NAME,
+            'vendor_name': 'NetApp',
+            'driver_version': '1.0',
+            'netapp_storage_family': 'ontap_cluster',
+            'storage_protocol': 'NFS_CIFS',
+            'total_capacity_gb': 0.0,
+            'free_capacity_gb': 0.0,
+            'consistency_group_support': 'host',
+            'replication_type': 'dr',
+            'replication_domain': 'fake_domain',
             'pools': fake.POOLS,
         }
         self.assertDictEqual(expected, result)
@@ -513,6 +559,7 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
         mock_allocate_container.assert_called_once_with(fake.SHARE,
                                                         vserver_client)
         mock_create_export.assert_called_once_with(fake.SHARE,
+                                                   fake.SHARE_SERVER,
                                                    fake.VSERVER1,
                                                    vserver_client)
         self.assertEqual('fake_export_location', result)
@@ -543,18 +590,21 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
             fake.SNAPSHOT,
             vserver_client)
         mock_create_export.assert_called_once_with(fake.SHARE,
+                                                   fake.SHARE_SERVER,
                                                    fake.VSERVER1,
                                                    vserver_client)
         self.assertEqual('fake_export_location', result)
 
     def test_allocate_container(self):
-        self.mock_object(self.library, '_get_valid_share_name', mock.Mock(
+        self.mock_object(self.library, '_get_backend_share_name', mock.Mock(
             return_value=fake.SHARE_NAME))
         self.mock_object(share_utils, 'extract_host', mock.Mock(
             return_value=fake.POOL_NAME))
         self.mock_object(share_types, 'get_extra_specs_from_share',
                          mock.Mock(return_value=fake.EXTRA_SPEC))
-
+        mock_remap_standard_boolean_extra_specs = self.mock_object(
+            self.library, '_remap_standard_boolean_extra_specs',
+            mock.Mock(return_value=fake.EXTRA_SPEC))
         self.mock_object(self.library, '_check_boolean_extra_specs_validity')
         self.mock_object(self.library, '_get_boolean_provisioning_options',
                          mock.Mock(return_value=fake.PROVISIONING_OPTIONS))
@@ -567,10 +617,43 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
             fake.POOL_NAME, fake.SHARE_NAME, fake.SHARE['size'],
             thin_provisioned=True, snapshot_policy='default',
             language='en-US', dedup_enabled=True,
-            compression_enabled=False, max_files=5000)
+            compression_enabled=False, max_files=5000, snapshot_reserve=8)
+        mock_remap_standard_boolean_extra_specs.assert_called_once_with(
+            fake.EXTRA_SPEC)
+
+    def test_remap_standard_boolean_extra_specs(self):
+
+        extra_specs = copy.deepcopy(fake.OVERLAPPING_EXTRA_SPEC)
+
+        result = self.library._remap_standard_boolean_extra_specs(extra_specs)
+
+        self.assertDictEqual(fake.REMAPPED_OVERLAPPING_EXTRA_SPEC, result)
+
+    def test_allocate_container_as_replica(self):
+        self.mock_object(self.library, '_get_backend_share_name', mock.Mock(
+            return_value=fake.SHARE_NAME))
+        self.mock_object(share_utils, 'extract_host', mock.Mock(
+            return_value=fake.POOL_NAME))
+        self.mock_object(share_types, 'get_extra_specs_from_share',
+                         mock.Mock(return_value=fake.EXTRA_SPEC))
+
+        self.mock_object(self.library, '_check_boolean_extra_specs_validity')
+        self.mock_object(self.library, '_get_boolean_provisioning_options',
+                         mock.Mock(return_value=fake.PROVISIONING_OPTIONS))
+        vserver_client = mock.Mock()
+
+        self.library._allocate_container(fake.EXTRA_SPEC_SHARE,
+                                         vserver_client, replica=True)
+
+        vserver_client.create_volume.assert_called_once_with(
+            fake.POOL_NAME, fake.SHARE_NAME, fake.SHARE['size'],
+            thin_provisioned=True, snapshot_policy='default',
+            language='en-US', dedup_enabled=True,
+            compression_enabled=False, max_files=5000,
+            snapshot_reserve=8, volume_type='dp')
 
     def test_allocate_container_no_pool_name(self):
-        self.mock_object(self.library, '_get_valid_share_name', mock.Mock(
+        self.mock_object(self.library, '_get_backend_share_name', mock.Mock(
             return_value=fake.SHARE_NAME))
         self.mock_object(share_utils, 'extract_host', mock.Mock(
             return_value=None))
@@ -582,7 +665,7 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
                           self.library._allocate_container, fake.SHARE,
                           vserver_client)
 
-        self.library._get_valid_share_name.assert_called_once_with(
+        self.library._get_backend_share_name.assert_called_once_with(
             fake.SHARE['id'])
         share_utils.extract_host.assert_called_once_with(fake.SHARE['host'],
                                                          level='pool')
@@ -774,16 +857,15 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
                                                        fake.SNAPSHOT,
                                                        vserver_client)
 
-        share_name = self.library._get_valid_share_name(fake.SHARE['id'])
-        parent_share_name = self.library._get_valid_share_name(
+        share_name = self.library._get_backend_share_name(fake.SHARE['id'])
+        parent_share_name = self.library._get_backend_share_name(
             fake.SNAPSHOT['share_id'])
-        parent_snapshot_name = self.library._get_valid_snapshot_name(
+        parent_snapshot_name = self.library._get_backend_snapshot_name(
             fake.SNAPSHOT['id'])
         vserver_client.create_volume_clone.assert_called_once_with(
             share_name,
             parent_share_name,
             parent_snapshot_name)
-        vserver_client.split_volume_clone.assert_called_once_with(share_name)
 
     def test_share_exists(self):
 
@@ -821,7 +903,7 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
                                   fake.SHARE,
                                   share_server=fake.SHARE_SERVER)
 
-        share_name = self.library._get_valid_share_name(fake.SHARE['id'])
+        share_name = self.library._get_backend_share_name(fake.SHARE['id'])
         mock_share_exists.assert_called_once_with(share_name, vserver_client)
         mock_remove_export.assert_called_once_with(fake.SHARE, vserver_client)
         mock_deallocate_container.assert_called_once_with(share_name,
@@ -870,7 +952,7 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
                                   fake.SHARE,
                                   share_server=fake.SHARE_SERVER)
 
-        share_name = self.library._get_valid_share_name(fake.SHARE['id'])
+        share_name = self.library._get_backend_share_name(fake.SHARE['id'])
         mock_share_exists.assert_called_once_with(share_name, vserver_client)
         self.assertFalse(mock_remove_export.called)
         self.assertFalse(mock_deallocate_container.called)
@@ -890,25 +972,30 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
     def test_create_export(self):
 
         protocol_helper = mock.Mock()
-        protocol_helper.create_share.return_value = fake.NFS_EXPORTS
+        callback = (lambda export_address, export_path='fake_export_path':
+                    ':'.join([export_address, export_path]))
+        protocol_helper.create_share.return_value = callback
         self.mock_object(self.library,
                          '_get_helper',
                          mock.Mock(return_value=protocol_helper))
         vserver_client = mock.Mock()
         vserver_client.get_network_interfaces.return_value = fake.LIFS
-        mock_sort_lifs_by_aggregate_locality = self.mock_object(
-            self.library, '_sort_lifs_by_aggregate_locality',
-            mock.Mock(return_value=fake.LIFS))
+        fake_interface_addresses_with_metadata = copy.deepcopy(
+            fake.INTERFACE_ADDRESSES_WITH_METADATA)
+        mock_get_export_addresses_with_metadata = self.mock_object(
+            self.library, '_get_export_addresses_with_metadata',
+            mock.Mock(return_value=fake_interface_addresses_with_metadata))
 
         result = self.library._create_export(fake.SHARE,
+                                             fake.SHARE_SERVER,
                                              fake.VSERVER1,
                                              vserver_client)
 
         self.assertEqual(fake.NFS_EXPORTS, result)
+        mock_get_export_addresses_with_metadata.assert_called_once_with(
+            fake.SHARE, fake.SHARE_SERVER, fake.LIFS)
         protocol_helper.create_share.assert_called_once_with(
-            fake.SHARE, fake.SHARE_NAME, fake.LIF_ADDRESSES)
-        mock_sort_lifs_by_aggregate_locality.assert_called_once_with(
-            fake.SHARE, fake.LIFS)
+            fake.SHARE, fake.SHARE_NAME)
 
     def test_create_export_lifs_not_found(self):
 
@@ -919,39 +1006,73 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
         self.assertRaises(exception.NetAppException,
                           self.library._create_export,
                           fake.SHARE,
+                          fake.SHARE_SERVER,
                           fake.VSERVER1,
                           vserver_client)
 
-    @ddt.data(fake.CLUSTER_NODES[0], fake.CLUSTER_NODES[1])
-    def test_sort_lifs_by_aggregate_locality(self, node):
+    def test_get_export_addresses_with_metadata(self):
 
         mock_get_aggregate_node = self.mock_object(
-            self.library, '_get_aggregate_node', mock.Mock(return_value=node))
+            self.library, '_get_aggregate_node',
+            mock.Mock(return_value=fake.CLUSTER_NODES[0]))
+        mock_get_admin_addresses_for_share_server = self.mock_object(
+            self.library, '_get_admin_addresses_for_share_server',
+            mock.Mock(return_value=[fake.LIF_ADDRESSES[1]]))
 
-        fake_share = copy.deepcopy(fake.SHARE)
-        fake_share['host'] = 'fake_host@fake_backend#fake_pool'
+        result = self.library._get_export_addresses_with_metadata(
+            fake.SHARE, fake.SHARE_SERVER, fake.LIFS)
 
-        result = self.library._sort_lifs_by_aggregate_locality(fake.SHARE,
-                                                               fake.LIFS)
+        self.assertEqual(fake.INTERFACE_ADDRESSES_WITH_METADATA, result)
+        mock_get_aggregate_node.assert_called_once_with(fake.POOL_NAME)
+        mock_get_admin_addresses_for_share_server.assert_called_once_with(
+            fake.SHARE_SERVER)
 
-        mock_get_aggregate_node.assert_called_once_with('fake_pool')
-        self.assertEqual(2, len(result))
-        self.assertEqual(node, result[0]['home-node'])
-
-    def test_sort_lifs_by_aggregate_locality_node_unknown(self):
+    def test_get_export_addresses_with_metadata_node_unknown(self):
 
         mock_get_aggregate_node = self.mock_object(
-            self.library, '_get_aggregate_node', mock.Mock(return_value=None))
+            self.library, '_get_aggregate_node',
+            mock.Mock(return_value=None))
+        mock_get_admin_addresses_for_share_server = self.mock_object(
+            self.library, '_get_admin_addresses_for_share_server',
+            mock.Mock(return_value=[fake.LIF_ADDRESSES[1]]))
 
-        fake_share = copy.deepcopy(fake.SHARE)
-        fake_share['host'] = 'fake_host@fake_backend#fake_pool'
+        result = self.library._get_export_addresses_with_metadata(
+            fake.SHARE, fake.SHARE_SERVER, fake.LIFS)
 
-        result = self.library._sort_lifs_by_aggregate_locality(fake.SHARE,
-                                                               fake.LIFS)
+        expected = copy.deepcopy(fake.INTERFACE_ADDRESSES_WITH_METADATA)
+        for key, value in expected.items():
+            value['preferred'] = None
 
-        mock_get_aggregate_node.assert_called_once_with('fake_pool')
-        self.assertEqual(2, len(result))
-        self.assertEqual(fake.LIFS, result)
+        self.assertEqual(expected, result)
+        mock_get_aggregate_node.assert_called_once_with(fake.POOL_NAME)
+        mock_get_admin_addresses_for_share_server.assert_called_once_with(
+            fake.SHARE_SERVER)
+
+    def test_get_admin_addresses_for_share_server(self):
+
+        result = self.library._get_admin_addresses_for_share_server(
+            fake.SHARE_SERVER)
+
+        self.assertEqual([fake.ADMIN_NETWORK_ALLOCATIONS[0]['ip_address']],
+                         result)
+
+    def test_get_admin_addresses_for_share_server_no_share_server(self):
+
+        result = self.library._get_admin_addresses_for_share_server(None)
+
+        self.assertEqual([], result)
+
+    @ddt.data(True, False)
+    def test_sort_export_locations_by_preferred_paths(self, reverse):
+
+        export_locations = copy.copy(fake.NFS_EXPORTS)
+        if reverse:
+            export_locations.reverse()
+
+        result = self.library._sort_export_locations_by_preferred_paths(
+            export_locations)
+
+        self.assertEqual(fake.NFS_EXPORTS, result)
 
     def test_remove_export(self):
 
@@ -992,16 +1113,16 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
                          mock.Mock(return_value=(fake.VSERVER1,
                                                  vserver_client)))
 
-        self.library.create_snapshot(self.context,
-                                     fake.SNAPSHOT,
-                                     share_server=fake.SHARE_SERVER)
+        model_update = self.library.create_snapshot(
+            self.context, fake.SNAPSHOT, share_server=fake.SHARE_SERVER)
 
-        share_name = self.library._get_valid_share_name(
+        share_name = self.library._get_backend_share_name(
             fake.SNAPSHOT['share_id'])
-        snapshot_name = self.library._get_valid_snapshot_name(
+        snapshot_name = self.library._get_backend_snapshot_name(
             fake.SNAPSHOT['id'])
         vserver_client.create_snapshot.assert_called_once_with(share_name,
                                                                snapshot_name)
+        self.assertEqual(snapshot_name, model_update['provider_location'])
 
     def test_delete_snapshot(self):
 
@@ -1010,20 +1131,38 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
                          '_get_vserver',
                          mock.Mock(return_value=(fake.VSERVER1,
                                                  vserver_client)))
-        mock_handle_busy_snapshot = self.mock_object(self.library,
-                                                     '_handle_busy_snapshot')
+        mock_delete_snapshot = self.mock_object(self.library,
+                                                '_delete_snapshot')
 
         self.library.delete_snapshot(self.context,
                                      fake.SNAPSHOT,
                                      share_server=fake.SHARE_SERVER)
 
-        share_name = self.library._get_valid_share_name(
+        share_name = self.library._get_backend_share_name(
             fake.SNAPSHOT['share_id'])
-        snapshot_name = self.library._get_valid_snapshot_name(
+        snapshot_name = self.library._get_backend_snapshot_name(
             fake.SNAPSHOT['id'])
-        self.assertTrue(mock_handle_busy_snapshot.called)
-        vserver_client.delete_snapshot.assert_called_once_with(share_name,
-                                                               snapshot_name)
+        mock_delete_snapshot.assert_called_once_with(
+            vserver_client, share_name, snapshot_name)
+
+    def test_delete_snapshot_with_provider_location(self):
+        vserver_client = mock.Mock()
+        vserver_client.get_snapshot.return_value = fake.CDOT_SNAPSHOT
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+        fake_snapshot = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot['provider_location'] = 'fake_provider_location'
+
+        self.library.delete_snapshot(self.context,
+                                     fake_snapshot,
+                                     share_server=fake.SHARE_SERVER)
+
+        share_name = self.library._get_backend_share_name(
+            fake_snapshot['share_id'])
+        vserver_client.delete_snapshot.assert_called_once_with(
+            share_name,  fake_snapshot['provider_location'])
 
     @ddt.data(exception.InvalidInput(reason='fake_reason'),
               exception.VserverNotSpecified(),
@@ -1033,15 +1172,14 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
         self.mock_object(self.library,
                          '_get_vserver',
                          mock.Mock(side_effect=get_vserver_exception))
-        mock_handle_busy_snapshot = self.mock_object(self.library,
-                                                     '_handle_busy_snapshot')
+        mock_delete_snapshot = self.mock_object(self.library,
+                                                '_delete_snapshot')
 
         self.library.delete_snapshot(self.context,
                                      fake.SNAPSHOT,
                                      share_server=fake.SHARE_SERVER)
 
-        self.assertFalse(mock_handle_busy_snapshot.called)
-        self.assertEqual(1, lib_base.LOG.warning.call_count)
+        self.assertFalse(mock_delete_snapshot.called)
 
     def test_delete_snapshot_not_found(self):
 
@@ -1050,113 +1188,99 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
                          '_get_vserver',
                          mock.Mock(return_value=(fake.VSERVER1,
                                                  vserver_client)))
-        mock_handle_busy_snapshot = self.mock_object(
-            self.library, '_handle_busy_snapshot',
-            mock.Mock(side_effect=exception.SnapshotNotFound(
+        mock_delete_snapshot = self.mock_object(
+            self.library, '_delete_snapshot',
+            mock.Mock(side_effect=exception.SnapshotResourceNotFound(
                 name=fake.SNAPSHOT_NAME)))
 
         self.library.delete_snapshot(self.context,
                                      fake.SNAPSHOT,
                                      share_server=fake.SHARE_SERVER)
 
-        self.assertTrue(mock_handle_busy_snapshot.called)
-        self.assertFalse(vserver_client.delete_snapshot.called)
+        share_name = self.library._get_backend_share_name(
+            fake.SNAPSHOT['share_id'])
+        snapshot_name = self.library._get_backend_snapshot_name(
+            fake.SNAPSHOT['id'])
+        mock_delete_snapshot.assert_called_once_with(
+            vserver_client, share_name, snapshot_name)
 
-    def test_delete_snapshot_busy(self):
+    def test_delete_snapshot_not_unique(self):
 
         vserver_client = mock.Mock()
         self.mock_object(self.library,
                          '_get_vserver',
                          mock.Mock(return_value=(fake.VSERVER1,
                                                  vserver_client)))
-        mock_handle_busy_snapshot = self.mock_object(
-            self.library, '_handle_busy_snapshot',
-            mock.Mock(side_effect=exception.ShareSnapshotIsBusy(
-                snapshot_name=fake.SNAPSHOT_NAME)))
+        mock_delete_snapshot = self.mock_object(
+            self.library, '_delete_snapshot',
+            mock.Mock(side_effect=exception.NetAppException()))
 
-        self.assertRaises(exception.ShareSnapshotIsBusy,
+        self.assertRaises(exception.NetAppException,
                           self.library.delete_snapshot,
                           self.context,
                           fake.SNAPSHOT,
                           share_server=fake.SHARE_SERVER)
 
-        self.assertTrue(mock_handle_busy_snapshot.called)
-        self.assertFalse(vserver_client.delete_snapshot.called)
+        share_name = self.library._get_backend_share_name(
+            fake.SNAPSHOT['share_id'])
+        snapshot_name = self.library._get_backend_snapshot_name(
+            fake.SNAPSHOT['id'])
+        mock_delete_snapshot.assert_called_once_with(
+            vserver_client, share_name, snapshot_name)
 
-    def test_handle_busy_snapshot_not_busy(self):
+    def test__delete_snapshot(self):
 
         vserver_client = mock.Mock()
         vserver_client.get_snapshot.return_value = fake.CDOT_SNAPSHOT
 
-        result = self.library._handle_busy_snapshot(vserver_client,
-                                                    fake.SHARE_NAME,
-                                                    fake.SNAPSHOT_NAME)
+        self.library._delete_snapshot(vserver_client,
+                                      fake.SHARE_NAME,
+                                      fake.SNAPSHOT_NAME)
 
-        self.assertIsNone(result)
-        self.assertEqual(1, vserver_client.get_snapshot.call_count)
-        self.assertEqual(0, lib_base.LOG.debug.call_count)
+        vserver_client.delete_snapshot.assert_called_once_with(
+            fake.SHARE_NAME, fake.SNAPSHOT_NAME)
+        self.assertFalse(vserver_client.get_clone_children_for_snapshot.called)
+        self.assertFalse(vserver_client.split_volume_clone.called)
+        self.assertFalse(vserver_client.soft_delete_snapshot.called)
 
-    def test_handle_busy_snapshot_not_found(self):
-
-        vserver_client = mock.Mock()
-        vserver_client.get_snapshot.side_effect = exception.SnapshotNotFound(
-            name=fake.SNAPSHOT_NAME)
-
-        self.assertRaises(exception.SnapshotNotFound,
-                          self.library._handle_busy_snapshot,
-                          vserver_client,
-                          fake.SHARE_NAME,
-                          fake.SNAPSHOT_NAME)
-
-    def test_handle_busy_snapshot_not_clone_dependency(self):
-
-        snapshot = copy.deepcopy(fake.CDOT_SNAPSHOT_BUSY_VOLUME_CLONE)
-        snapshot['owners'] = {'fake reason'}
+    def test__delete_snapshot_busy_volume_clone(self):
 
         vserver_client = mock.Mock()
-        vserver_client.get_snapshot.return_value = snapshot
+        vserver_client.get_snapshot.return_value = (
+            fake.CDOT_SNAPSHOT_BUSY_VOLUME_CLONE)
+        vserver_client.get_clone_children_for_snapshot.return_value = (
+            fake.CDOT_CLONE_CHILDREN)
+
+        self.library._delete_snapshot(vserver_client,
+                                      fake.SHARE_NAME,
+                                      fake.SNAPSHOT_NAME)
+
+        self.assertFalse(vserver_client.delete_snapshot.called)
+        vserver_client.get_clone_children_for_snapshot.assert_called_once_with(
+            fake.SHARE_NAME, fake.SNAPSHOT_NAME)
+        vserver_client.split_volume_clone.assert_has_calls([
+            mock.call(fake.CDOT_CLONE_CHILD_1),
+            mock.call(fake.CDOT_CLONE_CHILD_2),
+        ])
+        vserver_client.soft_delete_snapshot.assert_called_once_with(
+            fake.SHARE_NAME, fake.SNAPSHOT_NAME)
+
+    def test__delete_snapshot_busy_snapmirror(self):
+
+        vserver_client = mock.Mock()
+        vserver_client.get_snapshot.return_value = (
+            fake.CDOT_SNAPSHOT_BUSY_SNAPMIRROR)
 
         self.assertRaises(exception.ShareSnapshotIsBusy,
-                          self.library._handle_busy_snapshot,
+                          self.library._delete_snapshot,
                           vserver_client,
                           fake.SHARE_NAME,
                           fake.SNAPSHOT_NAME)
-        self.assertEqual(1, vserver_client.get_snapshot.call_count)
-        self.assertEqual(0, lib_base.LOG.debug.call_count)
 
-    def test_handle_busy_snapshot_clone_finishes(self):
-
-        get_snapshot_side_effect = [fake.CDOT_SNAPSHOT_BUSY_VOLUME_CLONE] * 10
-        get_snapshot_side_effect.append(fake.CDOT_SNAPSHOT)
-
-        vserver_client = mock.Mock()
-        vserver_client.get_snapshot.side_effect = get_snapshot_side_effect
-        mock_sleep = self.mock_object(time, 'sleep')
-
-        result = self.library._handle_busy_snapshot(vserver_client,
-                                                    fake.SHARE_NAME,
-                                                    fake.SNAPSHOT_NAME)
-
-        self.assertIsNone(result)
-        self.assertEqual(11, vserver_client.get_snapshot.call_count)
-        mock_sleep.assert_has_calls([mock.call(3)] * 10)
-        self.assertEqual(10, lib_base.LOG.debug.call_count)
-
-    def test_handle_busy_snapshot_clone_continues(self):
-
-        vserver_client = mock.Mock()
-        vserver_client.get_snapshot.side_effect = [
-            fake.CDOT_SNAPSHOT_BUSY_VOLUME_CLONE] * 30
-        mock_sleep = self.mock_object(time, 'sleep')
-
-        self.assertRaises(exception.ShareSnapshotIsBusy,
-                          self.library._handle_busy_snapshot,
-                          vserver_client,
-                          fake.SHARE_NAME,
-                          fake.SNAPSHOT_NAME)
-        self.assertEqual(21, vserver_client.get_snapshot.call_count)
-        mock_sleep.assert_has_calls([mock.call(3)] * 20)
-        self.assertEqual(20, lib_base.LOG.debug.call_count)
+        self.assertFalse(vserver_client.delete_snapshot.called)
+        self.assertFalse(vserver_client.get_clone_children_for_snapshot.called)
+        self.assertFalse(vserver_client.split_volume_clone.called)
+        self.assertFalse(vserver_client.soft_delete_snapshot.called)
 
     def test_manage_existing(self):
 
@@ -1183,6 +1307,7 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
         mock_manage_container.assert_called_once_with(fake.SHARE,
                                                       vserver_client)
         mock_create_export.assert_called_once_with(fake.SHARE,
+                                                   None,
                                                    fake.VSERVER1,
                                                    vserver_client)
         self.assertDictEqual(expected, result)
@@ -1454,9 +1579,11 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
         ])
         mock_create_export.assert_has_calls([
             mock.call(fake.COLLATED_CGSNAPSHOT_INFO[0]['share'],
+                      fake.SHARE_SERVER,
                       fake.VSERVER1,
                       vserver_client),
             mock.call(fake.COLLATED_CGSNAPSHOT_INFO[1]['share'],
+                      fake.SHARE_SERVER,
                       fake.VSERVER1,
                       vserver_client),
         ])
@@ -1556,12 +1683,12 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
             share_server=fake.SHARE_SERVER)
 
         share_names = [
-            self.library._get_valid_share_name(
+            self.library._get_backend_share_name(
                 fake.CG_SNAPSHOT_MEMBER_1['share_id']),
-            self.library._get_valid_share_name(
+            self.library._get_backend_share_name(
                 fake.CG_SNAPSHOT_MEMBER_2['share_id'])
         ]
-        snapshot_name = self.library._get_valid_cg_snapshot_name(
+        snapshot_name = self.library._get_backend_cg_snapshot_name(
             fake.CG_SNAPSHOT['id'])
         vserver_client.create_cg_snapshot.assert_called_once_with(
             share_names, snapshot_name)
@@ -1595,8 +1722,8 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
         mock_get_vserver = self.mock_object(
             self.library, '_get_vserver',
             mock.Mock(return_value=(fake.VSERVER1, vserver_client)))
-        mock_handle_busy_snapshot = self.mock_object(self.library,
-                                                     '_handle_busy_snapshot')
+        mock_delete_snapshot = self.mock_object(self.library,
+                                                '_delete_snapshot')
 
         result = self.library.delete_cgsnapshot(
             self.context,
@@ -1604,21 +1731,17 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
             share_server=fake.SHARE_SERVER)
 
         share_names = [
-            self.library._get_valid_share_name(
+            self.library._get_backend_share_name(
                 fake.CG_SNAPSHOT_MEMBER_1['share_id']),
-            self.library._get_valid_share_name(
+            self.library._get_backend_share_name(
                 fake.CG_SNAPSHOT_MEMBER_2['share_id'])
         ]
-        snapshot_name = self.library._get_valid_cg_snapshot_name(
+        snapshot_name = self.library._get_backend_cg_snapshot_name(
             fake.CG_SNAPSHOT['id'])
 
-        mock_handle_busy_snapshot.assert_has_calls([
+        mock_delete_snapshot.assert_has_calls([
             mock.call(vserver_client, share_names[0], snapshot_name),
             mock.call(vserver_client, share_names[1], snapshot_name)
-        ])
-        vserver_client.delete_snapshot.assert_has_calls([
-            mock.call(share_names[0], snapshot_name),
-            mock.call(share_names[1], snapshot_name)
         ])
         self.assertEqual((None, None), result)
         mock_get_vserver.assert_called_once_with(
@@ -1630,8 +1753,8 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
         mock_get_vserver = self.mock_object(
             self.library, '_get_vserver',
             mock.Mock(return_value=(fake.VSERVER1, vserver_client)))
-        mock_handle_busy_snapshot = self.mock_object(self.library,
-                                                     '_handle_busy_snapshot')
+        mock_delete_snapshot = self.mock_object(self.library,
+                                                '_delete_snapshot')
 
         fake_cg_snapshot = copy.deepcopy(fake.CG_SNAPSHOT)
         fake_cg_snapshot['cgsnapshot_members'] = []
@@ -1641,8 +1764,7 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
             fake_cg_snapshot,
             share_server=fake.SHARE_SERVER)
 
-        self.assertFalse(mock_handle_busy_snapshot.called)
-        self.assertFalse(vserver_client.delete_snapshot.called)
+        self.assertFalse(mock_delete_snapshot.called)
         self.assertEqual((None, None), result)
         mock_get_vserver.assert_called_once_with(
             share_server=fake.SHARE_SERVER)
@@ -1653,10 +1775,10 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
         mock_get_vserver = self.mock_object(
             self.library, '_get_vserver',
             mock.Mock(return_value=(fake.VSERVER1, vserver_client)))
-        mock_handle_busy_snapshot = self.mock_object(
-            self.library,
-            '_handle_busy_snapshot',
-            mock.Mock(side_effect=exception.SnapshotNotFound(name='fake')))
+        mock_delete_snapshot = self.mock_object(
+            self.library, '_delete_snapshot',
+            mock.Mock(side_effect=exception.SnapshotResourceNotFound(
+                name='fake')))
 
         result = self.library.delete_cgsnapshot(
             self.context,
@@ -1664,19 +1786,18 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
             share_server=fake.SHARE_SERVER)
 
         share_names = [
-            self.library._get_valid_share_name(
+            self.library._get_backend_share_name(
                 fake.CG_SNAPSHOT_MEMBER_1['share_id']),
-            self.library._get_valid_share_name(
+            self.library._get_backend_share_name(
                 fake.CG_SNAPSHOT_MEMBER_2['share_id'])
         ]
-        snapshot_name = self.library._get_valid_cg_snapshot_name(
+        snapshot_name = self.library._get_backend_cg_snapshot_name(
             fake.CG_SNAPSHOT['id'])
 
-        mock_handle_busy_snapshot.assert_has_calls([
+        mock_delete_snapshot.assert_has_calls([
             mock.call(vserver_client, share_names[0], snapshot_name),
             mock.call(vserver_client, share_names[1], snapshot_name)
         ])
-        self.assertFalse(vserver_client.delete_snapshot.called)
         self.assertEqual((None, None), result)
         mock_get_vserver.assert_called_once_with(
             share_server=fake.SHARE_SERVER)
@@ -1731,55 +1852,135 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
 
         mock_set_volume_size.assert_called_once_with(fake.SHARE_NAME, new_size)
 
-    def test_allow_access(self):
+    def test_update_access(self):
 
+        vserver_client = mock.Mock()
+        mock_get_vserver = self.mock_object(
+            self.library, '_get_vserver',
+            mock.Mock(return_value=(fake.VSERVER1, vserver_client)))
         protocol_helper = mock.Mock()
-        protocol_helper.allow_access.return_value = None
+        protocol_helper.update_access.return_value = None
         self.mock_object(self.library,
                          '_get_helper',
                          mock.Mock(return_value=protocol_helper))
-        vserver_client = mock.Mock()
-        self.mock_object(self.library,
-                         '_get_vserver',
-                         mock.Mock(return_value=(fake.VSERVER1,
-                                                 vserver_client)))
+        mock_share_exists = self.mock_object(self.library,
+                                             '_share_exists',
+                                             mock.Mock(return_value=True))
 
-        self.library.allow_access(self.context,
-                                  fake.SHARE,
-                                  fake.SHARE_ACCESS,
-                                  share_server=fake.SHARE_SERVER)
+        self.library.update_access(self.context,
+                                   fake.SHARE,
+                                   [fake.SHARE_ACCESS],
+                                   [],
+                                   [],
+                                   share_server=fake.SHARE_SERVER)
 
+        mock_get_vserver.assert_called_once_with(
+            share_server=fake.SHARE_SERVER)
+        share_name = self.library._get_backend_share_name(fake.SHARE['id'])
+        mock_share_exists.assert_called_once_with(share_name, vserver_client)
         protocol_helper.set_client.assert_called_once_with(vserver_client)
-        protocol_helper.allow_access.assert_called_once_with(
-            self.context,
-            fake.SHARE,
-            fake.SHARE_NAME,
-            fake.SHARE_ACCESS)
+        protocol_helper.update_access.assert_called_once_with(
+            fake.SHARE, fake.SHARE_NAME, [fake.SHARE_ACCESS])
 
-    def test_deny_access(self):
+    @ddt.data(exception.InvalidInput(reason='fake_reason'),
+              exception.VserverNotSpecified(),
+              exception.VserverNotFound(vserver='fake_vserver'))
+    def test_update_access_no_share_server(self, get_vserver_exception):
 
+        mock_get_vserver = self.mock_object(
+            self.library, '_get_vserver',
+            mock.Mock(side_effect=get_vserver_exception))
         protocol_helper = mock.Mock()
-        protocol_helper.deny_access.return_value = None
+        protocol_helper.update_access.return_value = None
         self.mock_object(self.library,
                          '_get_helper',
                          mock.Mock(return_value=protocol_helper))
+        mock_share_exists = self.mock_object(self.library, '_share_exists')
+
+        self.library.update_access(self.context,
+                                   fake.SHARE,
+                                   [fake.SHARE_ACCESS],
+                                   [],
+                                   [],
+                                   share_server=fake.SHARE_SERVER)
+
+        mock_get_vserver.assert_called_once_with(
+            share_server=fake.SHARE_SERVER)
+        self.assertFalse(mock_share_exists.called)
+        self.assertFalse(protocol_helper.set_client.called)
+        self.assertFalse(protocol_helper.update_access.called)
+
+    def test_update_access_share_not_found(self):
+
         vserver_client = mock.Mock()
+        mock_get_vserver = self.mock_object(
+            self.library, '_get_vserver',
+            mock.Mock(return_value=(fake.VSERVER1, vserver_client)))
+        protocol_helper = mock.Mock()
+        protocol_helper.update_access.return_value = None
         self.mock_object(self.library,
-                         '_get_vserver',
-                         mock.Mock(return_value=(fake.VSERVER1,
-                                                 vserver_client)))
+                         '_get_helper',
+                         mock.Mock(return_value=protocol_helper))
+        mock_share_exists = self.mock_object(self.library,
+                                             '_share_exists',
+                                             mock.Mock(return_value=False))
 
-        self.library.deny_access(self.context,
-                                 fake.SHARE,
-                                 fake.SHARE_ACCESS,
-                                 share_server=fake.SHARE_SERVER)
+        self.assertRaises(exception.ShareResourceNotFound,
+                          self.library.update_access,
+                          self.context,
+                          fake.SHARE,
+                          [fake.SHARE_ACCESS],
+                          [],
+                          [],
+                          share_server=fake.SHARE_SERVER)
 
+        mock_get_vserver.assert_called_once_with(
+            share_server=fake.SHARE_SERVER)
+        share_name = self.library._get_backend_share_name(fake.SHARE['id'])
+        mock_share_exists.assert_called_once_with(share_name, vserver_client)
+        self.assertFalse(protocol_helper.set_client.called)
+        self.assertFalse(protocol_helper.update_access.called)
+
+    def test_update_access_to_active_replica(self):
+        fake_share = copy.deepcopy(fake.SHARE)
+        fake_share['replica_state'] = constants.REPLICA_STATE_ACTIVE
+        vserver_client = mock.Mock()
+        mock_get_vserver = self.mock_object(
+            self.library, '_get_vserver',
+            mock.Mock(return_value=(fake.VSERVER1, vserver_client)))
+        protocol_helper = mock.Mock()
+        protocol_helper.update_access.return_value = None
+        self.mock_object(self.library,
+                         '_get_helper',
+                         mock.Mock(return_value=protocol_helper))
+        mock_share_exists = self.mock_object(self.library,
+                                             '_share_exists',
+                                             mock.Mock(return_value=True))
+
+        self.library.update_access(self.context,
+                                   fake_share,
+                                   [fake.SHARE_ACCESS],
+                                   [],
+                                   [],
+                                   share_server=fake.SHARE_SERVER)
+
+        mock_get_vserver.assert_called_once_with(
+            share_server=fake.SHARE_SERVER)
+        share_name = self.library._get_backend_share_name(fake.SHARE['id'])
+        mock_share_exists.assert_called_once_with(share_name, vserver_client)
         protocol_helper.set_client.assert_called_once_with(vserver_client)
-        protocol_helper.deny_access.assert_called_once_with(
-            self.context,
-            fake.SHARE,
-            fake.SHARE_NAME,
-            fake.SHARE_ACCESS)
+        protocol_helper.update_access.assert_called_once_with(
+            fake.SHARE, fake.SHARE_NAME, [fake.SHARE_ACCESS])
+
+    def test_update_access_to_in_sync_replica(self):
+        fake_share = copy.deepcopy(fake.SHARE)
+        fake_share['replica_state'] = constants.REPLICA_STATE_IN_SYNC
+        self.library.update_access(self.context,
+                                   fake_share,
+                                   [fake.SHARE_ACCESS],
+                                   [],
+                                   [],
+                                   share_server=fake.SHARE_SERVER)
 
     def test_setup_server(self):
         self.assertRaises(NotImplementedError,
@@ -1868,3 +2069,1299 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
 
         self.assertDictEqual({}, ssc_stats)
         self.assertFalse(self.library._client.get_aggregate_raid_types.called)
+
+    def test_create_replica(self):
+        self.mock_object(self.library,
+                         '_allocate_container')
+        mock_dm_session = mock.Mock()
+        self.mock_object(data_motion, "DataMotionSession",
+                         mock.Mock(return_value=mock_dm_session))
+        self.mock_object(data_motion, 'get_client_for_backend')
+        self.mock_object(mock_dm_session, 'get_vserver_from_share',
+                         mock.Mock(return_value=fake.VSERVER1))
+        expected_model_update = {
+            'export_locations': [],
+            'replica_state': constants.REPLICA_STATE_OUT_OF_SYNC,
+            'access_rules_status': constants.STATUS_ACTIVE,
+        }
+
+        model_update = self.library.create_replica(
+            None, [fake.SHARE], fake.SHARE, [], [],
+            share_server=None)
+
+        self.assertDictMatch(expected_model_update, model_update)
+        mock_dm_session.create_snapmirror.assert_called_once_with(fake.SHARE,
+                                                                  fake.SHARE)
+        data_motion.get_client_for_backend.assert_called_once_with(
+            fake.BACKEND_NAME, vserver_name=fake.VSERVER1)
+
+    def test_create_replica_with_share_server(self):
+        self.mock_object(self.library,
+                         '_allocate_container',
+                         mock.Mock())
+        mock_dm_session = mock.Mock()
+        self.mock_object(data_motion, "DataMotionSession",
+                         mock.Mock(return_value=mock_dm_session))
+        self.mock_object(data_motion, 'get_client_for_backend')
+        self.mock_object(mock_dm_session, 'get_vserver_from_share',
+                         mock.Mock(return_value=fake.VSERVER1))
+
+        expected_model_update = {
+            'export_locations': [],
+            'replica_state': constants.REPLICA_STATE_OUT_OF_SYNC,
+            'access_rules_status': constants.STATUS_ACTIVE,
+        }
+
+        model_update = self.library.create_replica(
+            None, [fake.SHARE], fake.SHARE, [], [],
+            share_server=fake.SHARE_SERVER)
+
+        self.assertDictMatch(expected_model_update, model_update)
+        mock_dm_session.create_snapmirror.assert_called_once_with(fake.SHARE,
+                                                                  fake.SHARE)
+        data_motion.get_client_for_backend.assert_called_once_with(
+            fake.BACKEND_NAME, vserver_name=fake.VSERVER1)
+
+    def test_delete_replica(self):
+        self.mock_object(self.library,
+                         '_deallocate_container',
+                         mock.Mock())
+        self.mock_object(self.library,
+                         '_share_exists',
+                         mock.Mock(return_value=False))
+        mock_dm_session = mock.Mock()
+        self.mock_object(data_motion, "DataMotionSession",
+                         mock.Mock(return_value=mock_dm_session))
+        self.mock_object(data_motion, 'get_client_for_backend')
+        self.mock_object(mock_dm_session, 'get_vserver_from_share',
+                         mock.Mock(return_value=fake.VSERVER1))
+
+        result = self.library.delete_replica(None,
+                                             [fake.SHARE],
+                                             fake.SHARE,
+                                             [],
+                                             share_server=None)
+        self.assertEqual(None, result)
+        mock_dm_session.delete_snapmirror.assert_called_with(fake.SHARE,
+                                                             fake.SHARE)
+        self.assertEqual(2, mock_dm_session.delete_snapmirror.call_count)
+        data_motion.get_client_for_backend.assert_called_with(
+            fake.BACKEND_NAME, vserver_name=mock.ANY)
+        self.assertEqual(1, data_motion.get_client_for_backend.call_count)
+
+    def test_delete_replica_with_share_server(self):
+        self.mock_object(self.library,
+                         '_deallocate_container',
+                         mock.Mock())
+        self.mock_object(self.library,
+                         '_share_exists',
+                         mock.Mock(return_value=False))
+        mock_dm_session = mock.Mock()
+        self.mock_object(data_motion, "DataMotionSession",
+                         mock.Mock(return_value=mock_dm_session))
+        self.mock_object(data_motion, 'get_client_for_backend')
+        self.mock_object(mock_dm_session, 'get_vserver_from_share',
+                         mock.Mock(return_value=fake.VSERVER1))
+
+        result = self.library.delete_replica(None,
+                                             [fake.SHARE],
+                                             fake.SHARE,
+                                             [],
+                                             share_server=fake.SHARE_SERVER)
+        self.assertEqual(None, result)
+        mock_dm_session.delete_snapmirror.assert_called_with(fake.SHARE,
+                                                             fake.SHARE)
+        self.assertEqual(2, mock_dm_session.delete_snapmirror.call_count)
+        data_motion.get_client_for_backend.assert_called_once_with(
+            fake.BACKEND_NAME, vserver_name=fake.VSERVER1)
+
+    def test_delete_replica_share_absent_on_backend(self):
+        self.mock_object(self.library,
+                         '_deallocate_container',
+                         mock.Mock())
+        self.mock_object(self.library,
+                         '_share_exists',
+                         mock.Mock(return_value=False))
+        mock_dm_session = mock.Mock()
+        self.mock_object(data_motion,
+                         "DataMotionSession",
+                         mock.Mock(return_value=mock_dm_session))
+        self.mock_object(data_motion, 'get_client_for_backend')
+        self.mock_object(mock_dm_session,
+                         'get_vserver_from_share',
+                         mock.Mock(return_value=fake.VSERVER1))
+
+        result = self.library.delete_replica(None,
+                                             [fake.SHARE],
+                                             fake.SHARE,
+                                             [],
+                                             share_server=None)
+
+        self.assertEqual(None, result)
+        self.assertFalse(self.library._deallocate_container.called)
+        mock_dm_session.delete_snapmirror.assert_called_with(fake.SHARE,
+                                                             fake.SHARE)
+        self.assertEqual(2, mock_dm_session.delete_snapmirror.call_count)
+        data_motion.get_client_for_backend.assert_called_with(
+            fake.BACKEND_NAME, vserver_name=mock.ANY)
+        self.assertEqual(1, data_motion.get_client_for_backend.call_count)
+
+    def test_update_replica_state_no_snapmirror_share_creating(self):
+        vserver_client = mock.Mock()
+        self.mock_object(vserver_client, 'volume_exists',
+                         mock.Mock(return_value=True))
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+        self.mock_dm_session.get_snapmirrors = mock.Mock(return_value=[])
+
+        replica = copy.deepcopy(fake.SHARE)
+        replica['status'] = constants.STATUS_CREATING
+
+        result = self.library.update_replica_state(
+            None, [replica], replica, None, [], share_server=None)
+
+        self.assertFalse(self.mock_dm_session.create_snapmirror.called)
+        self.assertEqual(constants.STATUS_OUT_OF_SYNC, result)
+
+    def test_update_replica_state_no_snapmirror_create_failed(self):
+        vserver_client = mock.Mock()
+        self.mock_object(vserver_client, 'volume_exists',
+                         mock.Mock(return_value=True))
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+        self.mock_dm_session.get_snapmirrors = mock.Mock(return_value=[])
+        self.mock_dm_session.create_snapmirror.side_effect = (
+            netapp_api.NaApiError(code=0))
+
+        replica = copy.deepcopy(fake.SHARE)
+        replica['status'] = constants.REPLICA_STATE_OUT_OF_SYNC
+
+        result = self.library.update_replica_state(
+            None, [replica], replica, None, [], share_server=None)
+
+        self.assertTrue(self.mock_dm_session.create_snapmirror.called)
+        self.assertEqual(constants.STATUS_ERROR, result)
+
+    @ddt.data(constants.STATUS_ERROR, constants.STATUS_AVAILABLE)
+    def test_update_replica_state_no_snapmirror(self, status):
+        vserver_client = mock.Mock()
+        self.mock_object(vserver_client, 'volume_exists',
+                         mock.Mock(return_value=True))
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+        self.mock_dm_session.get_snapmirrors = mock.Mock(return_value=[])
+
+        replica = copy.deepcopy(fake.SHARE)
+        replica['status'] = status
+
+        result = self.library.update_replica_state(
+            None, [replica], replica, None, [], share_server=None)
+
+        self.assertEqual(1, self.mock_dm_session.create_snapmirror.call_count)
+        self.assertEqual(constants.STATUS_OUT_OF_SYNC, result)
+
+    def test_update_replica_state_broken_snapmirror(self):
+        fake_snapmirror = {
+            'mirror-state': 'broken-off',
+            'relationship-status': 'idle',
+            'source-vserver': fake.VSERVER2,
+            'source-volume': 'fake_volume',
+            'last-transfer-end-timestamp': '%s' % float(time.time() - 10000)
+        }
+        vserver_client = mock.Mock()
+        self.mock_object(vserver_client, 'volume_exists',
+                         mock.Mock(return_value=True))
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+        self.mock_dm_session.get_snapmirrors = mock.Mock(
+            return_value=[fake_snapmirror])
+
+        result = self.library.update_replica_state(None, [fake.SHARE],
+                                                   fake.SHARE, None, [],
+                                                   share_server=None)
+
+        vserver_client.resync_snapmirror.assert_called_once_with(
+            fake.VSERVER2, 'fake_volume', fake.VSERVER1, fake.SHARE['name']
+        )
+
+        self.assertEqual(constants.REPLICA_STATE_OUT_OF_SYNC, result)
+
+    def test_update_replica_state_snapmirror_still_initializing(self):
+        fake_snapmirror = {
+            'mirror-state': 'uninitialized',
+            'relationship-status': 'transferring',
+            'source-vserver': fake.VSERVER2,
+            'source-volume': 'fake_volume',
+            'last-transfer-end-timestamp': '%s' % float(time.time() - 10000)
+        }
+        vserver_client = mock.Mock()
+        self.mock_object(vserver_client, 'volume_exists',
+                         mock.Mock(return_value=True))
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+        self.mock_dm_session.get_snapmirrors = mock.Mock(
+            return_value=[fake_snapmirror])
+
+        result = self.library.update_replica_state(None, [fake.SHARE],
+                                                   fake.SHARE, None, [],
+                                                   share_server=None)
+
+        self.assertEqual(constants.REPLICA_STATE_OUT_OF_SYNC, result)
+
+    def test_update_replica_state_fail_to_get_snapmirrors(self):
+        vserver_client = mock.Mock()
+        self.mock_object(vserver_client, 'volume_exists',
+                         mock.Mock(return_value=True))
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+        self.mock_dm_session.get_snapmirrors.side_effect = (
+            netapp_api.NaApiError(code=0))
+
+        result = self.library.update_replica_state(None, [fake.SHARE],
+                                                   fake.SHARE, None, [],
+                                                   share_server=None)
+        self.assertTrue(self.mock_dm_session.get_snapmirrors.called)
+        self.assertEqual(constants.STATUS_ERROR, result)
+
+    def test_update_replica_state_broken_snapmirror_resync_error(self):
+        fake_snapmirror = {
+            'mirror-state': 'broken-off',
+            'relationship-status': 'idle',
+            'source-vserver': fake.VSERVER2,
+            'source-volume': 'fake_volume',
+            'last-transfer-end-timestamp': '%s' % float(time.time() - 10000)
+        }
+        vserver_client = mock.Mock()
+        self.mock_object(vserver_client, 'volume_exists',
+                         mock.Mock(return_value=True))
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+        self.mock_dm_session.get_snapmirrors = mock.Mock(
+            return_value=[fake_snapmirror])
+        vserver_client.resync_snapmirror.side_effect = netapp_api.NaApiError
+
+        result = self.library.update_replica_state(None, [fake.SHARE],
+                                                   fake.SHARE, None, [],
+                                                   share_server=None)
+
+        vserver_client.resync_snapmirror.assert_called_once_with(
+            fake.VSERVER2, 'fake_volume', fake.VSERVER1, fake.SHARE['name']
+        )
+
+        self.assertEqual(constants.STATUS_ERROR, result)
+
+    def test_update_replica_state_stale_snapmirror(self):
+        fake_snapmirror = {
+            'mirror-state': 'snapmirrored',
+            'last-transfer-end-timestamp': '%s' % float(
+                timeutils.utcnow_ts() - 10000)
+        }
+        vserver_client = mock.Mock()
+        self.mock_object(vserver_client, 'volume_exists',
+                         mock.Mock(return_value=True))
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+        self.mock_dm_session.get_snapmirrors = mock.Mock(
+            return_value=[fake_snapmirror])
+
+        result = self.library.update_replica_state(None, [fake.SHARE],
+                                                   fake.SHARE, None, [],
+                                                   share_server=None)
+
+        self.assertEqual(constants.REPLICA_STATE_OUT_OF_SYNC, result)
+
+    def test_update_replica_state_in_sync(self):
+        fake_snapmirror = {
+            'mirror-state': 'snapmirrored',
+            'relationship-status': 'idle',
+            'last-transfer-end-timestamp': '%s' % float(time.time())
+        }
+        vserver_client = mock.Mock()
+        self.mock_object(vserver_client, 'volume_exists',
+                         mock.Mock(return_value=True))
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+        self.mock_dm_session.get_snapmirrors = mock.Mock(
+            return_value=[fake_snapmirror])
+
+        result = self.library.update_replica_state(None, [fake.SHARE],
+                                                   fake.SHARE, None, [],
+                                                   share_server=None)
+
+        self.assertEqual(constants.REPLICA_STATE_IN_SYNC, result)
+
+    def test_update_replica_state_backend_volume_absent(self):
+        vserver_client = mock.Mock()
+        self.mock_object(vserver_client, 'volume_exists',
+                         mock.Mock(return_value=False))
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+
+        self.assertRaises(exception.ShareResourceNotFound,
+                          self.library.update_replica_state,
+                          None, [fake.SHARE], fake.SHARE, None, [],
+                          share_server=None)
+
+    def test_update_replica_state_in_sync_with_snapshots(self):
+        fake_snapmirror = {
+            'mirror-state': 'snapmirrored',
+            'relationship-status': 'idle',
+            'last-transfer-end-timestamp': '%s' % float(time.time())
+        }
+        fake_snapshot = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot['share_id'] = fake.SHARE['id']
+        snapshots = [{'share_replica_snapshot': fake_snapshot}]
+        vserver_client = mock.Mock()
+        self.mock_object(vserver_client, 'snapshot_exists', mock.Mock(
+            return_value=True))
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+        self.mock_dm_session.get_snapmirrors = mock.Mock(
+            return_value=[fake_snapmirror])
+
+        result = self.library.update_replica_state(None, [fake.SHARE],
+                                                   fake.SHARE, None, snapshots,
+                                                   share_server=None)
+
+        self.assertEqual(constants.REPLICA_STATE_IN_SYNC, result)
+
+    def test_update_replica_state_missing_snapshot(self):
+        fake_snapmirror = {
+            'mirror-state': 'snapmirrored',
+            'relationship-status': 'idle',
+            'last-transfer-end-timestamp': '%s' % float(time.time())
+        }
+        fake_snapshot = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot['share_id'] = fake.SHARE['id']
+        snapshots = [{'share_replica_snapshot': fake_snapshot}]
+        vserver_client = mock.Mock()
+        self.mock_object(vserver_client, 'snapshot_exists', mock.Mock(
+            return_value=False))
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+        self.mock_dm_session.get_snapmirrors = mock.Mock(
+            return_value=[fake_snapmirror])
+
+        result = self.library.update_replica_state(None, [fake.SHARE],
+                                                   fake.SHARE, None, snapshots,
+                                                   share_server=None)
+
+        self.assertEqual(constants.REPLICA_STATE_OUT_OF_SYNC, result)
+
+    def test_promote_replica(self):
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 mock.Mock())))
+        self.mock_object(self.library,
+                         '_get_helper',
+                         mock.Mock(return_value=mock.Mock()))
+        self.mock_object(self.library, '_create_export',
+                         mock.Mock(return_value='fake_export_location'))
+
+        replicas = self.library.promote_replica(
+            None, [self.fake_replica, self.fake_replica_2],
+            self.fake_replica_2, [], share_server=None)
+
+        self.mock_dm_session.change_snapmirror_source.assert_called_once_with(
+            self.fake_replica, self.fake_replica, self.fake_replica_2,
+            mock.ANY
+        )
+
+        self.assertEqual(2, len(replicas))
+        actual_replica_1 = list(filter(
+            lambda x: x['id'] == self.fake_replica['id'], replicas))[0]
+        self.assertEqual(constants.REPLICA_STATE_OUT_OF_SYNC,
+                         actual_replica_1['replica_state'])
+        actual_replica_2 = list(filter(
+            lambda x: x['id'] == self.fake_replica_2['id'], replicas))[0]
+        self.assertEqual(constants.REPLICA_STATE_ACTIVE,
+                         actual_replica_2['replica_state'])
+        self.assertEqual('fake_export_location',
+                         actual_replica_2['export_locations'])
+        self.assertEqual(constants.STATUS_ACTIVE,
+                         actual_replica_2['access_rules_status'])
+
+    def test_promote_replica_destination_unreachable(self):
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 mock.Mock())))
+        self.mock_object(self.library,
+                         '_get_helper',
+                         mock.Mock(return_value=mock.Mock()))
+        self.mock_object(self.library, '_create_export',
+                         mock.Mock(return_value='fake_export_location'))
+        self.mock_object(
+            self.library, '_convert_destination_replica_to_independent',
+            mock.Mock(side_effect=exception.StorageCommunicationException))
+
+        replicas = self.library.promote_replica(
+            None, [self.fake_replica, self.fake_replica_2],
+            self.fake_replica_2, [], share_server=None)
+
+        self.assertEqual(1, len(replicas))
+        actual_replica = replicas[0]
+        self.assertEqual(constants.STATUS_ERROR,
+                         actual_replica['replica_state'])
+        self.assertEqual(constants.STATUS_ERROR,
+                         actual_replica['status'])
+
+    def test_promote_replica_more_than_two_replicas(self):
+        fake_replica_3 = copy.deepcopy(self.fake_replica_2)
+        fake_replica_3['id'] = fake.SHARE_ID3
+        fake_replica_3['replica_state'] = constants.REPLICA_STATE_OUT_OF_SYNC
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 mock.Mock())))
+        self.mock_object(self.library,
+                         '_get_helper',
+                         mock.Mock(return_value=mock.Mock()))
+
+        self.mock_object(self.library, '_create_export',
+                         mock.Mock(return_value='fake_export_location'))
+
+        replicas = self.library.promote_replica(
+            None, [self.fake_replica, self.fake_replica_2, fake_replica_3],
+            self.fake_replica_2, [], share_server=None)
+
+        self.mock_dm_session.change_snapmirror_source.assert_has_calls([
+            mock.call(fake_replica_3, self.fake_replica, self.fake_replica_2,
+                      mock.ANY),
+            mock.call(self.fake_replica, self.fake_replica,
+                      self.fake_replica_2, mock.ANY)
+        ], any_order=True)
+
+        self.assertEqual(3, len(replicas))
+        actual_replica_1 = list(filter(
+            lambda x: x['id'] == self.fake_replica['id'], replicas))[0]
+        self.assertEqual(constants.REPLICA_STATE_OUT_OF_SYNC,
+                         actual_replica_1['replica_state'])
+        actual_replica_2 = list(filter(
+            lambda x: x['id'] == self.fake_replica_2['id'], replicas))[0]
+        self.assertEqual(constants.REPLICA_STATE_ACTIVE,
+                         actual_replica_2['replica_state'])
+        self.assertEqual('fake_export_location',
+                         actual_replica_2['export_locations'])
+        actual_replica_3 = list(filter(
+            lambda x: x['id'] == fake_replica_3['id'], replicas))[0]
+        self.assertEqual(constants.REPLICA_STATE_OUT_OF_SYNC,
+                         actual_replica_3['replica_state'])
+
+    def test_promote_replica_with_access_rules(self):
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 mock.Mock())))
+        mock_helper = mock.Mock()
+        self.mock_object(self.library,
+                         '_get_helper',
+                         mock.Mock(return_value=mock_helper))
+        self.mock_object(self.library, '_create_export',
+                         mock.Mock(return_value='fake_export_location'))
+
+        replicas = self.library.promote_replica(
+            None, [self.fake_replica, self.fake_replica_2],
+            self.fake_replica_2, [fake.SHARE_ACCESS], share_server=None)
+
+        self.mock_dm_session.change_snapmirror_source.assert_has_calls([
+            mock.call(self.fake_replica, self.fake_replica,
+                      self.fake_replica_2, mock.ANY)
+        ], any_order=True)
+        self.assertEqual(2, len(replicas))
+        share_name = self.library._get_backend_share_name(
+            self.fake_replica_2['id'])
+        mock_helper.update_access.assert_called_once_with(self.fake_replica_2,
+                                                          share_name,
+                                                          [fake.SHARE_ACCESS])
+
+    def test_convert_destination_replica_to_independent(self):
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 mock.Mock())))
+        self.mock_object(self.library,
+                         '_get_helper',
+                         mock.Mock(return_value=mock.Mock()))
+        self.mock_object(self.library, '_create_export',
+                         mock.Mock(return_value='fake_export_location'))
+
+        replica = self.library._convert_destination_replica_to_independent(
+            None, self.mock_dm_session, self.fake_replica,
+            self.fake_replica_2, [], share_server=None)
+
+        self.mock_dm_session.update_snapmirror.assert_called_once_with(
+            self.fake_replica, self.fake_replica_2)
+        self.mock_dm_session.break_snapmirror.assert_called_once_with(
+            self.fake_replica, self.fake_replica_2)
+
+        self.assertEqual('fake_export_location',
+                         replica['export_locations'])
+        self.assertEqual(constants.REPLICA_STATE_ACTIVE,
+                         replica['replica_state'])
+
+    def test_convert_destination_replica_to_independent_update_failed(self):
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 mock.Mock())))
+        self.mock_object(self.library,
+                         '_get_helper',
+                         mock.Mock(return_value=mock.Mock()))
+        self.mock_object(self.library, '_create_export',
+                         mock.Mock(return_value='fake_export_location'))
+        self.mock_object(
+            self.mock_dm_session, 'update_snapmirror',
+            mock.Mock(side_effect=exception.StorageCommunicationException))
+
+        replica = self.library._convert_destination_replica_to_independent(
+            None, self.mock_dm_session, self.fake_replica,
+            self.fake_replica_2, [], share_server=None)
+
+        self.mock_dm_session.update_snapmirror.assert_called_once_with(
+            self.fake_replica, self.fake_replica_2)
+        self.mock_dm_session.break_snapmirror.assert_called_once_with(
+            self.fake_replica, self.fake_replica_2)
+
+        self.assertEqual('fake_export_location',
+                         replica['export_locations'])
+        self.assertEqual(constants.REPLICA_STATE_ACTIVE,
+                         replica['replica_state'])
+
+    def test_promote_replica_fail_to_set_access_rules(self):
+        fake_helper = mock.Mock()
+        fake_helper.update_access.side_effect = Exception
+        fake_access_rules = [
+            {'access_to': "0.0.0.0",
+             'access_level': constants.ACCESS_LEVEL_RO},
+            {'access_to': "10.10.10.10",
+             'access_level': constants.ACCESS_LEVEL_RW},
+        ]
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 mock.Mock())))
+        self.mock_object(self.library,
+                         '_get_helper',
+                         mock.Mock(return_value=fake_helper))
+        self.mock_object(self.library, '_create_export',
+                         mock.Mock(return_value='fake_export_location'))
+
+        replicas = self.library.promote_replica(
+            None, [self.fake_replica, self.fake_replica_2],
+            self.fake_replica_2, fake_access_rules, share_server=None)
+
+        self.mock_dm_session.change_snapmirror_source.assert_called_once_with(
+            self.fake_replica, self.fake_replica, self.fake_replica_2,
+            mock.ANY
+        )
+
+        self.assertEqual(2, len(replicas))
+        actual_replica_1 = list(filter(
+            lambda x: x['id'] == self.fake_replica['id'], replicas))[0]
+        self.assertEqual(constants.REPLICA_STATE_OUT_OF_SYNC,
+                         actual_replica_1['replica_state'])
+        actual_replica_2 = list(filter(
+            lambda x: x['id'] == self.fake_replica_2['id'], replicas))[0]
+        self.assertEqual(constants.REPLICA_STATE_ACTIVE,
+                         actual_replica_2['replica_state'])
+        self.assertEqual('fake_export_location',
+                         actual_replica_2['export_locations'])
+        self.assertEqual(constants.STATUS_OUT_OF_SYNC,
+                         actual_replica_2['access_rules_status'])
+
+    def test_convert_destination_replica_to_independent_with_access_rules(
+            self):
+        fake_helper = mock.Mock()
+        fake_helper.update_access.side_effect = Exception
+        fake_access_rules = [
+            {'access_to': "0.0.0.0",
+             'access_level': constants.ACCESS_LEVEL_RO},
+            {'access_to': "10.10.10.10",
+             'access_level': constants.ACCESS_LEVEL_RW},
+        ]
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 mock.Mock())))
+        self.mock_object(self.library,
+                         '_get_helper',
+                         mock.Mock(return_value=fake_helper))
+        self.mock_object(self.library, '_create_export',
+                         mock.Mock(return_value='fake_export_location'))
+
+        replica = self.library._convert_destination_replica_to_independent(
+            None, self.mock_dm_session, self.fake_replica,
+            self.fake_replica_2, fake_access_rules, share_server=None)
+
+        self.mock_dm_session.update_snapmirror.assert_called_once_with(
+            self.fake_replica, self.fake_replica_2)
+        self.mock_dm_session.break_snapmirror.assert_called_once_with(
+            self.fake_replica, self.fake_replica_2)
+
+        self.assertEqual('fake_export_location',
+                         replica['export_locations'])
+        self.assertEqual(constants.REPLICA_STATE_ACTIVE,
+                         replica['replica_state'])
+        self.assertEqual(constants.STATUS_OUT_OF_SYNC,
+                         replica['access_rules_status'])
+
+    def test_convert_destination_replica_to_independent_failed_access_rules(
+            self):
+        fake_helper = mock.Mock()
+        fake_access_rules = [
+            {'access_to': "0.0.0.0",
+             'access_level': constants.ACCESS_LEVEL_RO},
+            {'access_to': "10.10.10.10",
+             'access_level': constants.ACCESS_LEVEL_RW},
+        ]
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 mock.Mock())))
+        self.mock_object(self.library,
+                         '_get_helper',
+                         mock.Mock(return_value=fake_helper))
+        self.mock_object(self.library, '_create_export',
+                         mock.Mock(return_value='fake_export_location'))
+
+        replica = self.library._convert_destination_replica_to_independent(
+            None, self.mock_dm_session, self.fake_replica,
+            self.fake_replica_2, fake_access_rules, share_server=None)
+
+        self.mock_dm_session.update_snapmirror.assert_called_once_with(
+            self.fake_replica, self.fake_replica_2)
+        self.mock_dm_session.break_snapmirror.assert_called_once_with(
+            self.fake_replica, self.fake_replica_2)
+
+        fake_helper.assert_has_calls([
+            mock.call.set_client(mock.ANY),
+            mock.call.update_access(mock.ANY, mock.ANY, fake_access_rules),
+        ])
+
+        self.assertEqual('fake_export_location',
+                         replica['export_locations'])
+        self.assertEqual(constants.REPLICA_STATE_ACTIVE,
+                         replica['replica_state'])
+        self.assertEqual(constants.STATUS_ACTIVE,
+                         replica['access_rules_status'])
+
+    def test_safe_change_replica_source(self):
+        fake_replica_3 = copy.deepcopy(self.fake_replica_2)
+        fake_replica_3['id'] = fake.SHARE_ID3
+        fake_replica_3['replica_state'] = constants.REPLICA_STATE_OUT_OF_SYNC
+        replica = self.library._safe_change_replica_source(
+            self.mock_dm_session, self.fake_replica, self.fake_replica_2,
+            fake_replica_3, [self.fake_replica, self.fake_replica_2,
+                             fake_replica_3]
+        )
+        self.assertEqual([], replica['export_locations'])
+        self.assertEqual(constants.REPLICA_STATE_OUT_OF_SYNC,
+                         replica['replica_state'])
+
+    def test_safe_change_replica_source_destination_unreachable(self):
+        self.mock_dm_session.change_snapmirror_source.side_effect = (
+            exception.StorageCommunicationException
+        )
+
+        fake_replica_3 = copy.deepcopy(self.fake_replica_2)
+        fake_replica_3['id'] = fake.SHARE_ID3
+        fake_replica_3['replica_state'] = constants.REPLICA_STATE_OUT_OF_SYNC
+        replica = self.library._safe_change_replica_source(
+            self.mock_dm_session, self.fake_replica, self.fake_replica_2,
+            fake_replica_3, [self.fake_replica, self.fake_replica_2,
+                             fake_replica_3]
+        )
+        self.assertEqual([], replica['export_locations'])
+        self.assertEqual(constants.STATUS_ERROR,
+                         replica['replica_state'])
+        self.assertEqual(constants.STATUS_ERROR,
+                         replica['status'])
+
+    def test_safe_change_replica_source_error(self):
+        self.mock_dm_session.change_snapmirror_source.side_effect = (
+            netapp_api.NaApiError(code=0)
+        )
+
+        fake_replica_3 = copy.deepcopy(self.fake_replica_2)
+        fake_replica_3['id'] = fake.SHARE_ID3
+        fake_replica_3['replica_state'] = constants.REPLICA_STATE_OUT_OF_SYNC
+        replica = self.library._safe_change_replica_source(
+            self.mock_dm_session, self.fake_replica, self.fake_replica_2,
+            fake_replica_3, [self.fake_replica, self.fake_replica_2,
+                             fake_replica_3]
+        )
+        self.assertEqual([], replica['export_locations'])
+        self.assertEqual(constants.STATUS_ERROR,
+                         replica['replica_state'])
+
+    def test_create_replicated_snapshot(self):
+        fake_replica_3 = copy.deepcopy(self.fake_replica_2)
+        fake_replica_3['id'] = fake.SHARE_ID3
+        replica_list = [self.fake_replica, self.fake_replica_2, fake_replica_3]
+        fake_snapshot = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot['share_id'] = self.fake_replica['id']
+        fake_snapshot_2 = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot_2['id'] = str(uuid.uuid4())
+        fake_snapshot_2['share_id'] = self.fake_replica_2['id']
+        fake_snapshot_3 = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot_3['id'] = str(uuid.uuid4())
+        fake_snapshot_3['share_id'] = fake_replica_3['id']
+        snapshot_list = [fake_snapshot, fake_snapshot_2, fake_snapshot_3]
+
+        vserver_client = mock.Mock()
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+
+        model_list = self.library.create_replicated_snapshot(
+            self.context, replica_list, snapshot_list,
+            share_server=fake.SHARE_SERVER)
+
+        share_name = self.library._get_backend_share_name(
+            fake_snapshot['share_id'])
+        snapshot_name = self.library._get_backend_snapshot_name(
+            fake_snapshot['id'])
+        vserver_client.create_snapshot.assert_called_once_with(share_name,
+                                                               snapshot_name)
+        self.assertEqual(3, len(model_list))
+        for snapshot in model_list:
+            self.assertEqual(snapshot['provider_location'], snapshot_name)
+        actual_active_snapshot = list(filter(
+            lambda x: x['id'] == fake_snapshot['id'], model_list))[0]
+        self.assertEqual(constants.STATUS_AVAILABLE,
+                         actual_active_snapshot['status'])
+        actual_non_active_snapshot_list = list(filter(
+            lambda x: x['id'] != fake_snapshot['id'], model_list))
+        for snapshot in actual_non_active_snapshot_list:
+            self.assertEqual(constants.STATUS_CREATING, snapshot['status'])
+        self.mock_dm_session.update_snapmirror.assert_has_calls(
+            [mock.call(self.fake_replica, self.fake_replica_2),
+             mock.call(self.fake_replica, fake_replica_3)],
+            any_order=True
+        )
+
+    def test_create_replicated_snapshot_with_creating_replica(self):
+        fake_replica_3 = copy.deepcopy(self.fake_replica_2)
+        fake_replica_3['id'] = fake.SHARE_ID3
+        fake_replica_3['host'] = None
+        replica_list = [self.fake_replica, self.fake_replica_2, fake_replica_3]
+        fake_snapshot = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot['share_id'] = self.fake_replica['id']
+        fake_snapshot_2 = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot_2['id'] = str(uuid.uuid4())
+        fake_snapshot_2['share_id'] = self.fake_replica_2['id']
+        fake_snapshot_3 = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot_3['id'] = str(uuid.uuid4())
+        fake_snapshot_3['share_id'] = fake_replica_3['id']
+        snapshot_list = [fake_snapshot, fake_snapshot_2, fake_snapshot_3]
+
+        vserver_client = mock.Mock()
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+
+        model_list = self.library.create_replicated_snapshot(
+            self.context, replica_list, snapshot_list,
+            share_server=fake.SHARE_SERVER)
+
+        share_name = self.library._get_backend_share_name(
+            fake_snapshot['share_id'])
+        snapshot_name = self.library._get_backend_snapshot_name(
+            fake_snapshot['id'])
+        vserver_client.create_snapshot.assert_called_once_with(share_name,
+                                                               snapshot_name)
+        self.assertEqual(3, len(model_list))
+        for snapshot in model_list:
+            self.assertEqual(snapshot['provider_location'], snapshot_name)
+        actual_active_snapshot = list(filter(
+            lambda x: x['id'] == fake_snapshot['id'], model_list))[0]
+        self.assertEqual(constants.STATUS_AVAILABLE,
+                         actual_active_snapshot['status'])
+        actual_non_active_snapshot_list = list(filter(
+            lambda x: x['id'] != fake_snapshot['id'], model_list))
+        for snapshot in actual_non_active_snapshot_list:
+            self.assertEqual(constants.STATUS_CREATING, snapshot['status'])
+        self.mock_dm_session.update_snapmirror.assert_has_calls(
+            [mock.call(self.fake_replica, self.fake_replica_2)],
+            any_order=True
+        )
+
+    def test_create_replicated_snapshot_no_snapmirror(self):
+        self.mock_dm_session.update_snapmirror.side_effect = [
+            None,
+            netapp_api.NaApiError(code=netapp_api.EOBJECTNOTFOUND)
+        ]
+        fake_replica_3 = copy.deepcopy(self.fake_replica_2)
+        fake_replica_3['id'] = fake.SHARE_ID3
+        replica_list = [self.fake_replica, self.fake_replica_2, fake_replica_3]
+        fake_snapshot = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot['share_id'] = self.fake_replica['id']
+        fake_snapshot_2 = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot_2['id'] = str(uuid.uuid4())
+        fake_snapshot_2['share_id'] = self.fake_replica_2['id']
+        fake_snapshot_3 = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot_3['id'] = str(uuid.uuid4())
+        fake_snapshot_3['share_id'] = fake_replica_3['id']
+        snapshot_list = [fake_snapshot, fake_snapshot_2, fake_snapshot_3]
+
+        vserver_client = mock.Mock()
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+
+        model_list = self.library.create_replicated_snapshot(
+            self.context, replica_list, snapshot_list,
+            share_server=fake.SHARE_SERVER)
+
+        share_name = self.library._get_backend_share_name(
+            fake_snapshot['share_id'])
+        snapshot_name = self.library._get_backend_snapshot_name(
+            fake_snapshot['id'])
+        vserver_client.create_snapshot.assert_called_once_with(share_name,
+                                                               snapshot_name)
+        self.assertEqual(3, len(model_list))
+        for snapshot in model_list:
+            self.assertEqual(snapshot['provider_location'], snapshot_name)
+        actual_active_snapshot = list(filter(
+            lambda x: x['id'] == fake_snapshot['id'], model_list))[0]
+        self.assertEqual(constants.STATUS_AVAILABLE,
+                         actual_active_snapshot['status'])
+        actual_non_active_snapshot_list = list(filter(
+            lambda x: x['id'] != fake_snapshot['id'], model_list))
+        for snapshot in actual_non_active_snapshot_list:
+            self.assertEqual(constants.STATUS_CREATING, snapshot['status'])
+        self.mock_dm_session.update_snapmirror.assert_has_calls(
+            [mock.call(self.fake_replica, self.fake_replica_2),
+             mock.call(self.fake_replica, fake_replica_3)],
+            any_order=True
+        )
+
+    def test_create_replicated_snapshot_update_error(self):
+        self.mock_dm_session.update_snapmirror.side_effect = [
+            None,
+            netapp_api.NaApiError()
+        ]
+        fake_replica_3 = copy.deepcopy(self.fake_replica_2)
+        fake_replica_3['id'] = fake.SHARE_ID3
+        replica_list = [self.fake_replica, self.fake_replica_2, fake_replica_3]
+        fake_snapshot = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot['share_id'] = self.fake_replica['id']
+        fake_snapshot_2 = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot_2['id'] = str(uuid.uuid4())
+        fake_snapshot_2['share_id'] = self.fake_replica_2['id']
+        fake_snapshot_3 = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot_3['id'] = str(uuid.uuid4())
+        fake_snapshot_3['share_id'] = fake_replica_3['id']
+        snapshot_list = [fake_snapshot, fake_snapshot_2, fake_snapshot_3]
+
+        vserver_client = mock.Mock()
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+
+        self.assertRaises(netapp_api.NaApiError,
+                          self.library.create_replicated_snapshot,
+                          self.context, replica_list, snapshot_list,
+                          share_server=fake.SHARE_SERVER)
+
+    def test_delete_replicated_snapshot(self):
+        fake_replica_3 = copy.deepcopy(self.fake_replica_2)
+        fake_replica_3['id'] = fake.SHARE_ID3
+        replica_list = [self.fake_replica, self.fake_replica_2, fake_replica_3]
+        fake_snapshot = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot['share_id'] = self.fake_replica['id']
+        share_name = self.library._get_backend_share_name(
+            fake_snapshot['share_id'])
+        snapshot_name = self.library._get_backend_snapshot_name(
+            fake_snapshot['id'])
+        fake_snapshot['provider_location'] = snapshot_name
+        fake_snapshot_2 = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot_2['id'] = str(uuid.uuid4())
+        fake_snapshot_2['share_id'] = self.fake_replica_2['id']
+        fake_snapshot_2['provider_location'] = snapshot_name
+        fake_snapshot_3 = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot_3['id'] = str(uuid.uuid4())
+        fake_snapshot_3['share_id'] = fake_replica_3['id']
+        fake_snapshot_3['provider_location'] = snapshot_name
+
+        snapshot_list = [fake_snapshot, fake_snapshot_2, fake_snapshot_3]
+
+        vserver_client = mock.Mock()
+        vserver_client.get_snapshot.return_value = fake.CDOT_SNAPSHOT
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+
+        self.library.delete_replicated_snapshot(
+            self.context, replica_list, snapshot_list,
+            share_server=fake.SHARE_SERVER)
+
+        vserver_client.delete_snapshot.assert_called_once_with(share_name,
+                                                               snapshot_name)
+
+        self.mock_dm_session.update_snapmirror.assert_has_calls(
+            [mock.call(self.fake_replica, self.fake_replica_2),
+             mock.call(self.fake_replica, fake_replica_3)],
+            any_order=True
+        )
+
+    def test_delete_replicated_snapshot_replica_still_creating(self):
+        fake_replica_3 = copy.deepcopy(self.fake_replica_2)
+        fake_replica_3['id'] = fake.SHARE_ID3
+        fake_replica_3['host'] = None
+        replica_list = [self.fake_replica, self.fake_replica_2, fake_replica_3]
+        fake_snapshot = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot['share_id'] = self.fake_replica['id']
+        share_name = self.library._get_backend_share_name(
+            fake_snapshot['share_id'])
+        snapshot_name = self.library._get_backend_snapshot_name(
+            fake_snapshot['id'])
+        fake_snapshot['provider_location'] = snapshot_name
+        fake_snapshot_2 = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot_2['id'] = str(uuid.uuid4())
+        fake_snapshot_2['share_id'] = self.fake_replica_2['id']
+        fake_snapshot_2['provider_location'] = snapshot_name
+        fake_snapshot_3 = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot_3['id'] = str(uuid.uuid4())
+        fake_snapshot_3['share_id'] = fake_replica_3['id']
+        fake_snapshot_3['provider_location'] = snapshot_name
+
+        snapshot_list = [fake_snapshot, fake_snapshot_2, fake_snapshot_3]
+
+        vserver_client = mock.Mock()
+        vserver_client.get_snapshot.return_value = fake.CDOT_SNAPSHOT
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+
+        self.library.delete_replicated_snapshot(
+            self.context, replica_list, snapshot_list,
+            share_server=fake.SHARE_SERVER)
+
+        vserver_client.delete_snapshot.assert_called_once_with(share_name,
+                                                               snapshot_name)
+
+        self.mock_dm_session.update_snapmirror.assert_has_calls(
+            [mock.call(self.fake_replica, self.fake_replica_2)],
+            any_order=True
+        )
+
+    def test_delete_replicated_snapshot_missing_snapmirror(self):
+        self.mock_dm_session.update_snapmirror.side_effect = [
+            None,
+            netapp_api.NaApiError(code=netapp_api.EOBJECTNOTFOUND)
+        ]
+        fake_replica_3 = copy.deepcopy(self.fake_replica_2)
+        fake_replica_3['id'] = fake.SHARE_ID3
+        replica_list = [self.fake_replica, self.fake_replica_2, fake_replica_3]
+        fake_snapshot = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot['share_id'] = self.fake_replica['id']
+        share_name = self.library._get_backend_share_name(
+            fake_snapshot['share_id'])
+        snapshot_name = self.library._get_backend_snapshot_name(
+            fake_snapshot['id'])
+        fake_snapshot['provider_location'] = snapshot_name
+        fake_snapshot['busy'] = False
+
+        fake_snapshot_2 = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot_2['id'] = str(uuid.uuid4())
+        fake_snapshot_2['share_id'] = self.fake_replica_2['id']
+        fake_snapshot_2['provider_location'] = snapshot_name
+        fake_snapshot_3 = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot_3['id'] = str(uuid.uuid4())
+        fake_snapshot_3['share_id'] = fake_replica_3['id']
+        fake_snapshot_3['provider_location'] = snapshot_name
+
+        snapshot_list = [fake_snapshot, fake_snapshot_2, fake_snapshot_3]
+
+        vserver_client = mock.Mock()
+        vserver_client.get_snapshot.return_value = fake_snapshot
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+
+        self.library.delete_replicated_snapshot(
+            self.context, replica_list, snapshot_list,
+            share_server=fake.SHARE_SERVER)
+
+        vserver_client.delete_snapshot.assert_called_once_with(share_name,
+                                                               snapshot_name)
+
+        self.mock_dm_session.update_snapmirror.assert_has_calls(
+            [mock.call(self.fake_replica, self.fake_replica_2),
+             mock.call(self.fake_replica, fake_replica_3)],
+            any_order=True
+        )
+
+    def test_delete_replicated_snapshot_update_error(self):
+        self.mock_dm_session.update_snapmirror.side_effect = [
+            None,
+            netapp_api.NaApiError()
+        ]
+        fake_replica_3 = copy.deepcopy(self.fake_replica_2)
+        fake_replica_3['id'] = fake.SHARE_ID3
+        replica_list = [self.fake_replica, self.fake_replica_2, fake_replica_3]
+        fake_snapshot = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot['share_id'] = self.fake_replica['id']
+        snapshot_name = self.library._get_backend_snapshot_name(
+            fake_snapshot['id'])
+        fake_snapshot['provider_location'] = snapshot_name
+        fake_snapshot['busy'] = False
+
+        fake_snapshot_2 = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot_2['id'] = str(uuid.uuid4())
+        fake_snapshot_2['share_id'] = self.fake_replica_2['id']
+        fake_snapshot_2['provider_location'] = snapshot_name
+        fake_snapshot_3 = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot_3['id'] = str(uuid.uuid4())
+        fake_snapshot_3['share_id'] = fake_replica_3['id']
+        fake_snapshot_3['provider_location'] = snapshot_name
+
+        snapshot_list = [fake_snapshot, fake_snapshot_2, fake_snapshot_3]
+
+        vserver_client = mock.Mock()
+        vserver_client.get_snapshot.return_value = fake_snapshot
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+
+        self.assertRaises(netapp_api.NaApiError,
+                          self.library.delete_replicated_snapshot,
+                          self.context, replica_list, snapshot_list,
+                          share_server=fake.SHARE_SERVER)
+
+    def test_update_replicated_snapshot_still_creating(self):
+        vserver_client = mock.Mock()
+        vserver_client.snapshot_exists.return_value = False
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+        replica_list = [self.fake_replica, self.fake_replica_2]
+        fake_snapshot = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot['status'] = constants.STATUS_CREATING
+        fake_snapshot['share_id'] = self.fake_replica_2['id']
+        snapshot_name = self.library._get_backend_snapshot_name(
+            fake_snapshot['id'])
+        fake_snapshot['provider_location'] = snapshot_name
+
+        model_update = self.library.update_replicated_snapshot(
+            replica_list, self.fake_replica_2, [fake_snapshot], fake_snapshot)
+
+        self.assertEqual(None, model_update)
+        self.mock_dm_session.update_snapmirror.assert_called_once_with(
+            self.fake_replica, self.fake_replica_2
+        )
+
+    def test_update_replicated_snapshot_still_creating_no_host(self):
+        self.fake_replica_2['host'] = None
+        vserver_client = mock.Mock()
+        vserver_client.snapshot_exists.return_value = False
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+        replica_list = [self.fake_replica, self.fake_replica_2]
+        fake_snapshot = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot['status'] = constants.STATUS_CREATING
+        fake_snapshot['share_id'] = self.fake_replica_2['id']
+        snapshot_name = self.library._get_backend_snapshot_name(
+            fake_snapshot['id'])
+        fake_snapshot['provider_location'] = snapshot_name
+
+        model_update = self.library.update_replicated_snapshot(
+            replica_list, self.fake_replica_2, [fake_snapshot], fake_snapshot)
+
+        self.assertEqual(None, model_update)
+        self.mock_dm_session.update_snapmirror.assert_called_once_with(
+            self.fake_replica, self.fake_replica_2
+        )
+
+    def test_update_replicated_snapshot_no_snapmirror(self):
+        vserver_client = mock.Mock()
+        vserver_client.snapshot_exists.return_value = False
+        self.mock_dm_session.update_snapmirror.side_effect = (
+            netapp_api.NaApiError(code=netapp_api.EOBJECTNOTFOUND)
+        )
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+        replica_list = [self.fake_replica, self.fake_replica_2]
+        fake_snapshot = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot['status'] = constants.STATUS_CREATING
+        fake_snapshot['share_id'] = self.fake_replica_2['id']
+        snapshot_name = self.library._get_backend_snapshot_name(
+            fake_snapshot['id'])
+        fake_snapshot['provider_location'] = snapshot_name
+
+        model_update = self.library.update_replicated_snapshot(
+            replica_list, self.fake_replica_2, [fake_snapshot], fake_snapshot)
+
+        self.assertEqual(None, model_update)
+        self.mock_dm_session.update_snapmirror.assert_called_once_with(
+            self.fake_replica, self.fake_replica_2
+        )
+
+    def test_update_replicated_snapshot_update_error(self):
+        vserver_client = mock.Mock()
+        vserver_client.snapshot_exists.return_value = False
+        self.mock_dm_session.update_snapmirror.side_effect = (
+            netapp_api.NaApiError()
+        )
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+        replica_list = [self.fake_replica, self.fake_replica_2]
+        fake_snapshot = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot['status'] = constants.STATUS_CREATING
+        fake_snapshot['share_id'] = self.fake_replica_2['id']
+        snapshot_name = self.library._get_backend_snapshot_name(
+            fake_snapshot['id'])
+        fake_snapshot['provider_location'] = snapshot_name
+
+        self.assertRaises(netapp_api.NaApiError,
+                          self.library.update_replicated_snapshot,
+                          replica_list, self.fake_replica_2,
+                          [fake_snapshot], fake_snapshot)
+
+    def test_update_replicated_snapshot_still_deleting(self):
+        vserver_client = mock.Mock()
+        vserver_client.snapshot_exists.return_value = True
+        vserver_client.get_snapshot.return_value = fake.CDOT_SNAPSHOT
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+
+        replica_list = [self.fake_replica]
+        fake_snapshot = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot['status'] = constants.STATUS_DELETING
+        fake_snapshot['share_id'] = self.fake_replica['id']
+        snapshot_name = self.library._get_backend_snapshot_name(
+            fake_snapshot['id'])
+        fake_snapshot['provider_location'] = snapshot_name
+
+        model_update = self.library.update_replicated_snapshot(
+            replica_list, self.fake_replica, [fake_snapshot], fake_snapshot)
+
+        self.assertEqual(None, model_update)
+
+    def test_update_replicated_snapshot_created(self):
+        vserver_client = mock.Mock()
+        vserver_client.snapshot_exists.return_value = True
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+        replica_list = [self.fake_replica]
+        fake_snapshot = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot['status'] = constants.STATUS_CREATING
+        fake_snapshot['share_id'] = self.fake_replica['id']
+        snapshot_name = self.library._get_backend_snapshot_name(
+            fake_snapshot['id'])
+        fake_snapshot['provider_location'] = snapshot_name
+
+        model_update = self.library.update_replicated_snapshot(
+            replica_list, self.fake_replica, [fake_snapshot], fake_snapshot)
+
+        self.assertEqual(constants.STATUS_AVAILABLE, model_update['status'])
+        self.assertEqual(snapshot_name, model_update['provider_location'])
+
+    def test_update_replicated_snapshot_created_no_provider_location(self):
+        vserver_client = mock.Mock()
+        vserver_client.snapshot_exists.return_value = True
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+        replica_list = [self.fake_replica, self.fake_replica_2]
+        fake_snapshot = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot['status'] = constants.STATUS_ACTIVE
+        fake_snapshot['share_id'] = self.fake_replica['id']
+        snapshot_name = self.library._get_backend_snapshot_name(
+            fake_snapshot['id'])
+        fake_snapshot['provider_location'] = snapshot_name
+        fake_snapshot_2 = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot_2['status'] = constants.STATUS_CREATING
+        fake_snapshot_2['share_id'] = self.fake_replica_2['id']
+
+        model_update = self.library.update_replicated_snapshot(
+            replica_list, self.fake_replica_2,
+            [fake_snapshot, fake_snapshot_2], fake_snapshot_2)
+
+        self.assertEqual(constants.STATUS_AVAILABLE, model_update['status'])
+        self.assertEqual(snapshot_name, model_update['provider_location'])
+
+    def test_update_replicated_snapshot_deleted(self):
+        vserver_client = mock.Mock()
+        vserver_client.snapshot_exists.return_value = False
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+        replica_list = [self.fake_replica]
+        fake_snapshot = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot['status'] = constants.STATUS_DELETING
+        fake_snapshot['share_id'] = self.fake_replica['id']
+        snapshot_name = self.library._get_backend_snapshot_name(
+            fake_snapshot['id'])
+        fake_snapshot['provider_location'] = snapshot_name
+
+        self.assertRaises(exception.SnapshotResourceNotFound,
+                          self.library.update_replicated_snapshot,
+                          replica_list, self.fake_replica, [fake_snapshot],
+                          fake_snapshot)
+
+    def test_update_replicated_snapshot_no_provider_locations(self):
+        vserver_client = mock.Mock()
+        vserver_client.snapshot_exists.return_value = True
+        self.mock_object(self.library,
+                         '_get_vserver',
+                         mock.Mock(return_value=(fake.VSERVER1,
+                                                 vserver_client)))
+        replica_list = [self.fake_replica]
+        fake_snapshot = copy.deepcopy(fake.SNAPSHOT)
+        fake_snapshot['status'] = constants.STATUS_CREATING
+        fake_snapshot['share_id'] = self.fake_replica['id']
+        fake_snapshot['provider_location'] = None
+
+        model_update = self.library.update_replicated_snapshot(
+            replica_list, self.fake_replica, [fake_snapshot], fake_snapshot)
+
+        self.assertEqual(None, model_update)

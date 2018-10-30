@@ -14,7 +14,6 @@
 #    under the License.
 
 import mock
-from oslo_log import log
 from stevedore import extension
 
 from manila import network
@@ -22,8 +21,6 @@ from manila.share import configuration as conf
 from manila.share.drivers.emc import driver as emcdriver
 from manila.share.drivers.emc.plugins import base
 from manila import test
-
-LOG = log.getLogger(__name__)
 
 
 class FakeConnection(base.StorageConnection):
@@ -34,41 +31,32 @@ class FakeConnection(base.StorageConnection):
     def driver_handles_share_servers(self):
         return True
 
-    def create_share(self, emc_share_driver, context, share, share_server):
+    def create_share(self, context, share, share_server):
         """Is called to create share."""
-        pass
 
-    def create_snapshot(self, emc_share_driver, context,
-                        snapshot, share_server):
+    def create_snapshot(self, context, snapshot, share_server):
         """Is called to create snapshot."""
-        pass
 
-    def delete_share(self, emc_share_driver, context, share, share_server):
+    def delete_share(self, context, share, share_server):
         """Is called to remove share."""
-        pass
 
-    def delete_snapshot(self, emc_share_driver, context,
-                        snapshot, share_server):
+    def extend_share(self, share, new_size, share_server):
+        """Is called to extend share."""
+
+    def delete_snapshot(self, context, snapshot, share_server):
         """Is called to remove snapshot."""
-        pass
 
-    def ensure_share(self, emc_share_driver, context, share, share_server):
+    def ensure_share(self, context, share, share_server):
         """Invoked to sure that share is exported."""
-        pass
 
-    def allow_access(self, emc_share_driver, context, share,
-                     access, share_server):
+    def allow_access(self, context, share, access, share_server):
         """Allow access to the share."""
-        pass
 
-    def deny_access(self, emc_share_driver, context, share,
-                    access, share_server):
+    def deny_access(self, context, share, access, share_server):
         """Deny access to the share."""
-        pass
 
-    def raise_connect_error(self, emc_share_driver):
+    def raise_connect_error(self):
         """Check for setup error."""
-        pass
 
     def connect(self, emc_share_driver, context):
         """Any initialization the share driver does while starting."""
@@ -76,7 +64,6 @@ class FakeConnection(base.StorageConnection):
 
     def update_share_stats(self, stats_dict):
         """Add key/values to stats_dict."""
-        pass
 
     def get_network_allocations_number(self):
         """Returns number of network allocations for creating VIFs."""
@@ -84,16 +71,14 @@ class FakeConnection(base.StorageConnection):
 
     def setup_server(self, network_info, metadata=None):
         """Set up and configures share server with given network parameters."""
-        pass
 
     def teardown_server(self, server_details, security_services=None):
         """Teardown share server."""
-        pass
 
 FAKE_BACKEND = 'fake_backend'
 
 
-class FakeEMCExtensionManager():
+class FakeEMCExtensionManager(object):
     def __init__(self):
         self.extensions = []
         self.extensions.append(
@@ -136,9 +121,10 @@ class EMCShareFrameworkTestCase(test.TestCase):
         data['total_capacity_gb'] = 'unknown'
         data['free_capacity_gb'] = 'unknown'
         data['reserved_percentage'] = 0
-        data['QoS_support'] = False
+        data['qos'] = False
         data['pools'] = None
         data['snapshot_support'] = True
+        data['replication_domain'] = None
         self.assertEqual(data, self.driver._stats)
 
     def _fake_safe_get(self, value):

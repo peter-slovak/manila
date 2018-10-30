@@ -59,7 +59,7 @@ class CinderApiTestCase(test.TestCase):
     def test_get(self):
         volume_id = 'volume_id1'
         result = self.api.get(self.ctx, volume_id)
-        self.assertEqual(result['id'], volume_id)
+        self.assertEqual(volume_id, result['id'])
 
     @ddt.data(
         {'cinder_e': cinder_exception.NotFound(404),
@@ -75,7 +75,7 @@ class CinderApiTestCase(test.TestCase):
 
     def test_create(self):
         result = self.api.create(self.ctx, 1, '', '')
-        self.assertEqual(result['id'], 'created_id')
+        self.assertEqual('created_id', result['id'])
 
     def test_create_failed(self):
         cinder.cinderclient.side_effect = cinder_exception.BadRequest(400)
@@ -113,7 +113,7 @@ class CinderApiTestCase(test.TestCase):
         volume['attach_status'] = "detached"
         instance = {'availability_zone': 'zone1'}
         volume['availability_zone'] = 'zone2'
-        cinder.CONF.set_override('cinder_cross_az_attach', False)
+        cinder.CONF.set_override('cross_az_attach', False, 'cinder')
         self.assertRaises(exception.InvalidVolume,
                           self.api.check_attach, self.ctx, volume, instance)
         volume['availability_zone'] = 'zone1'
@@ -125,7 +125,7 @@ class CinderApiTestCase(test.TestCase):
         volume['attach_status'] = "detached"
         volume['availability_zone'] = 'zone1'
         instance = {'availability_zone': 'zone1'}
-        cinder.CONF.set_override('cinder_cross_az_attach', False)
+        cinder.CONF.set_override('cross_az_attach', False, 'cinder')
         self.assertIsNone(self.api.check_attach(self.ctx, volume, instance))
         cinder.CONF.reset()
 
@@ -203,7 +203,7 @@ class CinderApiTestCase(test.TestCase):
     def test_get_snapshot(self):
         snapshot_id = 'snapshot_id1'
         result = self.api.get_snapshot(self.ctx, snapshot_id)
-        self.assertEqual(result['id'], snapshot_id)
+        self.assertEqual(snapshot_id, result['id'])
 
     def test_get_snapshot_failed(self):
         cinder.cinderclient.side_effect = cinder_exception.NotFound(404)
@@ -218,12 +218,12 @@ class CinderApiTestCase(test.TestCase):
 
     def test_create_snapshot(self):
         result = self.api.create_snapshot(self.ctx, {'id': 'id1'}, '', '')
-        self.assertEqual(result['id'], 'created_id')
+        self.assertEqual('created_id', result['id'])
 
     def test_create_force(self):
         result = self.api.create_snapshot_force(self.ctx,
                                                 {'id': 'id1'}, '', '')
-        self.assertEqual(result['id'], 'created_id')
+        self.assertEqual('created_id', result['id'])
 
     def test_delete_snapshot(self):
         self.mock_object(self.cinderclient.volume_snapshots, 'delete')

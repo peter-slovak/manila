@@ -15,8 +15,8 @@ is a monotonically increasing semantic version number starting from
 
 If a user makes a request without specifying a version, they will get
 the ``DEFAULT_API_VERSION`` as defined in
-``manila/api/openstack/wsgi.py``.  This value is currently ``1.0`` and
-is expected to remain so for quite a long time.
+``manila/api/openstack/api_version_request.py``. This value is currently ``2.0``
+and is expected to remain so for quite a long time.
 
 The Nova project was the first to implement microversions. For full
 details please read Nova's `Kilo spec for microversions
@@ -131,11 +131,11 @@ contract, and should be part of a microversion.
 
 The reason why we are so strict on contract is that we'd like
 application writers to be able to know, for sure, what the contract is
-at every microversion in Manila. If they do not, they will need to write
+at every microversion in manila. If they do not, they will need to write
 conditional code in their application to handle ambiguities.
 
 When in doubt, consider application authors. If it would work with no
-client side changes on both Manila versions, you probably don't need a
+client side changes on both manila versions, you probably don't need a
 microversion. If, on the other hand, there is any ambiguity, a
 microversion is probably needed.
 

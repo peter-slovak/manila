@@ -48,7 +48,7 @@ class NexentaNasDriver(driver.ShareDriver):
                 options.nexenta_dataset_opts)
             self.helper = nexenta_nfs_helper.NFSHelper(self.configuration)
         else:
-            raise exception.InvalidInput(
+            raise exception.BadConfigurationException(
                 reason=_('Nexenta configuration missing.'))
 
     @property
@@ -107,15 +107,24 @@ class NexentaNasDriver(driver.ShareDriver):
             'snap_name': snapshot['name']})
         self.helper.delete_snapshot(snapshot['share_name'], snapshot['name'])
 
-    def allow_access(self, context, share, access, share_server=None):
-        """Allow access to the share."""
-        LOG.debug("Allow access.")
-        self.helper._allow_access(share['name'], access, share['share_proto'])
+    def update_access(self, context, share, access_rules, add_rules,
+                      delete_rules, share_server=None):
+        """Update access rules for given share.
 
-    def deny_access(self, context, share, access, share_server=None):
-        """Deny access to the share."""
-        LOG.debug("Deny access.")
-        self.helper._deny_access(share['name'], access, share['share_proto'])
+        :param context: The `context.RequestContext` object for the request
+        :param share: Share that will have its access rules updated.
+        :param access_rules: All access rules for given share. This list
+        is enough to update the access rules for given share.
+        :param add_rules: Empty List or List of access rules which should be
+        added. access_rules already contains these rules. Not used by this
+        driver.
+        :param delete_rules: Empty List or List of access rules which should be
+        removed. access_rules doesn't contain these rules. Not used by
+        this driver.
+        :param share_server: Data structure with share server information.
+        Not used by this driver.
+        """
+        self.helper.update_access(share['name'], access_rules)
 
     def _update_share_stats(self, data=None):
         super(NexentaNasDriver, self)._update_share_stats()

@@ -118,9 +118,10 @@ class TestOVSInterfaceDriver(TestBase):
     def test_plug_alt_bridge(self):
         self._test_plug(bridge='br-foo')
 
-    def _test_plug(self, additional_expectation=[], bridge=None,
+    def _test_plug(self, additional_expectation=None, bridge=None,
                    namespace=None):
-
+        if additional_expectation is None:
+            additional_expectation = []
         if not bridge:
             bridge = 'br-int'
 
@@ -209,13 +210,13 @@ class TestBridgeInterfaceDriver(TestBase):
 
     def test_plug_dev_exists(self):
         self.device_exists.return_value = True
-        with mock.patch('manila.network.linux.interface.LOG.warn') as log:
+        with mock.patch('manila.network.linux.interface.LOG.warning') as log:
             br = interface.BridgeInterfaceDriver()
             br.plug('port-1234',
                     'tap0',
                     'aa:bb:cc:dd:ee:ff')
             self.ip_dev.assert_has_calls([])
-            self.assertEqual(log.call_count, 1)
+            self.assertEqual(1, log.call_count)
 
     def test_unplug_no_device(self):
         self.device_exists.return_value = False
@@ -224,7 +225,7 @@ class TestBridgeInterfaceDriver(TestBase):
             br = interface.BridgeInterfaceDriver()
             br.unplug('tap0')
             [mock.call(), mock.call('tap0'), mock.call().link.delete()]
-            self.assertEqual(log.error.call_count, 1)
+            self.assertEqual(1, log.error.call_count)
 
     def test_unplug(self):
         self.device_exists.return_value = True

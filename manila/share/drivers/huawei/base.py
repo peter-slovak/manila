@@ -52,8 +52,22 @@ class HuaweiBase(object):
         """Deny access to the share."""
 
     @abc.abstractmethod
+    def ensure_share(self, share, share_server=None):
+        """Ensure that share is exported."""
+
+    @abc.abstractmethod
+    def update_access(self, share, access_rules, add_rules,
+                      delete_rules, share_server):
+        """Update access rules list."""
+
+    @abc.abstractmethod
     def extend_share(self, share, new_size, share_server):
         """Extends size of existing share."""
+
+    @abc.abstractmethod
+    def create_share_from_snapshot(self, share, snapshot,
+                                   share_server=None):
+        """Create share from snapshot."""
 
     @abc.abstractmethod
     def shrink_share(self, share, new_size, share_server):
@@ -73,3 +87,11 @@ class HuaweiBase(object):
 
     def update_share_stats(self, stats_dict):
         """Retrieve stats info from share group."""
+
+    @abc.abstractmethod
+    def setup_server(self, network_info, metadata=None):
+        """Set up share server with given network parameters."""
+
+    @abc.abstractmethod
+    def teardown_server(self, server_details, security_services=None):
+        """Teardown share server."""

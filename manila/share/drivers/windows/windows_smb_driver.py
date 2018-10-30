@@ -18,6 +18,8 @@ import os
 from oslo_log import log
 from oslo_utils import units
 
+from manila.common import constants as const
+from manila import exception
 from manila.i18n import _LW
 from manila.share import driver as base_driver
 from manila.share.drivers import generic
@@ -67,12 +69,12 @@ class WindowsSMBDriver(generic.GenericShareDriver):
                                                   security_service['user'],
                                                   security_service['password'])
             except Exception as exc:
-                LOG.warn(_LW("Failed to remove service instance "
-                             "%(instance_id)s from domain %(domain)s. "
-                             "Exception: %(exc)s"),
-                         dict(instance_id=server_details['instance_id'],
-                              domain=security_service['domain'],
-                              exc=exc))
+                LOG.warning(_LW("Failed to remove service instance "
+                                "%(instance_id)s from domain %(domain)s. "
+                                "Exception: %(exc)s."),
+                            dict(instance_id=server_details['instance_id'],
+                                 domain=security_service['domain'],
+                                 exc=exc))
         super(WindowsSMBDriver, self)._teardown_server(server_details,
                                                        security_services)
 
@@ -162,3 +164,22 @@ class WindowsSMBDriver(generic.GenericShareDriver):
         disk_number = self._windows_utils.get_disk_number_by_mount_path(
             server_details, mount_path)
         return disk_number is not None
+
+    @generic.ensure_server
+    def allow_access(self, context, share, access, share_server=None):
+        """Allow access to the share."""
+
+        # NOTE(vponomaryov): use direct verification for case some additional
+        # level is added.
+        access_level = access['access_level']
+        if access_level not in (const.ACCESS_LEVEL_RW, const.ACCESS_LEVEL_RO):
+            raise exception.InvalidShareAccessLevel(level=access_level)
+        self._get_helper(share).allow_access(
+            share_server['backend_details'], share['name'],
+            access['access_type'], access['access_level'], access['access_to'])
+
+    @generic.ensure_server
+    def deny_access(self, context, share, access, share_server=None):
+        """Deny access to the share."""
+        self._get_helper(share).deny_access(
+            share_server['backend_details'], share['name'], access)

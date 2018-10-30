@@ -31,6 +31,7 @@ from oslo_utils import importutils
 from manila import context
 from manila import db
 from manila import exception
+from manila.i18n import _
 from manila.i18n import _LE
 from manila.i18n import _LI
 from manila.i18n import _LW
@@ -55,9 +56,9 @@ service_opts = [
     cfg.StrOpt('osapi_share_listen',
                default="::",
                help='IP address for OpenStack Share API to listen on.'),
-    cfg.IntOpt('osapi_share_listen_port',
-               default=8786,
-               help='Port for OpenStack Share API to listen on.'),
+    cfg.PortOpt('osapi_share_listen_port',
+                default=8786,
+                help='Port for OpenStack Share API to listen on.'),
     cfg.IntOpt('osapi_share_workers',
                default=1,
                help='Number of workers for OpenStack Share API service.'),
@@ -194,7 +195,7 @@ class Service(service.Service):
         try:
             db.service_destroy(context.get_admin_context(), self.service_id)
         except exception.NotFound:
-            LOG.warn(_LW('Service killed that has no database entry'))
+            LOG.warning(_LW('Service killed that has no database entry.'))
 
     def stop(self):
         # Try to shut the connection down, but if we get any sort of
@@ -278,7 +279,7 @@ class WSGIService(service.ServiceBase):
         self.port = getattr(CONF, '%s_listen_port' % name, 0)
         self.workers = getattr(CONF, '%s_workers' % name, None)
         if self.workers is not None and self.workers < 1:
-            LOG.warn(
+            LOG.warning(
                 _LW("Value of config option %(name)s_workers must be integer "
                     "greater than 1.  Input value ignored.") % {'name': name})
             # Reset workers to default

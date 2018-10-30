@@ -98,6 +98,22 @@ def create_share_instance(**kwargs):
                                     kwargs.pop('share_id'), kwargs)
 
 
+def create_share_replica(**kwargs):
+    """Create a share replica object."""
+    replica = {
+        'host': 'fake',
+        'status': constants.STATUS_CREATING,
+    }
+    replica.update(kwargs)
+
+    if 'share_id' not in kwargs:
+        share = create_share()
+        kwargs['share_id'] = share['id']
+
+    return db.share_instance_create(context.get_admin_context(),
+                                    kwargs.pop('share_id'), kwargs)
+
+
 def create_snapshot(**kwargs):
     """Create a snapshot object."""
     with_share = kwargs.pop('with_share', False)
@@ -113,9 +129,25 @@ def create_snapshot(**kwargs):
         'share_id': share['id'] if with_share else None,
         'user_id': 'fake',
         'project_id': 'fake',
-        'status': 'creating'
+        'status': 'creating',
+        'provider_location': 'fake',
     }
-    return _create_db_row(db.share_snapshot_create, snapshot, kwargs)
+    snapshot.update(kwargs)
+    return db.share_snapshot_create(context.get_admin_context(), snapshot)
+
+
+def create_snapshot_instance(snapshot_id, **kwargs):
+    """Create a share snapshot instance object."""
+
+    snapshot_instance = {
+        'provider_location': 'fake_provider_location',
+        'progress': '0%',
+        'status': constants.STATUS_CREATING,
+    }
+
+    snapshot_instance.update(kwargs)
+    return db.share_snapshot_instance_create(
+        context.get_admin_context(), snapshot_id, snapshot_instance)
 
 
 def create_access(**kwargs):

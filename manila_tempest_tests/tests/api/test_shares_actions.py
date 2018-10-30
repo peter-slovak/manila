@@ -14,12 +14,13 @@
 #    under the License.
 
 import six
-from tempest import config  # noqa
-from tempest import test  # noqa
-from tempest_lib.common.utils import data_utils  # noqa
-import testtools  # noqa
+from tempest import config
+from tempest.lib.common.utils import data_utils
+from tempest import test
+import testtools
 
 from manila_tempest_tests.tests.api import base
+from manila_tempest_tests import utils
 
 CONF = config.CONF
 
@@ -79,11 +80,25 @@ class SharesActionsTest(base.BaseSharesTest):
             self.shares[0]['id'], version=six.text_type(version))
 
         # verify keys
-        expected_keys = ["status", "description", "links", "availability_zone",
-                         "created_at", "export_location", "share_proto",
-                         "name", "snapshot_id", "id", "size"]
-        if version > 2.1:
+        expected_keys = [
+            "status", "description", "links", "availability_zone",
+            "created_at", "project_id", "volume_type", "share_proto", "name",
+            "snapshot_id", "id", "size", "share_network_id", "metadata",
+            "host", "snapshot_id", "is_public",
+        ]
+        if utils.is_microversion_lt(version, '2.9'):
+            expected_keys.extend(["export_location", "export_locations"])
+        if utils.is_microversion_ge(version, '2.2'):
             expected_keys.append("snapshot_support")
+        if utils.is_microversion_ge(version, '2.4'):
+            expected_keys.extend(["consistency_group_id",
+                                  "source_cgsnapshot_member_id"])
+        if utils.is_microversion_ge(version, '2.5'):
+            expected_keys.append("share_type_name")
+        if utils.is_microversion_ge(version, '2.10'):
+            expected_keys.append("access_rules_status")
+        if utils.is_microversion_ge(version, '2.11'):
+            expected_keys.append("replication_type")
         actual_keys = list(share.keys())
         [self.assertIn(key, actual_keys) for key in expected_keys]
 
@@ -103,18 +118,43 @@ class SharesActionsTest(base.BaseSharesTest):
         self.assertEqual(self.share_size, int(share["size"]), msg)
 
     @test.attr(type=["gate", ])
-    def test_get_share_no_snapshot_support_key(self):
-        self._get_share(2.1)
+    def test_get_share_v2_1(self):
+        self._get_share('2.1')
 
     @test.attr(type=["gate", ])
     def test_get_share_with_snapshot_support_key(self):
-        self._get_share(2.2)
+        self._get_share('2.2')
+
+    @test.attr(type=["gate", ])
+    @utils.skip_if_microversion_not_supported('2.4')
+    def test_get_share_with_consistency_groups_keys(self):
+        self._get_share('2.4')
+
+    @test.attr(type=["gate", ])
+    @utils.skip_if_microversion_not_supported('2.6')
+    def test_get_share_with_share_type_name_key(self):
+        self._get_share('2.6')
+
+    @test.attr(type=["gate", ])
+    @utils.skip_if_microversion_not_supported('2.9')
+    def test_get_share_export_locations_removed(self):
+        self._get_share('2.9')
+
+    @test.attr(type=["gate", ])
+    @utils.skip_if_microversion_not_supported('2.10')
+    def test_get_share_with_access_rules_status(self):
+        self._get_share('2.10')
+
+    @test.attr(type=["gate", ])
+    @utils.skip_if_microversion_not_supported('2.11')
+    def test_get_share_with_replication_type_key(self):
+        self._get_share('2.11')
 
     @test.attr(type=["gate", ])
     def test_list_shares(self):
 
         # list shares
-        shares = self.shares_client.list_shares()
+        shares = self.shares_v2_client.list_shares()
 
         # verify keys
         keys = ["name", "id", "links"]
@@ -135,11 +175,24 @@ class SharesActionsTest(base.BaseSharesTest):
         # verify keys
         keys = [
             "status", "description", "links", "availability_zone",
-            "created_at", "export_location", "share_proto", "host",
-            "name", "snapshot_id", "id", "size", "project_id",
+            "created_at", "project_id", "volume_type", "share_proto", "name",
+            "snapshot_id", "id", "size", "share_network_id", "metadata",
+            "host", "snapshot_id", "is_public", "share_type",
         ]
-        if version > 2.1:
+        if utils.is_microversion_lt(version, '2.9'):
+            keys.extend(["export_location", "export_locations"])
+        if utils.is_microversion_ge(version, '2.2'):
             keys.append("snapshot_support")
+        if utils.is_microversion_ge(version, '2.4'):
+            keys.extend(["consistency_group_id",
+                         "source_cgsnapshot_member_id"])
+        if utils.is_microversion_ge(version, '2.6'):
+            keys.append("share_type_name")
+        if utils.is_microversion_ge(version, '2.10'):
+            keys.append("access_rules_status")
+        if utils.is_microversion_ge(version, '2.11'):
+            keys.append("replication_type")
+
         [self.assertIn(key, sh.keys()) for sh in shares for key in keys]
 
         # our shares in list and have no duplicates
@@ -149,12 +202,37 @@ class SharesActionsTest(base.BaseSharesTest):
             self.assertEqual(1, len(gen), msg)
 
     @test.attr(type=["gate", ])
-    def test_list_shares_with_detail_without_snapshot_support_key(self):
-        self._list_shares_with_detail(2.1)
+    def test_list_shares_with_detail_v2_1(self):
+        self._list_shares_with_detail('2.1')
 
     @test.attr(type=["gate", ])
     def test_list_shares_with_detail_and_snapshot_support_key(self):
-        self._list_shares_with_detail(2.2)
+        self._list_shares_with_detail('2.2')
+
+    @test.attr(type=["gate", ])
+    @utils.skip_if_microversion_not_supported('2.4')
+    def test_list_shares_with_detail_consistency_groups_keys(self):
+        self._list_shares_with_detail('2.4')
+
+    @test.attr(type=["gate", ])
+    @utils.skip_if_microversion_not_supported('2.6')
+    def test_list_shares_with_detail_share_type_name_key(self):
+        self._list_shares_with_detail('2.6')
+
+    @test.attr(type=["gate", ])
+    @utils.skip_if_microversion_not_supported('2.9')
+    def test_list_shares_with_detail_export_locations_removed(self):
+        self._list_shares_with_detail('2.9')
+
+    @test.attr(type=["gate", ])
+    @utils.skip_if_microversion_not_supported('2.10')
+    def test_list_shares_with_detail_with_access_rules_status(self):
+        self._list_shares_with_detail('2.10')
+
+    @test.attr(type=["gate", ])
+    @utils.skip_if_microversion_not_supported('2.11')
+    def test_list_shares_with_detail_replication_type_key(self):
+        self._list_shares_with_detail('2.11')
 
     @test.attr(type=["gate", ])
     def test_list_shares_with_detail_filter_by_metadata(self):
@@ -225,21 +303,21 @@ class SharesActionsTest(base.BaseSharesTest):
         # verify response
         self.assertTrue(len(shares) > 0)
         sorted_list = [share['created_at'] for share in shares]
-        self.assertEqual(sorted_list, sorted(sorted_list))
+        self.assertEqual(sorted(sorted_list), sorted_list)
 
     @test.attr(type=["gate", ])
     def test_list_shares_with_detail_filter_by_existed_name(self):
         # list shares by name, at least one share is expected
         params = {"name": self.share_name}
         shares = self.shares_client.list_shares_with_detail(params)
-        self.assertEqual(shares[0]["name"], self.share_name)
+        self.assertEqual(self.share_name, shares[0]["name"])
 
     @test.attr(type=["gate", ])
     def test_list_shares_with_detail_filter_by_fake_name(self):
         # list shares by fake name, no shares are expected
         params = {"name": data_utils.rand_name("fake-nonexistent-name")}
         shares = self.shares_client.list_shares_with_detail(params)
-        self.assertEqual(len(shares), 0)
+        self.assertEqual(0, len(shares))
 
     @test.attr(type=["gate", ])
     def test_list_shares_with_detail_filter_by_active_status(self):
@@ -248,14 +326,14 @@ class SharesActionsTest(base.BaseSharesTest):
         shares = self.shares_client.list_shares_with_detail(params)
         self.assertTrue(len(shares) > 0)
         for share in shares:
-            self.assertEqual(share["status"], params["status"])
+            self.assertEqual(params["status"], share["status"])
 
     @test.attr(type=["gate", ])
     def test_list_shares_with_detail_filter_by_fake_status(self):
         # list shares by fake status, no shares are expected
         params = {"status": 'fake'}
         shares = self.shares_client.list_shares_with_detail(params)
-        self.assertEqual(len(shares), 0)
+        self.assertEqual(0, len(shares))
 
     @test.attr(type=["gate", ])
     def test_list_shares_with_detail_filter_by_all_tenants(self):
@@ -268,7 +346,7 @@ class SharesActionsTest(base.BaseSharesTest):
         share = self.shares_client.get_share(self.shares[0]["id"])
         project_id = share["project_id"]
         for share in shares:
-            self.assertEqual(share["project_id"], project_id)
+            self.assertEqual(project_id, share["project_id"])
 
     @test.attr(type=["gate", ])
     def test_list_shares_public_with_detail(self):
@@ -367,7 +445,7 @@ class SharesActionsTest(base.BaseSharesTest):
         # our share id in list and have no duplicates
         gen = [sid["id"] for sid in snaps if sid["id"] in self.snap["id"]]
         msg = "expected id lists %s times in share list" % (len(gen))
-        self.assertEqual(len(gen), 1, msg)
+        self.assertEqual(1, len(gen), msg)
 
     @test.attr(type=["gate", ])
     @testtools.skipUnless(CONF.share.run_snapshot_tests,
@@ -424,7 +502,7 @@ class SharesActionsTest(base.BaseSharesTest):
         # verify response
         self.assertTrue(len(snaps) > 0)
         sorted_list = [snap['share_id'] for snap in snaps]
-        self.assertEqual(sorted_list, sorted(sorted_list))
+        self.assertEqual(sorted(sorted_list), sorted_list)
 
     @test.attr(type=["gate", ])
     @testtools.skipUnless(
@@ -435,12 +513,19 @@ class SharesActionsTest(base.BaseSharesTest):
         new_size = 2
 
         # extend share and wait for active status
-        self.shares_client.extend_share(share['id'], new_size)
+        self.shares_v2_client.extend_share(share['id'], new_size)
         self.shares_client.wait_for_share_status(share['id'], 'available')
 
         # check state and new size
-        share = self.shares_client.get_share(share['id'])
-        self.assertEqual(new_size, share['size'])
+        share_get = self.shares_v2_client.get_share(share['id'])
+        msg = (
+            "Share could not be extended. "
+            "Expected %(expected)s, got %(actual)s." % {
+                "expected": new_size,
+                "actual": share_get['size'],
+            }
+        )
+        self.assertEqual(new_size, share_get['size'], msg)
 
     @test.attr(type=["gate", ])
     @testtools.skipUnless(
@@ -451,12 +536,19 @@ class SharesActionsTest(base.BaseSharesTest):
         new_size = 1
 
         # shrink share and wait for active status
-        self.shares_client.shrink_share(share['id'], new_size)
+        self.shares_v2_client.shrink_share(share['id'], new_size)
         self.shares_client.wait_for_share_status(share['id'], 'available')
 
         # check state and new size
-        share = self.shares_client.get_share(share['id'])
-        self.assertEqual(new_size, share['size'])
+        share_get = self.shares_v2_client.get_share(share['id'])
+        msg = (
+            "Share could not be shrunk. "
+            "Expected %(expected)s, got %(actual)s." % {
+                "expected": new_size,
+                "actual": share_get['size'],
+            }
+        )
+        self.assertEqual(new_size, share_get['size'], msg)
 
 
 class SharesRenameTest(base.BaseSharesTest):

@@ -161,6 +161,7 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
 
         self.assertTrue(
             mock_vserver_client.prune_deleted_nfs_export_policies.called)
+        self.assertTrue(mock_vserver_client.prune_deleted_snapshots.called)
         self.assertTrue(mock_super.called)
 
     def test_find_matching_aggregates(self):
@@ -179,3 +180,9 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
 
     def test_get_network_allocations_number(self):
         self.assertEqual(0, self.library.get_network_allocations_number())
+
+    def test_get_admin_network_allocations_number(self):
+
+        result = self.library.get_admin_network_allocations_number()
+
+        self.assertEqual(0, result)

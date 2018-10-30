@@ -46,19 +46,19 @@ Note that Ganesha's concept of storage backend modules is called FSAL ("File
 System Abstraction Layer"). The FSAL the driver intends to leverage needs to be
 enabled in Ganesha config.
 
-Beyond that (with default Manila config) the following line is needed to be
+Beyond that (with default manila config) the following line is needed to be
 present in the Ganesha config file (that defaults to
 /etc/ganesha/ganesha.conf):
 
 ``%include /etc/ganesha/export.d/INDEX.conf``
 
-The above paths can be customized through Manila configuration as follows:
+The above paths can be customized through manila configuration as follows:
 
 - `ganesha_config_dir` = toplevel directory for Ganesha configuration,
      defaults to /etc/ganesha
 - `ganesha_config_path` = location of the Ganesha config file, defaults
     to ganesha.conf in `ganesha_config_dir`
-- `ganesha_export_dir` = directory where Manila generated config bits are
+- `ganesha_export_dir` = directory where manila generated config bits are
     stored, defaults to `export.d` in `ganesha_config_dir`. The following
     line is required to be included (with value expanded) in the Ganesha
     config file (at `ganesha_config_path`):
@@ -66,10 +66,10 @@ The above paths can be customized through Manila configuration as follows:
     ``%include <ganesha_export_dir>/INDEX.conf``
 
 
-Further Ganesha related Manila configuration
+Further Ganesha related manila configuration
 --------------------------------------------
 
-There are further Ganesha related options in Manila (which affect the
+There are further Ganesha related options in manila (which affect the
 behavior of Ganesha, but do not affect how to set up the Ganesha service
 itself).
 
@@ -126,7 +126,7 @@ template*. They are syntactically either Ganesha export blocks,
 or isomorphic JSON (as Ganesha export blocks are by-and-large
 equivalent to arrayless JSON), with two special placeholders
 for values: ``@config`` and ``@runtime``. ``@config`` means a
-value that shall be filled from Manila config, and ``@runtime``
+value that shall be filled from manila config, and ``@runtime``
 means a value that's filled at runtime with dynamic data.
 
 As an example, we show the library's defaults in JSON format
@@ -168,7 +168,7 @@ method as follows:
    either by
 
    -  using a predefined export block dict stored in code
-   -  loading a predefined export block from the Manila source tree
+   -  loading a predefined export block from the manila source tree
    -  loading an export block from an user exposed location (to allow
       user configuration)
 
@@ -184,6 +184,35 @@ Known Restrictions
 
 - The library does not support network segmented multi-tenancy model but
   instead works over a flat network, where the tenants share a network.
+
+.. _ganesha_known_issues
+
+Known Issues
+------------
+
+- The export location for shares of a driver that uses the Ganesha Library
+  will be of the format ``<ganesha-server>:/share-<share-id>``. However,
+  this is incomplete information, because it pertains only to NFSv3
+  access, which is partially broken. NFSv4 mounts work well but the
+  actual NFSv4 export paths differ from the above. In detail:
+
+  - The export location is usable only for NFSv3 mounts.
+  - The export location works only for the first access
+    rule that's added for the given share. Tenants that
+    should be allowed to access according to a further
+    access rule will be refused (cf.
+    https://bugs.launchpad.net/manila/+bug/1513061).
+  - The share is, however, exported through NFSv4, just
+    on paths that differ from the one indicated by
+    the export location, namely at:
+    ``<ganesha-server>:/share-<share-id>--<access-id>``,
+    where ``<access-id>`` ranges over the ID-s of access
+    rules of the share (and the export with ``<access-id>``
+    is accessible according to the access rule of that ID).
+  - NFSv4 access also works with pseudofs. That is, the
+    tenant can do a v4 mount of``<ganesha-server>:/`` and
+    access the shares allowed for her at the respective
+    ``share-<share-id>--<access-id>`` subdirectories.
 
 The :mod:`manila.share.drivers.ganesha` Module
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

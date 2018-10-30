@@ -49,10 +49,13 @@ translated_log = re.compile(
     r"(.)*LOG\.(audit|error|info|warn|warning|critical|exception)"
     "\(\s*_\(\s*('|\")")
 string_translation = re.compile(r"[^_]*_\(\s*('|\")")
-underscore_import_check = re.compile(r"(.)*import _(.)*")
+underscore_import_check = re.compile(r"(.)*import _$")
+underscore_import_check_multi = re.compile(r"(.)*import (.)*_, (.)*")
 # We need this for cases where they have created their own _ function.
 custom_underscore_check = re.compile(r"(.)*_\s*=\s*(.)*")
 oslo_namespace_imports = re.compile(r"from[\s]*oslo[.](.*)")
+dict_constructor_with_list_copy_re = re.compile(r".*\bdict\((\[)?(\(|\[)")
+assert_no_xrange_re = re.compile(r"\s*xrange\s*\(")
 
 
 class BaseASTChecker(ast.NodeVisitor):
@@ -157,6 +160,7 @@ def check_explicit_underscore_import(logical_line, filename):
     if filename in UNDERSCORE_IMPORT_FILES:
         pass
     elif (underscore_import_check.match(logical_line) or
+          underscore_import_check_multi.match(logical_line) or
           custom_underscore_check.match(logical_line)):
         UNDERSCORE_IMPORT_FILES.append(filename)
     elif (translated_log.match(logical_line) or
@@ -226,10 +230,23 @@ def check_oslo_namespace_imports(logical_line, physical_line, filename):
     if pep8.noqa(physical_line):
         return
     if re.match(oslo_namespace_imports, logical_line):
-        msg = ("N333: '%s' must be used instead of '%s'.") % (
+        msg = ("M333: '%s' must be used instead of '%s'.") % (
             logical_line.replace('oslo.', 'oslo_'),
             logical_line)
         yield(0, msg)
+
+
+def dict_constructor_with_list_copy(logical_line):
+    msg = ("M336: Must use a dict comprehension instead of a dict constructor"
+           " with a sequence of key-value pairs."
+           )
+    if dict_constructor_with_list_copy_re.match(logical_line):
+        yield (0, msg)
+
+
+def no_xrange(logical_line):
+    if assert_no_xrange_re.match(logical_line):
+        yield(0, "M337: Do not use xrange().")
 
 
 def factory(register):
@@ -239,3 +256,5 @@ def factory(register):
     register(CheckForStrExc)
     register(CheckForTransAdd)
     register(check_oslo_namespace_imports)
+    register(dict_constructor_with_list_copy)
+    register(no_xrange)

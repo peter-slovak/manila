@@ -46,7 +46,6 @@ provided by Neutron.
 
 Prerequisites
 -------------
-- Ubuntu 14.04
 - MySQL database
 - RabbitMQ message bus
 - OpenStack Keystone
@@ -165,41 +164,41 @@ Result::
 
     $ keystone endpoint-create \
         --service-id $(keystone service-list | awk '/ share / {print $2}') \
-        --publicurl http://controller:8786/v1/%\(tenant_id\)s \
-        --internalurl http://controller:8786/v1/%\(tenant_id\)s \
-        --adminurl http://controller:8786/v1/%\(tenant_id\)s \
+        --publicurl http://%controller%:8786/v1/%\(tenant_id\)s \
+        --internalurl http://%controller%:8786/v1/%\(tenant_id\)s \
+        --adminurl http://%controller%:8786/v1/%\(tenant_id\)s \
         --region regionOne
 
     $ keystone endpoint-create \
         --service-id $(keystone service-list | awk '/ sharev2 / {print $2}') \
-        --publicurl http://controller:8786/v2/%\(tenant_id\)s \
-        --internalurl http://controller:8786/v2/%\(tenant_id\)s \
-        --adminurl http://controller:8786/v2/%\(tenant_id\)s \
+        --publicurl http://%controller%:8786/v2/%\(tenant_id\)s \
+        --internalurl http://%controller%:8786/v2/%\(tenant_id\)s \
+        --adminurl http://%controller%:8786/v2/%\(tenant_id\)s \
         --region regionOne
 
 Result::
 
-    +-------------+-----------------------------------------+
-    |   Property  |                  Value                  |
-    +-------------+-----------------------------------------+
-    |   adminurl  | http://controller:8786/v1/%(tenant_id)s |
-    |      id     |    c1984777db6941919657d15b25f05c94     |
-    | internalurl | http://controller:8786/v1/%(tenant_id)s |
-    |  publicurl  | http://controller:8786/v1/%(tenant_id)s |
-    |    region   |                regionOne                |
-    |  service_id |    4c13e9ff7ec04f4e95a26f72ecdf9919     |
-    +-------------+-----------------------------------------+
+    +-------------+-------------------------------------------+
+    |   Property  |                   Value                   |
+    +-------------+-------------------------------------------+
+    |   adminurl  | http://%controller%:8786/v1/%(tenant_id)s |
+    |      id     |     c1984777db6941919657d15b25f05c94      |
+    | internalurl | http://%controller%:8786/v1/%(tenant_id)s |
+    |  publicurl  | http://%controller%:8786/v1/%(tenant_id)s |
+    |    region   |                 regionOne                 |
+    |  service_id |     4c13e9ff7ec04f4e95a26f72ecdf9919      |
+    +-------------+-------------------------------------------+
 
-    +-------------+-----------------------------------------+
-    |   Property  |                  Value                  |
-    +-------------+-----------------------------------------+
-    |   adminurl  | http://controller:8786/v2/%(tenant_id)s |
-    |      id     |     63ddffd27e8c4c62b4ffb228083325e6    |
-    | internalurl | http://controller:8786/v2/%(tenant_id)s |
-    |  publicurl  | http://controller:8786/v2/%(tenant_id)s |
-    |    region   |                regionOne                |
-    |  service_id |     2840d1e7b033437f8776a7bd5045b28d    |
-    +-------------+-----------------------------------------+
+    +-------------+-------------------------------------------+
+    |   Property  |                   Value                   |
+    +-------------+-------------------------------------------+
+    |   adminurl  | http://%controller%:8786/v2/%(tenant_id)s |
+    |      id     |      63ddffd27e8c4c62b4ffb228083325e6     |
+    | internalurl | http://%controller%:8786/v2/%(tenant_id)s |
+    |  publicurl  | http://%controller%:8786/v2/%(tenant_id)s |
+    |    region   |                 regionOne                 |
+    |  service_id |      2840d1e7b033437f8776a7bd5045b28d     |
+    +-------------+-------------------------------------------+
 
 .. note::
     Port ‘8786’ is the default port for Manila. It may be changed to any
@@ -317,10 +316,9 @@ Open Manila configuration file `/etc/manila/manila.conf`::
     share_name_template = share-%s
 
     # Set scheduler driver with usage of filters. Recommended.
-    scheduler_driver = manila.scheduler.filter_scheduler.FilterScheduler
+    scheduler_driver = manila.scheduler.drivers.filter.FilterScheduler
 
-    # Set following two opts to ‘True’ to get maximum info in logging.
-    verbose = True
+    # Set following opt to ‘True’ to get more info in logging.
     debug = True
 
     [london]

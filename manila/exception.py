@@ -81,7 +81,7 @@ class ManilaException(Exception):
                 self.kwargs['code'] = self.code
             except AttributeError:
                 pass
-        for k, v in six.iteritems(self.kwargs):
+        for k, v in self.kwargs.items():
             if isinstance(v, Exception):
                 self.kwargs[k] = six.text_type(v)
 
@@ -93,7 +93,7 @@ class ManilaException(Exception):
                 # kwargs doesn't match a variable in the message
                 # log the issue and the kwargs
                 LOG.exception(_LE('Exception in string format operation.'))
-                for name, value in six.iteritems(kwargs):
+                for name, value in kwargs.items():
                     LOG.error(_LE("%(name)s: %(value)s"), {
                         'name': name, 'value': value})
                 if CONF.fatal_exception_format_errors:
@@ -116,6 +116,10 @@ class NetworkException(ManilaException):
 
 class NetworkBadConfigurationException(NetworkException):
     message = _("Bad network configuration: %(reason)s.")
+
+
+class BadConfigurationException(ManilaException):
+    message = _("Bad configuration: %(reason)s.")
 
 
 class NotAuthorized(ManilaException):
@@ -199,6 +203,12 @@ class NotFound(ManilaException):
     safe = True
 
 
+class Found(ManilaException):
+    message = _("Resource was found.")
+    code = 302
+    safe = True
+
+
 class InUse(ManilaException):
     message = _("Resource is in use.")
 
@@ -232,8 +242,21 @@ class ShareMigrationFailed(ManilaException):
     message = _("Share migration failed: %(reason)s")
 
 
+class ShareDataCopyFailed(ManilaException):
+    message = _("Share Data copy failed: %(reason)s")
+
+
+class ShareDataCopyCancelled(ManilaException):
+    message = _("Copy of contents from share instance %(src_instance)s "
+                "to share instance %(dest_instance)s was cancelled.")
+
+
 class ServiceIPNotFound(ManilaException):
-    message = _("Share migration failed: %(reason)s")
+    message = _("Service IP for instance not found: %(reason)s")
+
+
+class AdminIPNotFound(ManilaException):
+    message = _("Admin port IP for service instance not found: %(reason)s")
 
 
 class ShareServerNotCreated(ManilaException):
@@ -384,6 +407,10 @@ class InvalidShare(Invalid):
     message = _("Invalid share: %(reason)s.")
 
 
+class ShareBusyException(Invalid):
+    message = _("Share is busy with an active task: %(reason)s.")
+
+
 class InvalidShareInstance(Invalid):
     message = _("Invalid share instance: %(reason)s.")
 
@@ -407,23 +434,31 @@ class ShareAccessExists(ManilaException):
 
 
 class InvalidShareAccess(Invalid):
-    message = _("Invalid access_rule: %(reason)s.")
+    message = _("Invalid access rule: %(reason)s")
 
 
 class InvalidShareAccessLevel(Invalid):
     message = _("Invalid or unsupported share access level: %(level)s.")
 
 
-class ShareIsBusy(ManilaException):
-    message = _("Deleting $(share_name) share that used.")
-
-
 class ShareBackendException(ManilaException):
     message = _("Share backend error: %(msg)s.")
 
 
+class ExportLocationNotFound(NotFound):
+    message = _("Export location %(uuid)s could not be found.")
+
+
+class ShareNotFound(NotFound):
+    message = _("Share %(share_id)s could not be found.")
+
+
 class ShareSnapshotNotFound(NotFound):
     message = _("Snapshot %(snapshot_id)s could not be found.")
+
+
+class ShareSnapshotInstanceNotFound(NotFound):
+    message = _("Snapshot instance %(instance_id)s could not be found.")
 
 
 class ShareSnapshotNotSupported(ManilaException):
@@ -437,6 +472,16 @@ class ShareSnapshotIsBusy(ManilaException):
 
 class InvalidShareSnapshot(Invalid):
     message = _("Invalid share snapshot: %(reason)s.")
+
+
+class ManageInvalidShareSnapshot(InvalidShareSnapshot):
+    message = _("Manage existing share snapshot failed due to "
+                "invalid share snapshot: %(reason)s.")
+
+
+class UnmanageInvalidShareSnapshot(InvalidShareSnapshot):
+    message = _("Unmanage existing share snapshot failed due to "
+                "invalid share snapshot: %(reason)s.")
 
 
 class ShareMetadataNotFound(NotFound):
@@ -509,6 +554,10 @@ class ShareTypeInUse(ManilaException):
                 "shares present with the type.")
 
 
+class IPAddressInUse(InUse):
+    message = _("IP address %(ip)s is already used.")
+
+
 class ShareTypeExists(ManilaException):
     message = _("Share Type %(id)s already exists.")
 
@@ -565,9 +614,10 @@ class StorageResourceException(ManilaException):
 
 class StorageResourceNotFound(StorageResourceException):
     message = _("Storage resource %(name)s not found.")
+    code = 404
 
 
-class SnapshotNotFound(StorageResourceNotFound):
+class SnapshotResourceNotFound(StorageResourceNotFound):
     message = _("Snapshot %(name)s not found.")
 
 
@@ -595,15 +645,23 @@ class EMCVnxLockRequiredException(ManilaException):
     message = _("Unable to acquire lock(s).")
 
 
-class HP3ParInvalidClient(Invalid):
+class EMCVnxInvalidMoverID(ManilaException):
+    message = _("Invalid mover or vdm %(id)s.")
+
+
+class EMCUnityError(ShareBackendException):
     message = _("%(err)s")
 
 
-class HP3ParInvalid(Invalid):
+class HPE3ParInvalidClient(Invalid):
     message = _("%(err)s")
 
 
-class HP3ParUnexpectedError(ManilaException):
+class HPE3ParInvalid(Invalid):
+    message = _("%(err)s")
+
+
+class HPE3ParUnexpectedError(ManilaException):
     message = _("%(err)s")
 
 
@@ -636,6 +694,10 @@ class HDFSException(ManilaException):
     message = _("HDFS exception occurred!")
 
 
+class ZFSonLinuxException(ManilaException):
+    message = _("ZFSonLinux exception occurred: %(msg)s")
+
+
 class QBException(ManilaException):
     message = _("Quobyte exception occurred: %(msg)s")
 
@@ -659,6 +721,14 @@ class HNASConnException(ManilaException):
     message = _("HNAS Connection Exception: %(msg)s")
 
 
+class HNASItemNotFoundException(StorageResourceNotFound):
+    message = _("HNAS Item Not Found Exception: %(msg)s")
+
+
+class HNASNothingToCloneException(ManilaException):
+    message = _("HNAS Nothing To Clone Exception: %(msg)s")
+
+
 # ConsistencyGroup
 class ConsistencyGroupNotFound(NotFound):
     message = _("ConsistencyGroup %(consistency_group_id)s could not be "
@@ -680,3 +750,64 @@ class InvalidConsistencyGroup(Invalid):
 
 class InvalidCGSnapshot(Invalid):
     message = _("Invalid CGSnapshot: %(reason)s")
+
+
+class DriverNotInitialized(ManilaException):
+    message = _("Share driver '%(driver)s' not initialized.")
+
+
+class ShareResourceNotFound(StorageResourceNotFound):
+    message = _("Share id %(share_id)s could not be found "
+                "in storage backend.")
+
+
+class ShareUmountException(ManilaException):
+    message = _("Failed to unmount share: %(reason)s")
+
+
+class ShareMountException(ManilaException):
+    message = _("Failed to mount share: %(reason)s")
+
+
+class ShareCopyDataException(ManilaException):
+    message = _("Failed to copy data: %(reason)s")
+
+
+# Replication
+class ReplicationException(ManilaException):
+    message = _("Unable to perform a replication action: %(reason)s.")
+
+
+class ShareReplicaNotFound(NotFound):
+    message = _("Share Replica %(replica_id)s could not be found.")
+
+
+# Tegile Storage drivers
+class TegileAPIException(ShareBackendException):
+    message = _("Unexpected response from Tegile IntelliFlash API: "
+                "%(response)s")
+
+
+class StorageCommunicationException(ShareBackendException):
+    message = _("Could not communicate with storage array.")
+
+
+class EvaluatorParseException(ManilaException):
+    message = _("Error during evaluator parsing: %(reason)s")
+
+
+# Hitachi Scaleout Platform driver
+class HSPBackendException(ShareBackendException):
+    message = _("HSP Backend Exception: %(msg)s")
+
+
+class HSPTimeoutException(ShareBackendException):
+    message = _("HSP Timeout Exception: %(msg)s")
+
+
+class HSPItemNotFoundException(ShareBackendException):
+    message = _("HSP Item Not Found Exception: %(msg)s")
+
+
+class NexentaException(ShareBackendException):
+    message = _("Exception due to Nexenta failure. %(reason)s")

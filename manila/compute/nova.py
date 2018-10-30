@@ -16,109 +16,117 @@
 Handles all requests to Nova.
 """
 
+from keystoneauth1 import loading as ks_loading
 from novaclient import client as nova_client
 from novaclient import exceptions as nova_exception
-from novaclient import service_catalog
 from novaclient import utils
 from oslo_config import cfg
 from oslo_log import log
 import six
 
+from manila.common import client_auth
+from manila.common.config import core_opts
 from manila.db import base
 from manila import exception
 from manila.i18n import _
 
-nova_opts = [
+NOVA_GROUP = 'nova'
+AUTH_OBJ = None
+
+nova_deprecated_opts = [
+    cfg.StrOpt('nova_admin_username',
+               default='nova',
+               help='Nova admin username.',
+               deprecated_group='DEFAULT',
+               deprecated_for_removal=True,
+               deprecated_reason="This option isn't used any longer. Please "
+                                 "use [nova] username instead."),
+    cfg.StrOpt('nova_admin_password',
+               help='Nova admin password.',
+               deprecated_group='DEFAULT',
+               deprecated_for_removal=True,
+               deprecated_reason="This option isn't used any longer. Please "
+                                 "use [nova] password instead."),
+    cfg.StrOpt('nova_admin_tenant_name',
+               default='service',
+               help='Nova admin tenant name.',
+               deprecated_group='DEFAULT',
+               deprecated_for_removal=True,
+               deprecated_reason="This option isn't used any longer. Please "
+                                 "use [nova] tenant instead."),
+    cfg.StrOpt('nova_admin_auth_url',
+               default='http://localhost:5000/v2.0',
+               help='Identity service URL.',
+               deprecated_group='DEFAULT',
+               deprecated_for_removal=True,
+               deprecated_reason="This option isn't used any longer. Please "
+                                 "use [nova] url instead."),
     cfg.StrOpt('nova_catalog_info',
                default='compute:nova:publicURL',
                help='Info to match when looking for nova in the service '
                     'catalog. Format is separated values of the form: '
-                    '<service_type>:<service_name>:<endpoint_type>'),
+                    '<service_type>:<service_name>:<endpoint_type>',
+               deprecated_group='DEFAULT',
+               deprecated_for_removal=True,
+               deprecated_reason="This option isn't used any longer."),
     cfg.StrOpt('nova_catalog_admin_info',
                default='compute:nova:adminURL',
-               help='Same as nova_catalog_info, but for admin endpoint.'),
-    cfg.StrOpt('os_region_name',
-               default=None,
-               help='Region name of this node.'),
-    cfg.StrOpt('nova_ca_certificates_file',
-               default=None,
-               help='Location of CA certificates file to use for nova client '
-                    'requests.'),
-    cfg.BoolOpt('nova_api_insecure',
-                default=False,
-                help='Allow to perform insecure SSL requests to nova.'),
-    cfg.StrOpt('nova_admin_username',
-               default='nova',
-               help='Nova admin username.'),
-    cfg.StrOpt('nova_admin_password',
-               help='Nova admin password.'),
-    cfg.StrOpt('nova_admin_tenant_name',
-               default='service',
-               help='Nova admin tenant name.'),
-    cfg.StrOpt('nova_admin_auth_url',
-               default='http://localhost:5000/v2.0',
-               help='Identity service URL.'),
-    cfg.StrOpt('nova_api_microversion',
-               default='2.10',
-               help='Version of Nova API to be used.'),
+               help='Same as nova_catalog_info, but for admin endpoint.',
+               deprecated_group='DEFAULT',
+               deprecated_for_removal=True,
+               deprecated_reason="This option isn't used any longer."),
 ]
 
+nova_opts = [
+    cfg.StrOpt('api_microversion',
+               default='2.10',
+               deprecated_group="DEFAULT",
+               deprecated_name="nova_api_microversion",
+               help='Version of Nova API to be used.'),
+    cfg.StrOpt('ca_certificates_file',
+               deprecated_group="DEFAULT",
+               deprecated_name="nova_ca_certificates_file",
+               help='Location of CA certificates file to use for nova client '
+                    'requests.'),
+    cfg.BoolOpt('api_insecure',
+                default=False,
+                deprecated_group="DEFAULT",
+                deprecated_name="nova_api_insecure",
+                help='Allow to perform insecure SSL requests to nova.'),
+    ]
+
 CONF = cfg.CONF
-CONF.register_opts(nova_opts)
+CONF.register_opts(nova_deprecated_opts)
+CONF.register_opts(core_opts)
+CONF.register_opts(nova_opts, NOVA_GROUP)
+ks_loading.register_session_conf_options(CONF, NOVA_GROUP)
+ks_loading.register_auth_conf_options(CONF, NOVA_GROUP)
 
 LOG = log.getLogger(__name__)
 
 
+def list_opts():
+    return client_auth.AuthClientLoader.list_opts(NOVA_GROUP)
+
+
 def novaclient(context):
-    if context.is_admin and context.project_id is None:
-        c = nova_client.Client(
-            CONF.nova_api_microversion,
-            CONF.nova_admin_username,
-            CONF.nova_admin_password,
-            CONF.nova_admin_tenant_name,
-            CONF.nova_admin_auth_url,
-            insecure=CONF.nova_api_insecure,
-            cacert=CONF.nova_ca_certificates_file,
-        )
-        c.authenticate()
-        return c
-
-    compat_catalog = {
-        'access': {'serviceCatalog': context.service_catalog or []}
-    }
-    sc = service_catalog.ServiceCatalog(compat_catalog)
-
-    nova_catalog_info = CONF.nova_catalog_info
-
-    info = nova_catalog_info
-    service_type, service_name, endpoint_type = info.split(':')
-    # extract the region if set in configuration
-    if CONF.os_region_name:
-        attr = 'region'
-        filter_value = CONF.os_region_name
-    else:
-        attr = None
-        filter_value = None
-    url = sc.url_for(attr=attr,
-                     filter_value=filter_value,
-                     service_type=service_type,
-                     service_name=service_name,
-                     endpoint_type=endpoint_type)
-
-    LOG.debug('Novaclient connection created using URL: %s', url)
-
-    c = nova_client.Client(context.user_id,
-                           context.auth_token,
-                           context.project_id,
-                           auth_url=url,
-                           insecure=CONF.nova_api_insecure,
-                           cacert=CONF.nova_ca_certificates_file,
-                           extensions=[])
-    # noauth extracts user_id:project_id from auth_token
-    c.client.auth_token = context.auth_token or '%s:%s' % (context.user_id,
-                                                           context.project_id)
-    c.client.management_url = url
-    return c
+    global AUTH_OBJ
+    if not AUTH_OBJ:
+        deprecated_opts_for_v2 = {
+            'username': CONF.nova_admin_username,
+            'password': CONF.nova_admin_password,
+            'tenant_name': CONF.nova_admin_tenant_name,
+            'auth_url': CONF.nova_admin_auth_url,
+        }
+        AUTH_OBJ = client_auth.AuthClientLoader(
+            client_class=nova_client.Client,
+            exception_module=nova_exception,
+            cfg_group=NOVA_GROUP,
+            deprecated_opts_for_v2=deprecated_opts_for_v2)
+    return AUTH_OBJ.get_client(context,
+                               version=CONF[NOVA_GROUP].api_microversion,
+                               insecure=CONF[NOVA_GROUP].api_insecure,
+                               cacert=CONF[NOVA_GROUP].ca_certificates_file)
 
 
 def _untranslate_server_summary_view(server):
@@ -153,15 +161,20 @@ def translate_server_exception(method):
 
     Note: keeps its traceback intact.
     """
+
+    @six.wraps(method)
     def wrapper(self, ctx, instance_id, *args, **kwargs):
         try:
             res = method(self, ctx, instance_id, *args, **kwargs)
+            return res
         except nova_exception.ClientException as e:
             if isinstance(e, nova_exception.NotFound):
                 raise exception.InstanceNotFound(instance_id=instance_id)
             elif isinstance(e, nova_exception.BadRequest):
                 raise exception.InvalidInput(reason=six.text_type(e))
-        return res
+            else:
+                raise exception.ManilaException(e)
+
     return wrapper
 
 
@@ -198,23 +211,17 @@ class API(base.Base):
         try:
             server = utils.find_resource(
                 novaclient(context).servers, instance_name_or_id)
-        except nova_exception.CommandError as e:
-            msg = _("Failed to get Nova VM. %s") % e
-            raise exception.ManilaException(msg)
+        except nova_exception.CommandError:
+            # we did not find the server in the current tenant,
+            # and proceed searching in all tenants
+            try:
+                server = utils.find_resource(
+                    novaclient(context).servers, instance_name_or_id,
+                    all_tenants=True)
+            except nova_exception.CommandError as e:
+                msg = _("Failed to get Nova VM. %s") % e
+                raise exception.ManilaException(msg)
         return _untranslate_server_summary_view(server)
-
-    def server_list(self, context, search_opts=None, all_tenants=False):
-        if search_opts is None:
-            search_opts = {}
-        if all_tenants:
-            search_opts['all_tenants'] = True
-        else:
-            search_opts['project_id'] = context.project_id
-        servers = [_untranslate_server_summary_view(s)
-                   for s in novaclient(context).servers.list(True,
-                                                             search_opts)]
-
-        return servers
 
     @translate_server_exception
     def server_pause(self, context, instance_id):

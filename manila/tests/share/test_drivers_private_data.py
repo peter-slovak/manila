@@ -40,7 +40,7 @@ class DriverPrivateDataTestCase(test.TestCase):
     def test_custom_storage_driver(self):
         private_data = pd.DriverPrivateData(storage=self.fake_storage)
 
-        self.assertEqual(private_data._storage, self.fake_storage)
+        self.assertEqual(self.fake_storage, private_data._storage)
 
     def test_invalid_parameters(self):
         self.assertRaises(ValueError, pd.DriverPrivateData)
@@ -135,7 +135,7 @@ def create_arg_list(key_names):
 
 
 def create_arg_dict(key_names):
-    return dict((key, fake_storage_data[key]) for key in key_names)
+    return {key: fake_storage_data[key] for key in key_names}
 
 
 @ddt.ddt

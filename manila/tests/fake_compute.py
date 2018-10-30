@@ -15,10 +15,8 @@
 
 
 from oslo_config import cfg
-from oslo_log import log
 
 CONF = cfg.CONF
-LOG = log.getLogger(__name__)
 
 
 class FakeServer(object):
@@ -73,9 +71,6 @@ class API(object):
         pass
 
     def instance_volumes_list(self, ctx, server_id):
-        pass
-
-    def server_list(self, ctx, search_opts, all_tenants):
         pass
 
     def server_create(self, *args, **kwargs):

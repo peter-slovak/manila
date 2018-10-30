@@ -31,6 +31,9 @@ import paramiko
 from six.moves import builtins
 
 import manila
+from manila.common import constants
+from manila import context
+from manila.db import api as db
 from manila import exception
 from manila import test
 from manila import utils
@@ -217,13 +220,13 @@ class GenericUtilsTestCase(test.TestCase):
                 self.reload_called = False
 
                 def test_reload(reloaded_data):
-                    self.assertEqual(reloaded_data, fake_contents)
+                    self.assertEqual(fake_contents, reloaded_data)
                     self.reload_called = True
 
                 data = utils.read_cached_file("/this/is/a/fake",
                                               cache_data,
                                               reload_func=test_reload)
-                self.assertEqual(data, fake_contents)
+                self.assertEqual(fake_contents, data)
                 self.assertTrue(self.reload_called)
                 fake_file.read.assert_called_once_with()
                 fake_context_manager.__enter__.assert_any_call()
@@ -238,7 +241,7 @@ class GenericUtilsTestCase(test.TestCase):
 
         self.mock_object(utils, 'execute', fake_execute)
         contents = utils.read_file_as_root('good')
-        self.assertEqual(contents, 'fakecontents')
+        self.assertEqual('fakecontents', contents)
         self.assertRaises(exception.FileNotFound,
                           utils.read_file_as_root, 'bad')
 
@@ -250,7 +253,7 @@ class GenericUtilsTestCase(test.TestCase):
 
         with tempfile.NamedTemporaryFile() as f:
             with utils.temporary_chown(f.name, owner_uid=2):
-                self.assertEqual(fake_execute.uid, 2)
+                self.assertEqual(2, fake_execute.uid)
             self.assertEqual(fake_execute.uid, os.getuid())
 
     def test_service_is_up(self):
@@ -353,6 +356,47 @@ class GenericUtilsTestCase(test.TestCase):
         self.assertRaises(exception.SSHInjectionThreat,
                           utils.check_ssh_injection, cmd)
 
+    @ddt.data(
+        (("3G", "G"), 3.0),
+        (("4.1G", "G"), 4.1),
+        (("5.23G", "G"), 5.23),
+        (("9728M", "G"), 9.5),
+        (("8192K", "G"), 0.0078125),
+        (("2T", "G"), 2048.0),
+        (("2.1T", "G"), 2150.4),
+        (("3P", "G"), 3145728.0),
+        (("3.4P", "G"), 3565158.4),
+        (("9728M", "M"), 9728.0),
+        (("9728.2381T", "T"), 9728.2381),
+        (("0", "G"), 0.0),
+        (("512", "M"), 0.00048828125),
+        (("2097152.", "M"), 2.0),
+        ((".1024", "K"), 0.0001),
+        (("2048G", "T"), 2.0),
+        (("65536G", "P"), 0.0625),
+    )
+    @ddt.unpack
+    def test_translate_string_size_to_float_positive(self, request, expected):
+        actual = utils.translate_string_size_to_float(*request)
+        self.assertEqual(expected, actual)
+
+    @ddt.data(
+        (None, "G"),
+        ("fake", "G"),
+        ("1fake", "G"),
+        ("2GG", "G"),
+        ("1KM", "G"),
+        ("K1M", "G"),
+        ("M1K", "G"),
+        ("", "G"),
+        (23, "G"),
+        (23.0, "G"),
+    )
+    @ddt.unpack
+    def test_translate_string_size_to_float_negative(self, string, multiplier):
+        actual = utils.translate_string_size_to_float(string, multiplier)
+        self.assertIsNone(actual)
+
 
 class MonkeyPatchTestCase(test.TestCase):
     """Unit test for utils.monkey_patch()."""
@@ -375,14 +419,14 @@ class MonkeyPatchTestCase(test.TestCase):
         exampleA = example_a.ExampleClassA()
         exampleA.example_method()
         ret_a = exampleA.example_method_add(3, 5)
-        self.assertEqual(ret_a, 8)
+        self.assertEqual(8, ret_a)
 
         self.assertEqual('Example function', example_b.example_function_b())
         exampleB = example_b.ExampleClassB()
         exampleB.example_method()
         ret_b = exampleB.example_method_add(3, 5)
 
-        self.assertEqual(ret_b, 8)
+        self.assertEqual(8, ret_b)
         package_a = self.example_package + 'example_a.'
         self.assertTrue(package_a + 'example_function_a'
                         in manila.tests.monkey_patch_example.CALLED_FUNCTION)
@@ -798,3 +842,88 @@ class TestRetryDecorator(test.TestCase):
 
             self.assertRaises(ValueError, raise_unexpected_error)
             self.assertFalse(mock_sleep.called)
+
+
+@ddt.ddt
+class RequireDriverInitializedTestCase(test.TestCase):
+
+    @ddt.data(True, False)
+    def test_require_driver_initialized(self, initialized):
+
+        class FakeDriver(object):
+            @property
+            def initialized(self):
+                return initialized
+
+        class FakeException(Exception):
+            pass
+
+        class FakeManager(object):
+            driver = FakeDriver()
+
+            @utils.require_driver_initialized
+            def call_me(self):
+                raise FakeException(
+                    "Should be raised only if manager.driver.initialized "
+                    "('%s') is equal to 'True'." % initialized)
+
+        if initialized:
+            expected_exception = FakeException
+        else:
+            expected_exception = exception.DriverNotInitialized
+
+        self.assertRaises(expected_exception, FakeManager().call_me)
+
+
+@ddt.ddt
+class ShareMigrationHelperTestCase(test.TestCase):
+    """Tests DataMigrationHelper."""
+
+    def setUp(self):
+        super(ShareMigrationHelperTestCase, self).setUp()
+        self.context = context.get_admin_context()
+
+    def test_wait_for_access_update(self):
+        sid = 1
+        fake_share_instances = [
+            {'id': sid, 'access_rules_status': constants.STATUS_OUT_OF_SYNC},
+            {'id': sid, 'access_rules_status': constants.STATUS_ACTIVE},
+        ]
+
+        self.mock_object(time, 'sleep')
+        self.mock_object(db, 'share_instance_get',
+                         mock.Mock(side_effect=fake_share_instances))
+
+        utils.wait_for_access_update(self.context, db,
+                                     fake_share_instances[0], 1)
+
+        db.share_instance_get.assert_has_calls(
+            [mock.call(mock.ANY, sid), mock.call(mock.ANY, sid)]
+        )
+        time.sleep.assert_called_once_with(1)
+
+    @ddt.data(
+        (
+            {'id': '1', 'access_rules_status': constants.STATUS_ERROR},
+            exception.ShareMigrationFailed
+        ),
+        (
+            {'id': '1', 'access_rules_status': constants.STATUS_OUT_OF_SYNC},
+            exception.ShareMigrationFailed
+        ),
+    )
+    @ddt.unpack
+    def test_wait_for_access_update_invalid(self, fake_instance, expected_exc):
+        self.mock_object(time, 'sleep')
+        self.mock_object(db, 'share_instance_get',
+                         mock.Mock(return_value=fake_instance))
+
+        now = time.time()
+        timeout = now + 100
+
+        self.mock_object(time, 'time',
+                         mock.Mock(side_effect=[now, timeout]))
+
+        self.assertRaises(expected_exc,
+                          utils.wait_for_access_update, self.context,
+                          db, fake_instance, 1)

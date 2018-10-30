@@ -7,6 +7,50 @@ chown: CommandFilter, chown, root
 # manila/utils.py : 'cat', '%s'
 cat: CommandFilter, cat, root
 
+# manila/share/drivers/lvm.py: 'mkfs.ext4', '/dev/mapper/%s'
+mkfs.ext4: CommandFilter, mkfs.ext4, root
+
+# manila/share/drivers/lvm.py: 'mkfs.ext3', '/dev/mapper/%s'
+mkfs.ext3: CommandFilter, mkfs.ext3, root
+
+# manila/share/drivers/lvm.py: 'smbd', '-s', '%s', '-D'
+smbd: CommandFilter, smbd, root
+smb: CommandFilter, smb, root
+
+# manila/share/drivers/lvm.py: 'rmdir', '%s'
+rmdir: CommandFilter, rmdir, root
+
+# manila/share/drivers/lvm.py: 'dd' 'count=0', 'if=%s' % srcstr, 'of=%s'
+dd: CommandFilter, dd, root
+
+# manila/share/drivers/lvm.py: 'fsck', '-pf', %s
+fsck: CommandFilter, fsck, root
+
+# manila/share/drivers/lvm.py: 'resize2fs', %s
+resize2fs: CommandFilter, resize2fs, root
+
+# manila/share/drivers/helpers.py: 'smbcontrol', 'all', 'close-share', '%s'
+smbcontrol: CommandFilter, smbcontrol, root
+
+# manila/share/drivers/helpers.py: 'net', 'conf', 'addshare', '%s', '%s', 'writeable=y', 'guest_ok=y
+# manila/share/drivers/helpers.py: 'net', 'conf', 'delshare', '%s'
+# manila/share/drivers/helpers.py: 'net', 'conf', 'setparm', '%s', '%s', '%s'
+# manila/share/drivers/helpers.py: 'net', 'conf', 'getparm', '%s', 'hosts allow'
+net: CommandFilter, net, root
+
+# manila/share/drivers/lvm.py: 'lvremove', '-f', "%s/%s
+lvremove: CommandFilter, lvremove, root
+
+# manila/share/drivers/lvm.py: 'lvextend', '-L', '%sG''-n', %s
+lvextend: CommandFilter, lvextend, root
+
+# manila/share/drivers/lvm.py: 'lvcreate', '-L', %s, '-n', %s
+lvcreate: CommandFilter, lvcreate, root
+
+# manila/share/drivers/lvm.py: 'vgs', '--noheadings', '-o', 'name'
+# manila/share/drivers/lvm.py: 'vgs', %s, '--rows', '--units', 'g'
+vgs: CommandFilter, vgs, root
+
 # manila/share/drivers/glusterfs.py: 'mkdir', '%s'
 # manila/share/drivers/ganesha/manager.py: 'mkdir', '-p', '%s'
 mkdir: CommandFilter, mkdir, root
@@ -15,7 +59,7 @@ mkdir: CommandFilter, mkdir, root
 rm: CommandFilter, rm, root
 
 # manila/share/drivers/glusterfs.py: 'mount', '-t', 'glusterfs', '%s', '%s'
-# manila/share/drivers/glusterfs_native.py: 'mount', '-t', 'glusterfs', '%s', '%s'
+# manila/share/drivers/glusterfs/glusterfs_native.py: 'mount', '-t', 'glusterfs', '%s', '%s'
 mount: CommandFilter, mount, root
 
 # manila/share/drivers/glusterfs.py: 'gluster', '--xml', 'volume', 'info', '%s'
@@ -28,32 +72,32 @@ ip: CommandFilter, ip, root
 # manila/network/linux/interface.py: 'ovs-vsctl', 'add-port', '%s', '%s'
 ovs-vsctl: CommandFilter, ovs-vsctl, root
 
-# manila/share/drivers/glusterfs_native.py: 'find', '%s', '-mindepth', '1', '!', '-path', '%s', '!', '-path', '%s', '-delete'
-# manila/share/drivers/glusterfs_native.py: 'find', '%s', '-mindepth', '1', '-delete'
+# manila/share/drivers/glusterfs/glusterfs_native.py: 'find', '%s', '-mindepth', '1', '!', '-path', '%s', '!', '-path', '%s', '-delete'
+# manila/share/drivers/glusterfs/glusterfs_native.py: 'find', '%s', '-mindepth', '1', '-delete'
 find: CommandFilter, find, root
 
-# manila/share/drivers/glusterfs_native.py: 'umount', '%s'
+# manila/share/drivers/glusterfs/glusterfs_native.py: 'umount', '%s'
 umount: CommandFilter, umount, root
 
 # GPFS commands
 # manila/share/drivers/ibm/gpfs.py: 'mmgetstate', '-Y'
-mmgetstate: CommandFilter, /usr/lpp/mmfs/bin/mmgetstate, root
+mmgetstate: CommandFilter, mmgetstate, root
 # manila/share/drivers/ibm/gpfs.py: 'mmlsattr', '%s'
-mmlsattr: CommandFilter, /usr/lpp/mmfs/bin/mmlsattr, root
+mmlsattr: CommandFilter, mmlsattr, root
 # manila/share/drivers/ibm/gpfs.py: 'mmcrfileset', '%s', '%s', '--inode-space', 'new'
-mmcrfileset: CommandFilter, /usr/lpp/mmfs/bin/mmcrfileset, root
+mmcrfileset: CommandFilter, mmcrfileset, root
 # manila/share/drivers/ibm/gpfs.py: 'mmlinkfileset', '%s', '%s', '-J', '%s'
-mmlinkfileset: CommandFilter, /usr/lpp/mmfs/bin/mmlinkfileset, root
+mmlinkfileset: CommandFilter, mmlinkfileset, root
 # manila/share/drivers/ibm/gpfs.py: 'mmsetquota', '-j', '%s', '-h', '%s', '%s'
-mmsetquota: CommandFilter, /usr/lpp/mmfs/bin/mmsetquota, root
+mmsetquota: CommandFilter, mmsetquota, root
 # manila/share/drivers/ibm/gpfs.py: 'mmunlinkfileset', '%s', '%s', '-f'
-mmunlinkfileset: CommandFilter, /usr/lpp/mmfs/bin/mmunlinkfileset, root
+mmunlinkfileset: CommandFilter, mmunlinkfileset, root
 # manila/share/drivers/ibm/gpfs.py: 'mmdelfileset', '%s', '%s', '-f'
-mmdelfileset: CommandFilter, /usr/lpp/mmfs/bin/mmdelfileset, root
+mmdelfileset: CommandFilter, mmdelfileset, root
 # manila/share/drivers/ibm/gpfs.py: 'mmcrsnapshot', '%s', '%s', '-j', '%s'
-mmcrsnapshot: CommandFilter, /usr/lpp/mmfs/bin/mmcrsnapshot, root
+mmcrsnapshot: CommandFilter, mmcrsnapshot, root
 # manila/share/drivers/ibm/gpfs.py: 'mmdelsnapshot', '%s', '%s', '-j', '%s'
-mmdelsnapshot: CommandFilter, /usr/lpp/mmfs/bin/mmdelsnapshot, root
+mmdelsnapshot: CommandFilter, mmdelsnapshot, root
 # manila/share/drivers/ibm/gpfs.py: 'rsync', '-rp', '%s', '%s'
 rsync: CommandFilter, rsync, root
 # manila/share/drivers/ibm/gpfs.py: 'exportfs'
@@ -92,3 +136,18 @@ dbus-removeexport: RegExpFilter, dbus-send, root, dbus-send, --print-reply, --sy
 
 # manila/share/drivers/ganesha/manager.py:
 rmconf: RegExpFilter, sh, root, sh, -c, rm -f /.*/\*\.conf$
+
+# ZFS commands
+# manila/share/drivers/zfsonlinux/driver.py
+# manila/share/drivers/zfsonlinux/utils.py
+zpool: CommandFilter, zpool, root
+
+# manila/share/drivers/zfsonlinux/driver.py
+# manila/share/drivers/zfsonlinux/utils.py
+zfs: CommandFilter, zfs, root
+
+# manila/data/utils.py: 'ls', '-pA1', '--group-directories-first', '%s'
+ls: CommandFilter, ls, root
+
+# manila/data/utils.py: 'touch', '--reference=%s', '%s'
+touch: CommandFilter, touch, root

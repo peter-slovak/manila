@@ -13,13 +13,15 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from tempest import test  # noqa
-from tempest_lib import exceptions as lib_exc  # noqa
+import ddt
+from tempest.lib import exceptions as lib_exc
+from tempest import test
 
 from manila_tempest_tests import clients_share as clients
 from manila_tempest_tests.tests.api import base
 
 
+@ddt.ddt
 class ServicesAdminNegativeTest(base.BaseSharesAdminTest):
 
     @classmethod
@@ -45,7 +47,13 @@ class ServicesAdminNegativeTest(base.BaseSharesAdminTest):
         # so do not take it in account.
         for service in services + services_fake:
             service["updated_at"] = "removed_possible_difference"
-        self.assertEqual(services, services_fake)
+
+        msg = ('Unexpected service list. Expected %s, got %s.' %
+               (services, services_fake))
+        self.assertEqual(sorted(services, key=lambda service: service['id']),
+                         sorted(services_fake,
+                                key=lambda service: service['id']),
+                         msg)
 
     @test.attr(type=["gate", "smoke", "negative", ])
     def test_get_service_by_invalid_host(self):
@@ -76,3 +84,18 @@ class ServicesAdminNegativeTest(base.BaseSharesAdminTest):
         params = {'state': 'fake_state'}
         services_fake = self.shares_client.list_services(params)
         self.assertEqual(0, len(services_fake))
+
+    @test.attr(type=["gate", "smoke", "negative", ])
+    @ddt.data(
+        ('os-services', '2.7'),
+        ('services', '2.6'),
+        ('services', '2.0'),
+    )
+    @ddt.unpack
+    @base.skip_if_microversion_not_supported("2.7")
+    def test_list_services_with_wrong_versions(self, url, version):
+        self.assertRaises(
+            lib_exc.NotFound,
+            self.shares_v2_client.list_services,
+            version=version, url=url,
+        )

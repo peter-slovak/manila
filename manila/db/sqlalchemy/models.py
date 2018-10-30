@@ -22,7 +22,6 @@ SQLAlchemy models for Manila data.
 from oslo_config import cfg
 from oslo_db.sqlalchemy import models
 from oslo_log import log
-import six
 from sqlalchemy import Column, Integer, String, schema
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import orm
@@ -45,7 +44,7 @@ class ManilaBase(models.ModelBase,
 
     def to_dict(self):
         model_dict = {}
-        for k, v in six.iteritems(self):
+        for k, v in self.items():
             if not issubclass(type(v), ManilaBase):
                 model_dict[k] = v
         return model_dict
@@ -190,7 +189,7 @@ class Share(BASE, ManilaBase):
     __tablename__ = 'shares'
     _extra_keys = ['name', 'export_location', 'export_locations', 'status',
                    'host', 'share_server_id', 'share_network_id',
-                   'availability_zone']
+                   'availability_zone', 'access_rules_status']
 
     @property
     def name(self):
@@ -202,11 +201,24 @@ class Share(BASE, ManilaBase):
             return self.instance.export_location
 
     @property
+    def is_busy(self):
+        # Make sure share is not busy, i.e., not part of a migration
+        if self.task_state in constants.BUSY_TASK_STATES:
+            return True
+        return False
+
+    @property
     def export_locations(self):
-        # TODO(u_glide): Return a map with lists of locations per AZ when
-        # replication functionality will be implemented.
+        # TODO(gouthamr): Return AZ specific export locations for replicated
+        # shares.
+        # NOTE(gouthamr): For a replicated share, export locations of the
+        # 'active' instances are chosen, if 'available'.
         all_export_locations = []
-        for instance in self.instances:
+        select_instances = list(filter(
+            lambda x: x['replica_state'] == constants.REPLICA_STATE_ACTIVE,
+            self.instances)) or self.instances
+
+        for instance in select_instances:
             if instance['status'] == constants.STATUS_AVAILABLE:
                 for export_location in instance.export_locations:
                     all_export_locations.append(export_location['path'])
@@ -233,19 +245,51 @@ class Share(BASE, ManilaBase):
         return self.__getattr__('share_server_id')
 
     @property
+    def has_replicas(self):
+        if len(self.instances) > 1:
+            # NOTE(gouthamr): The 'primary' instance of a replicated share
+            # has a 'replica_state' set to 'active'. Only the secondary replica
+            # instances need to be regarded as true 'replicas' by users.
+            replicas = (list(filter(lambda x: x['replica_state'] is not None,
+                                    self.instances)))
+            return len(replicas) > 1
+        return False
+
+    @property
     def instance(self):
-        # NOTE(ganso): We prefer instances with AVAILABLE status,
-        # and we also prefer to show any other status than CREATING
+        # NOTE(gouthamr): The order of preference: status 'replication_change',
+        # followed  by 'available' and 'error'. If replicated share and
+        # not undergoing a 'replication_change', only 'active' instances are
+        # preferred.
         result = None
         if len(self.instances) > 0:
-            for instance in self.instances:
-                if instance.status == constants.STATUS_AVAILABLE:
-                    return instance
-                elif instance.status == constants.STATUS_CREATING:
-                    result = instance
-            if result is None:
-                    result = self.instances[0]
+            order = (constants.STATUS_REPLICATION_CHANGE,
+                     constants.STATUS_MIGRATING, constants.STATUS_AVAILABLE,
+                     constants.STATUS_ERROR)
+            other_statuses = (
+                [x['status'] for x in self.instances if
+                 x['status'] not in order and
+                 x['status'] not in constants.TRANSITIONAL_STATUSES]
+            )
+            order = (order + tuple(other_statuses) +
+                     constants.TRANSITIONAL_STATUSES)
+            sorted_instances = sorted(
+                self.instances, key=lambda x: order.index(x['status']))
+
+            select_instances = sorted_instances
+            if (select_instances[0]['status'] !=
+                    constants.STATUS_REPLICATION_CHANGE):
+                select_instances = (
+                    list(filter(lambda x: x['replica_state'] ==
+                                constants.REPLICA_STATE_ACTIVE,
+                                sorted_instances)) or sorted_instances
+                )
+            result = select_instances[0]
         return result
+
+    @property
+    def access_rules_status(self):
+        return get_access_rules_status(self.instances)
 
     id = Column(String(36), primary_key=True)
     deleted = Column(String(36), default='False')
@@ -257,6 +301,7 @@ class Share(BASE, ManilaBase):
     display_description = Column(String(255))
     snapshot_id = Column(String(36))
     snapshot_support = Column(Boolean, default=True)
+    replication_type = Column(String(255), nullable=True)
     share_proto = Column(String(255))
     share_type_id = Column(String(36), ForeignKey('share_types.id'),
                            nullable=True)
@@ -290,7 +335,8 @@ class Share(BASE, ManilaBase):
 class ShareInstance(BASE, ManilaBase):
     __tablename__ = 'share_instances'
 
-    _extra_keys = ['name', 'export_location', 'availability_zone']
+    _extra_keys = ['name', 'export_location', 'availability_zone',
+                   'replica_state']
     _proxified_properties = ('user_id', 'project_id', 'size',
                              'display_name', 'display_description',
                              'snapshot_id', 'share_proto', 'share_type_id',
@@ -320,9 +366,26 @@ class ShareInstance(BASE, ManilaBase):
     deleted = Column(String(36), default='False')
     host = Column(String(255))
     status = Column(String(255))
+
+    ACCESS_STATUS_PRIORITIES = {
+        constants.STATUS_ACTIVE: 0,
+        constants.STATUS_OUT_OF_SYNC: 1,
+        constants.STATUS_UPDATING: 2,
+        constants.STATUS_UPDATING_MULTIPLE: 3,
+        constants.STATUS_ERROR: 4,
+    }
+
+    access_rules_status = Column(Enum(constants.STATUS_ACTIVE,
+                                      constants.STATUS_OUT_OF_SYNC,
+                                      constants.STATUS_UPDATING,
+                                      constants.STATUS_UPDATING_MULTIPLE,
+                                      constants.STATUS_ERROR),
+                                 default=constants.STATUS_ACTIVE)
+
     scheduled_at = Column(DateTime)
     launched_at = Column(DateTime)
     terminated_at = Column(DateTime)
+    replica_state = Column(String(255), nullable=True)
 
     availability_zone_id = Column(String(36),
                                   ForeignKey('availability_zones.id'),
@@ -356,13 +419,52 @@ class ShareInstance(BASE, ManilaBase):
 
 
 class ShareInstanceExportLocations(BASE, ManilaBase):
-    """Represents export locations of shares."""
+    """Represents export locations of share instances."""
     __tablename__ = 'share_instance_export_locations'
 
+    _extra_keys = ['el_metadata', ]
+
+    @property
+    def el_metadata(self):
+        el_metadata = {}
+        for meta in self._el_metadata_bare:  # pylint: disable=E1101
+            el_metadata[meta['key']] = meta['value']
+        return el_metadata
+
     id = Column(Integer, primary_key=True)
+    uuid = Column(String(36), nullable=False, unique=True)
     share_instance_id = Column(
         String(36), ForeignKey('share_instances.id'), nullable=False)
     path = Column(String(2000))
+    is_admin_only = Column(Boolean, default=False, nullable=False)
+
+
+class ShareInstanceExportLocationsMetadata(BASE, ManilaBase):
+    """Represents export location metadata of share instances."""
+    __tablename__ = "share_instance_export_locations_metadata"
+
+    _extra_keys = ['export_location_uuid', ]
+
+    id = Column(Integer, primary_key=True)
+    export_location_id = Column(
+        Integer,
+        ForeignKey("share_instance_export_locations.id"), nullable=False)
+    key = Column(String(255), nullable=False)
+    value = Column(String(1023), nullable=False)
+    export_location = orm.relationship(
+        ShareInstanceExportLocations,
+        backref="_el_metadata_bare",
+        foreign_keys=export_location_id,
+        lazy='immediate',
+        primaryjoin="and_("
+                    "%(cls_name)s.export_location_id == "
+                    "ShareInstanceExportLocations.id,"
+                    "%(cls_name)s.deleted == 0)" % {
+                        "cls_name": "ShareInstanceExportLocationsMetadata"})
+
+    @property
+    def export_location_uuid(self):
+        return self.export_location.uuid  # pylint: disable=E1101
 
 
 class ShareTypes(BASE, ManilaBase):
@@ -431,26 +533,6 @@ class ShareAccessMapping(BASE, ManilaBase):
     """Represents access to share."""
     __tablename__ = 'share_access_map'
 
-    @property
-    def state(self):
-        state = ShareInstanceAccessMapping.STATE_NEW
-
-        if len(self.instance_mappings) > 0:
-            state = ShareInstanceAccessMapping.STATE_ACTIVE
-            priorities = ShareInstanceAccessMapping.STATE_PRIORITIES
-
-            for mapping in self.instance_mappings:
-                priority = priorities.get(
-                    mapping['state'], ShareInstanceAccessMapping.STATE_ERROR)
-
-                if priority > priorities.get(state):
-                    state = mapping['state']
-
-                if state == ShareInstanceAccessMapping.STATE_ERROR:
-                    break
-
-        return state
-
     id = Column(String(36), primary_key=True)
     deleted = Column(String(36), default='False')
     share_id = Column(String(36), ForeignKey('shares.id'))
@@ -471,39 +553,54 @@ class ShareAccessMapping(BASE, ManilaBase):
         )
     )
 
+    @property
+    def state(self):
+        instances = [im.instance for im in self.instance_mappings]
+        access_rules_status = get_access_rules_status(instances)
+
+        if access_rules_status in (
+                constants.STATUS_OUT_OF_SYNC,
+                constants.STATUS_UPDATING,
+                constants.STATUS_UPDATING_MULTIPLE):
+            return constants.STATUS_NEW
+        else:
+            return access_rules_status
+
 
 class ShareInstanceAccessMapping(BASE, ManilaBase):
     """Represents access to individual share instances."""
-    STATE_NEW = constants.STATUS_NEW
-    STATE_ACTIVE = constants.STATUS_ACTIVE
-    STATE_DELETING = constants.STATUS_DELETING
-    STATE_DELETED = constants.STATUS_DELETED
-    STATE_ERROR = constants.STATUS_ERROR
-
-    # NOTE(u_glide): State with greatest priority becomes a state of access
-    # rule
-    STATE_PRIORITIES = {
-        STATE_ACTIVE: 0,
-        STATE_NEW: 1,
-        STATE_DELETED: 2,
-        STATE_DELETING: 3,
-        STATE_ERROR: 4
-    }
 
     __tablename__ = 'share_instance_access_map'
     id = Column(String(36), primary_key=True)
     deleted = Column(String(36), default='False')
     share_instance_id = Column(String(36), ForeignKey('share_instances.id'))
     access_id = Column(String(36), ForeignKey('share_access_map.id'))
-    state = Column(Enum(STATE_NEW, STATE_ACTIVE,
-                        STATE_DELETING, STATE_DELETED, STATE_ERROR),
-                   default=STATE_NEW)
+
+    instance = orm.relationship(
+        "ShareInstance",
+        lazy='immediate',
+        primaryjoin=(
+            'and_('
+            'ShareInstanceAccessMapping.share_instance_id == '
+            'ShareInstance.id, '
+            'ShareInstanceAccessMapping.deleted == "False")'
+        )
+    )
 
 
 class ShareSnapshot(BASE, ManilaBase):
     """Represents a snapshot of a share."""
     __tablename__ = 'share_snapshots'
-    _extra_keys = ['name', 'share_name', 'status', 'progress']
+    _extra_keys = ['name', 'share_name', 'status', 'progress',
+                   'provider_location', 'aggregate_status']
+
+    def __getattr__(self, item):
+        proxified_properties = ('status', 'progress', 'provider_location')
+
+        if item in proxified_properties:
+            return getattr(self.instance, item, None)
+
+        raise AttributeError(item)
 
     @property
     def name(self):
@@ -514,19 +611,51 @@ class ShareSnapshot(BASE, ManilaBase):
         return CONF.share_name_template % self.share_id
 
     @property
-    def status(self):
-        if self.instance:
-            return self.instance.status
-
-    @property
-    def progress(self):
-        if self.instance:
-            return self.instance.progress
-
-    @property
     def instance(self):
+        result = None
         if len(self.instances) > 0:
-            return self.instances[0]
+            def qualified_replica(x):
+                preferred_statuses = (constants.REPLICA_STATE_ACTIVE,)
+                return x['replica_state'] in preferred_statuses
+
+            replica_snapshots = list(filter(
+                lambda x: qualified_replica(x.share_instance), self.instances))
+
+            snapshot_instances = replica_snapshots or self.instances
+            result = snapshot_instances[0]
+
+        return result
+
+    @property
+    def aggregate_status(self):
+        """Get the aggregated 'status' of all instances.
+
+        A snapshot is supposed to be truly 'available' when it is available
+        across all of the share instances of the parent share object. In
+        case of replication, we only consider replicas (share instances)
+        that are in 'in_sync' replica_state.
+        """
+
+        def qualified_replica(x):
+            preferred_statuses = (constants.REPLICA_STATE_ACTIVE,
+                                  constants.REPLICA_STATE_IN_SYNC)
+            return x['replica_state'] in preferred_statuses
+
+        replica_snapshots = list(filter(
+            lambda x: qualified_replica(x['share_instance']), self.instances))
+
+        if not replica_snapshots:
+            return self.status
+
+        order = (constants.STATUS_DELETING, constants.STATUS_CREATING,
+                 constants.STATUS_ERROR, constants.STATUS_AVAILABLE)
+        other_statuses = [x['status'] for x in self.instances if
+                          x['status'] not in order]
+        order = (order + tuple(other_statuses))
+
+        sorted_instances = sorted(
+            replica_snapshots, key=lambda x: order.index(x['status']))
+        return sorted_instances[0].status
 
     id = Column(String(36), primary_key=True)
     deleted = Column(String(36), default='False')
@@ -584,8 +713,10 @@ class ShareSnapshotInstance(BASE, ManilaBase):
         String(36), ForeignKey('share_instances.id'), nullable=False)
     status = Column(String(255))
     progress = Column(String(255))
+    provider_location = Column(String(255))
     share_instance = orm.relationship(
         ShareInstance, backref="snapshot_instances",
+        lazy='immediate',
         primaryjoin=(
             'and_('
             'ShareSnapshotInstance.share_instance_id == ShareInstance.id,'
@@ -691,8 +822,8 @@ class ShareServer(BASE, ManilaBase):
 
     @property
     def backend_details(self):
-        return dict((model['key'], model['value'])
-                    for model in self._backend_details)
+        return {model['key']: model['value']
+                for model in self._backend_details}
 
     _extra_keys = ['backend_details']
 
@@ -727,7 +858,12 @@ class NetworkAllocation(BASE, ManilaBase):
     __tablename__ = 'network_allocations'
     id = Column(String(36), primary_key=True, nullable=False)
     deleted = Column(String(36), default='False')
+    label = Column(String(255), nullable=True)
     ip_address = Column(String(64), nullable=True)
+    ip_version = Column(Integer, nullable=True)
+    cidr = Column(String(64), nullable=True)
+    network_type = Column(String(32), nullable=True)
+    segmentation_id = Column(Integer, nullable=True)
     mac_address = Column(String(32), nullable=True)
     share_server_id = Column(String(36), ForeignKey('share_servers.id'),
                              nullable=False)
@@ -857,3 +993,27 @@ def register_models():
     engine = create_engine(CONF.database.connection, echo=False)
     for model in models:
         model.metadata.create_all(engine)
+
+
+def get_access_rules_status(instances):
+    share_access_status = constants.STATUS_ACTIVE
+
+    if len(instances) == 0:
+        return share_access_status
+
+    priorities = ShareInstance.ACCESS_STATUS_PRIORITIES
+
+    for instance in instances:
+        if instance['status'] != constants.STATUS_AVAILABLE:
+            continue
+
+        instance_access_status = instance['access_rules_status']
+
+        if priorities.get(instance_access_status) > priorities.get(
+                share_access_status):
+            share_access_status = instance_access_status
+
+        if share_access_status == constants.STATUS_ERROR:
+            break
+
+    return share_access_status

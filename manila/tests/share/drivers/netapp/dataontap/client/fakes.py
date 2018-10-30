@@ -13,6 +13,10 @@
 #    under the License.
 
 from lxml import etree
+import mock
+from six.moves import urllib
+
+from manila.share.drivers.netapp.dataontap.client import api
 
 
 CONNECTION_INFO = {
@@ -23,6 +27,11 @@ CONNECTION_INFO = {
     'password': 'passw0rd'
 }
 
+CLUSTER_NAME = 'fake_cluster'
+REMOTE_CLUSTER_NAME = 'fake_cluster_2'
+CLUSTER_ADDRESS_1 = 'fake_cluster_address'
+CLUSTER_ADDRESS_2 = 'fake_cluster_address_2'
+VERSION = 'NetApp Release 8.2.1 Cluster-Mode: Fri Mar 21 14:25:07 PDT 2014'
 NODE_NAME = 'fake_node'
 VSERVER_NAME = 'fake_vserver'
 VSERVER_NAME_2 = 'fake_vserver_2'
@@ -65,9 +74,26 @@ NETMASK = '255.255.255.0'
 NET_ALLOCATION_ID = 'fake_allocation_id'
 LIF_NAME_TEMPLATE = 'os_%(net_allocation_id)s'
 LIF_NAME = LIF_NAME_TEMPLATE % {'net_allocation_id': NET_ALLOCATION_ID}
-IPSPACE = 'fake_ipspace'
+IPSPACE_NAME = 'fake_ipspace'
 BROADCAST_DOMAIN = 'fake_domain'
 MTU = 9000
+SM_SOURCE_VSERVER = 'fake_source_vserver'
+SM_SOURCE_VOLUME = 'fake_source_volume'
+SM_DEST_VSERVER = 'fake_destination_vserver'
+SM_DEST_VOLUME = 'fake_destination_volume'
+
+
+IPSPACES = [{
+    'uuid': 'fake_uuid',
+    'ipspace': IPSPACE_NAME,
+    'id': 'fake_id',
+    'broadcast-domains': ['OpenStack'],
+    'ports': [NODE_NAME + ':' + VLAN_PORT],
+    'vservers': [
+        IPSPACE_NAME,
+        VSERVER_NAME,
+    ]
+}]
 
 EMS_MESSAGE = {
     'computer-name': 'fake_host',
@@ -88,6 +114,20 @@ NO_RECORDS_RESPONSE = etree.XML("""
 
 PASSED_RESPONSE = etree.XML("""
   <results status="passed" />
+""")
+
+INVALID_GET_ITER_RESPONSE_NO_ATTRIBUTES = etree.XML("""
+  <results status="passed">
+    <num-records>1</num-records>
+    <next-tag>fake_tag</next-tag>
+  </results>
+""")
+
+INVALID_GET_ITER_RESPONSE_NO_RECORDS = etree.XML("""
+  <results status="passed">
+    <attributes-list/>
+    <next-tag>fake_tag</next-tag>
+  </results>
 """)
 
 VSERVER_GET_ITER_RESPONSE = etree.XML("""
@@ -112,6 +152,18 @@ VSERVER_GET_ROOT_VOLUME_NAME_RESPONSE = etree.XML("""
     <num-records>1</num-records>
   </results>
 """ % {'root_volume': ROOT_VOLUME_NAME, 'fake_vserver': VSERVER_NAME})
+
+VSERVER_GET_IPSPACE_NAME_RESPONSE = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <vserver-info>
+        <ipspace>%(ipspace)s</ipspace>
+        <vserver-name>%(fake_vserver)s</vserver-name>
+      </vserver-info>
+    </attributes-list>
+    <num-records>1</num-records>
+  </results>
+""" % {'ipspace': IPSPACE_NAME, 'fake_vserver': VSERVER_NAME})
 
 VSERVER_GET_RESPONSE = etree.XML("""
   <results status="passed">
@@ -178,6 +230,21 @@ ONTAPI_VERSION_RESPONSE = etree.XML("""
     <minor-version>19</minor-version>
   </results>
 """)
+
+SYSTEM_GET_VERSION_RESPONSE = etree.XML("""
+  <results status="passed">
+    <build-timestamp>1395426307</build-timestamp>
+    <is-clustered>true</is-clustered>
+    <version>%(version)s</version>
+    <version-tuple>
+      <system-version-tuple>
+        <generation>8</generation>
+        <major>2</major>
+        <minor>1</minor>
+      </system-version-tuple>
+    </version-tuple>
+  </results>
+""" % {'version': VERSION})
 
 LICENSE_V2_LIST_INFO_RESPONSE = etree.XML("""
   <results status="passed">
@@ -447,6 +514,7 @@ NET_PORT_GET_ITER_BROADCAST_DOMAIN_RESPONSE = etree.XML("""
   <results status="passed">
     <attributes-list>
       <net-port-info>
+        <ipspace>%(ipspace)s</ipspace>
         <broadcast-domain>%(domain)s</broadcast-domain>
         <node>%(node)s</node>
         <port>%(port)s</port>
@@ -454,19 +522,25 @@ NET_PORT_GET_ITER_BROADCAST_DOMAIN_RESPONSE = etree.XML("""
     </attributes-list>
     <num-records>1</num-records>
   </results>
-""" % {'domain': BROADCAST_DOMAIN, 'node': NODE_NAME, 'port': PORT})
+""" % {
+    'domain': BROADCAST_DOMAIN,
+    'node': NODE_NAME,
+    'port': PORT,
+    'ipspace': IPSPACE_NAME,
+})
 
 NET_PORT_GET_ITER_BROADCAST_DOMAIN_MISSING_RESPONSE = etree.XML("""
   <results status="passed">
     <attributes-list>
       <net-port-info>
+        <ipspace>%(ipspace)s</ipspace>
         <node>%(node)s</node>
         <port>%(port)s</port>
       </net-port-info>
     </attributes-list>
     <num-records>1</num-records>
   </results>
-""" % {'node': NODE_NAME, 'port': PORT})
+""" % {'node': NODE_NAME, 'port': PORT, 'ipspace': IPSPACE_NAME})
 
 NET_PORT_BROADCAST_DOMAIN_GET_ITER_RESPONSE = etree.XML("""
   <results status="passed">
@@ -478,7 +552,35 @@ NET_PORT_BROADCAST_DOMAIN_GET_ITER_RESPONSE = etree.XML("""
     </attributes-list>
     <num-records>1</num-records>
   </results>
-""" % {'domain': BROADCAST_DOMAIN, 'ipspace': IPSPACE})
+""" % {'domain': BROADCAST_DOMAIN, 'ipspace': IPSPACE_NAME})
+
+NET_IPSPACES_GET_ITER_RESPONSE = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <net-ipspaces-info>
+        <broadcast-domains>
+          <broadcast-domain-name>OpenStack</broadcast-domain-name>
+        </broadcast-domains>
+        <id>fake_id</id>
+        <ipspace>%(ipspace)s</ipspace>
+        <ports>
+          <net-qualified-port-name>%(node)s:%(port)s</net-qualified-port-name>
+        </ports>
+        <uuid>fake_uuid</uuid>
+        <vservers>
+          <vserver-name>%(ipspace)s</vserver-name>
+          <vserver-name>%(vserver)s</vserver-name>
+        </vservers>
+      </net-ipspaces-info>
+    </attributes-list>
+    <num-records>1</num-records>
+  </results>
+""" % {
+    'ipspace': IPSPACE_NAME,
+    'node': NODE_NAME,
+    'port': VLAN_PORT,
+    'vserver': VSERVER_NAME
+})
 
 NET_INTERFACE_GET_ITER_RESPONSE = etree.XML("""
   <results status="passed">
@@ -1205,6 +1307,55 @@ SNAPSHOT_MULTIDELETE_ERROR_RESPONSE = etree.XML("""
   </results>
 """ % {'volume': SHARE_NAME})
 
+SNAPSHOT_GET_ITER_DELETED_RESPONSE = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <snapshot-info>
+        <name>deleted_manila_%(snap)s</name>
+        <volume>%(volume)s</volume>
+        <vserver>%(vserver)s</vserver>
+      </snapshot-info>
+    </attributes-list>
+    <num-records>1</num-records>
+  </results>
+""" % {
+    'snap': SNAPSHOT_NAME,
+    'volume': SHARE_NAME,
+    'vserver': VSERVER_NAME,
+})
+
+CIFS_SHARE_ACCESS_CONTROL_GET_ITER = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <cifs-share-access-control>
+        <permission>full_control</permission>
+        <share>%(volume)s</share>
+        <user-or-group>Administrator</user-or-group>
+        <vserver>manila_svm_cifs</vserver>
+      </cifs-share-access-control>
+      <cifs-share-access-control>
+        <permission>change</permission>
+        <share>%(volume)s</share>
+        <user-or-group>Administrators</user-or-group>
+        <vserver>manila_svm_cifs</vserver>
+      </cifs-share-access-control>
+      <cifs-share-access-control>
+        <permission>read</permission>
+        <share>%(volume)s</share>
+        <user-or-group>Power Users</user-or-group>
+        <vserver>manila_svm_cifs</vserver>
+      </cifs-share-access-control>
+      <cifs-share-access-control>
+        <permission>no_access</permission>
+        <share>%(volume)s</share>
+        <user-or-group>Users</user-or-group>
+        <vserver>manila_svm_cifs</vserver>
+      </cifs-share-access-control>
+    </attributes-list>
+    <num-records>4</num-records>
+  </results>
+""" % {'volume': SHARE_NAME})
+
 NFS_EXPORT_RULES = ('10.10.10.10', '10.10.10.20')
 
 NFS_EXPORTFS_LIST_RULES_2_NO_RULES_RESPONSE = etree.XML("""
@@ -1323,6 +1474,116 @@ STORAGE_DISK_GET_ITER_RESPONSE = etree.XML("""
     <num-records>1</num-records>
   </results>
 """ % SHARE_AGGREGATE_DISK_TYPE)
+
+STORAGE_DISK_GET_ITER_RESPONSE_PAGE_1 = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.16</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.17</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.18</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.19</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.20</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.21</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.22</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.24</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.25</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.26</disk-name>
+      </storage-disk-info>
+    </attributes-list>
+    <next-tag>next_tag_1</next-tag>
+    <num-records>10</num-records>
+  </results>
+""")
+
+STORAGE_DISK_GET_ITER_RESPONSE_PAGE_2 = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.27</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.28</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.29</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.32</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.16</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.17</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.18</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.19</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.20</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.21</disk-name>
+      </storage-disk-info>
+    </attributes-list>
+    <next-tag>next_tag_2</next-tag>
+    <num-records>10</num-records>
+  </results>
+""")
+
+STORAGE_DISK_GET_ITER_RESPONSE_PAGE_3 = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.22</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.24</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.25</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.26</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.27</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.28</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.29</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.32</disk-name>
+      </storage-disk-info>
+    </attributes-list>
+    <num-records>8</num-records>
+  </results>
+""")
 
 GET_AGGREGATE_FOR_VOLUME_RESPONSE = etree.XML("""
   <results status="passed">
@@ -1462,6 +1723,32 @@ VOLUME_GET_ITER_VOLUME_TO_MANAGE_RESPONSE = etree.XML("""
     'size': SHARE_SIZE,
 })
 
+CLONE_CHILD_1 = 'fake_child_1'
+CLONE_CHILD_2 = 'fake_child_2'
+VOLUME_GET_ITER_CLONE_CHILDREN_RESPONSE = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <volume-attributes>
+        <volume-id-attributes>
+          <name>%(clone1)s</name>
+          <owning-vserver-name>%(vserver)s</owning-vserver-name>
+        </volume-id-attributes>
+      </volume-attributes>
+      <volume-attributes>
+        <volume-id-attributes>
+          <name>%(clone2)s</name>
+          <owning-vserver-name>%(vserver)s</owning-vserver-name>
+        </volume-id-attributes>
+      </volume-attributes>
+    </attributes-list>
+    <num-records>2</num-records>
+  </results>
+""" % {
+    'vserver': VSERVER_NAME,
+    'clone1': CLONE_CHILD_1,
+    'clone2': CLONE_CHILD_2,
+})
+
 SIS_GET_ITER_RESPONSE = etree.XML("""
   <results status="passed">
     <attributes-list>
@@ -1477,3 +1764,194 @@ SIS_GET_ITER_RESPONSE = etree.XML("""
     'vserver': VSERVER_NAME,
     'volume': SHARE_NAME,
 })
+
+CLUSTER_PEER_GET_ITER_RESPONSE = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <cluster-peer-info>
+        <active-addresses>
+          <remote-inet-address>%(addr1)s</remote-inet-address>
+          <remote-inet-address>%(addr2)s</remote-inet-address>
+        </active-addresses>
+        <availability>available</availability>
+        <cluster-name>%(cluster)s</cluster-name>
+        <cluster-uuid>fake_uuid</cluster-uuid>
+        <peer-addresses>
+          <remote-inet-address>%(addr1)s</remote-inet-address>
+        </peer-addresses>
+        <remote-cluster-name>%(remote_cluster)s</remote-cluster-name>
+        <serial-number>fake_serial_number</serial-number>
+        <timeout>60</timeout>
+      </cluster-peer-info>
+    </attributes-list>
+    <num-records>1</num-records>
+  </results>
+""" % {
+    'addr1': CLUSTER_ADDRESS_1,
+    'addr2': CLUSTER_ADDRESS_2,
+    'cluster': CLUSTER_NAME,
+    'remote_cluster': REMOTE_CLUSTER_NAME,
+})
+
+CLUSTER_PEER_POLICY_GET_RESPONSE = etree.XML("""
+  <results status="passed">
+    <attributes>
+      <cluster-peer-policy>
+        <is-unauthenticated-access-permitted>false</is-unauthenticated-access-permitted>
+        <passphrase-minimum-length>8</passphrase-minimum-length>
+      </cluster-peer-policy>
+    </attributes>
+  </results>
+""")
+
+VSERVER_PEER_GET_ITER_RESPONSE = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <vserver-peer-info>
+        <applications>
+          <vserver-peer-application>snapmirror</vserver-peer-application>
+        </applications>
+        <peer-cluster>%(cluster)s</peer-cluster>
+        <peer-state>peered</peer-state>
+        <peer-vserver>%(vserver2)s</peer-vserver>
+        <vserver>%(vserver1)s</vserver>
+      </vserver-peer-info>
+    </attributes-list>
+    <num-records>2</num-records>
+  </results>
+""" % {
+    'cluster': CLUSTER_NAME,
+    'vserver1': VSERVER_NAME,
+    'vserver2': VSERVER_NAME_2
+})
+
+SNAPMIRROR_GET_ITER_RESPONSE = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <snapmirror-info>
+        <destination-volume>fake_destination_volume</destination-volume>
+        <destination-volume-node>fake_destination_node</destination-volume-node>
+        <destination-vserver>fake_destination_vserver</destination-vserver>
+        <exported-snapshot>fake_snapshot</exported-snapshot>
+        <exported-snapshot-timestamp>1442701782</exported-snapshot-timestamp>
+        <is-constituent>false</is-constituent>
+        <is-healthy>true</is-healthy>
+        <lag-time>2187</lag-time>
+        <last-transfer-duration>109</last-transfer-duration>
+        <last-transfer-end-timestamp>1442701890</last-transfer-end-timestamp>
+        <last-transfer-from>test:manila</last-transfer-from>
+        <last-transfer-size>1171456</last-transfer-size>
+        <last-transfer-type>initialize</last-transfer-type>
+        <max-transfer-rate>0</max-transfer-rate>
+        <mirror-state>snapmirrored</mirror-state>
+        <newest-snapshot>fake_snapshot</newest-snapshot>
+        <newest-snapshot-timestamp>1442701782</newest-snapshot-timestamp>
+        <policy>DPDefault</policy>
+        <relationship-control-plane>v2</relationship-control-plane>
+        <relationship-id>ea8bfcc6-5f1d-11e5-8446-123478563412</relationship-id>
+        <relationship-status>idle</relationship-status>
+        <relationship-type>data_protection</relationship-type>
+        <schedule>daily</schedule>
+        <source-volume>fake_source_volume</source-volume>
+        <source-vserver>fake_source_vserver</source-vserver>
+        <vserver>fake_destination_vserver</vserver>
+      </snapmirror-info>
+    </attributes-list>
+    <num-records>1</num-records>
+  </results>
+""")
+
+SNAPMIRROR_GET_ITER_FILTERED_RESPONSE = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <snapmirror-info>
+        <destination-vserver>fake_destination_vserver</destination-vserver>
+        <destination-volume>fake_destination_volume</destination-volume>
+        <is-healthy>true</is-healthy>
+        <mirror-state>snapmirrored</mirror-state>
+        <schedule>daily</schedule>
+        <source-vserver>fake_source_vserver</source-vserver>
+        <source-volume>fake_source_volume</source-volume>
+      </snapmirror-info>
+    </attributes-list>
+    <num-records>1</num-records>
+  </results>
+""")
+
+SNAPMIRROR_INITIALIZE_RESULT = etree.XML("""
+  <results status="passed">
+    <result-status>succeeded</result-status>
+  </results>
+""")
+
+FAKE_VOL_XML = """<volume-info xmlns='http://www.netapp.com/filer/admin'>
+    <name>open123</name>
+    <state>online</state>
+    <size-total>0</size-total>
+    <size-used>0</size-used>
+    <size-available>0</size-available>
+    <is-inconsistent>false</is-inconsistent>
+    <is-invalid>false</is-invalid>
+    </volume-info>"""
+
+FAKE_XML1 = """<options>\
+<test1>abc</test1>\
+<test2>abc</test2>\
+</options>"""
+
+FAKE_XML2 = """<root><options>somecontent</options></root>"""
+
+FAKE_NA_ELEMENT = api.NaElement(etree.XML(FAKE_VOL_XML))
+
+FAKE_INVOKE_DATA = 'somecontent'
+
+FAKE_XML_STR = 'abc'
+
+FAKE_API_NAME = 'volume-get-iter'
+
+FAKE_API_NAME_ELEMENT = api.NaElement(FAKE_API_NAME)
+
+FAKE_NA_SERVER_STR = '127.0.0.1'
+
+FAKE_NA_SERVER = api.NaServer(FAKE_NA_SERVER_STR)
+
+FAKE_NA_SERVER_API_1_5 = api.NaServer(FAKE_NA_SERVER_STR)
+FAKE_NA_SERVER_API_1_5.set_vfiler('filer')
+FAKE_NA_SERVER_API_1_5.set_api_version(1, 5)
+
+
+FAKE_NA_SERVER_API_1_14 = api.NaServer(FAKE_NA_SERVER_STR)
+FAKE_NA_SERVER_API_1_14.set_vserver('server')
+FAKE_NA_SERVER_API_1_14.set_api_version(1, 14)
+
+
+FAKE_NA_SERVER_API_1_20 = api.NaServer(FAKE_NA_SERVER_STR)
+FAKE_NA_SERVER_API_1_20.set_vfiler('filer')
+FAKE_NA_SERVER_API_1_20.set_vserver('server')
+FAKE_NA_SERVER_API_1_20.set_api_version(1, 20)
+
+
+FAKE_QUERY = {'volume-attributes': None}
+
+FAKE_DES_ATTR = {'volume-attributes': ['volume-id-attributes',
+                                       'volume-space-attributes',
+                                       'volume-state-attributes',
+                                       'volume-qos-attributes']}
+
+FAKE_CALL_ARGS_LIST = [mock.call(80), mock.call(8088), mock.call(443),
+                       mock.call(8488)]
+
+FAKE_RESULT_API_ERR_REASON = api.NaElement('result')
+FAKE_RESULT_API_ERR_REASON.add_attr('errno', '000')
+FAKE_RESULT_API_ERR_REASON.add_attr('reason', 'fake_reason')
+
+FAKE_RESULT_API_ERRNO_INVALID = api.NaElement('result')
+FAKE_RESULT_API_ERRNO_INVALID.add_attr('errno', '000')
+
+FAKE_RESULT_API_ERRNO_VALID = api.NaElement('result')
+FAKE_RESULT_API_ERRNO_VALID.add_attr('errno', '14956')
+
+FAKE_RESULT_SUCCESS = api.NaElement('result')
+FAKE_RESULT_SUCCESS.add_attr('status', 'passed')
+
+FAKE_HTTP_OPENER = urllib.request.build_opener()

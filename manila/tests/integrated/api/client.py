@@ -122,7 +122,7 @@ class TestOpenStackClient(object):
                                 headers=headers)
 
         http_status = response.status
-        LOG.debug("%(auth_uri)s => code %(http_status)s" %
+        LOG.debug("%(auth_uri)s => code %(http_status)s.",
                   {"auth_uri": auth_uri, "http_status": http_status})
 
         if http_status == 401:
@@ -148,7 +148,7 @@ class TestOpenStackClient(object):
         response = self.request(full_uri, **kwargs)
 
         http_status = response.status
-        LOG.debug("%(relative_uri)s => code %(http_status)s" %
+        LOG.debug("%(relative_uri)s => code %(http_status)s.",
                   {"relative_uri": relative_uri, "http_status": http_status})
 
         if check_response_status:
@@ -166,11 +166,17 @@ class TestOpenStackClient(object):
 
     def _decode_json(self, response):
         body = response.read()
-        LOG.debug("Decoding JSON: %s" % (body))
+        LOG.debug("Decoding JSON: %s.", (body))
         if body:
             return jsonutils.loads(body)
         else:
             return ""
+
+    def api_options(self, relative_uri, **kwargs):
+        kwargs['method'] = 'OPTIONS'
+        kwargs.setdefault('check_response_status', [200])
+        response = self.api_request(relative_uri, **kwargs)
+        return self._decode_json(response)
 
     def api_get(self, relative_uri, **kwargs):
         kwargs.setdefault('check_response_status', [200])

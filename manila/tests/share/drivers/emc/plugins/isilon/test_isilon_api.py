@@ -19,6 +19,7 @@ import requests
 import requests_mock
 import six
 
+from manila import exception
 from manila.share.drivers.emc.plugins.isilon import isilon_api
 from manila import test
 
@@ -360,10 +361,11 @@ class IsilonApiTest(test.TestCase):
 
             self.assertEqual(expected_return_value, r)
             self.assertEqual(1, len(m.request_history))
-            expected_request_data = json.loads(
-                '{{"name": "{0}", "path": "{1}"}}'.format(
-                    share_name, share_path)
-            )
+            expected_request_data = {
+                'name': share_name,
+                'path': share_path,
+                'permissions': []
+            }
             self.assertEqual(expected_request_data,
                              json.loads(m.request_history[0].body))
 
@@ -378,7 +380,7 @@ class IsilonApiTest(test.TestCase):
         r = self.isilon_api.create_snapshot(snapshot_name, snapshot_path)
 
         self.assertEqual(1, len(m.request_history))
-        self.assertEqual(True, r)
+        self.assertTrue(r)
         expected_request_body = json.loads(
             '{{"name": "{0}", "path": "{1}"}}'
             .format(snapshot_name, snapshot_path)
@@ -433,7 +435,7 @@ class IsilonApiTest(test.TestCase):
             r = self.isilon_api.delete_nfs_share(share_number)
 
             self.assertEqual(1, len(m.request_history))
-            self.assertEqual(r, expected_return_value)
+            self.assertEqual(expected_return_value, r)
 
     @ddt.data((204, True), (404, False))
     def test_delete_smb_shares(self, data):
@@ -449,7 +451,7 @@ class IsilonApiTest(test.TestCase):
             r = self.isilon_api.delete_smb_share(share_name)
 
             self.assertEqual(1, len(m.request_history))
-            self.assertEqual(r, expected_return_value)
+            self.assertEqual(expected_return_value, r)
 
     @requests_mock.mock()
     def test_delete_snapshot(self, m):
@@ -468,6 +470,360 @@ class IsilonApiTest(test.TestCase):
 
         self.assertRaises(requests.exceptions.HTTPError,
                           self.isilon_api.delete_snapshot, "my_snapshot")
+
+    @requests_mock.mock()
+    def test_quota_create(self, m):
+        quota_path = '/ifs/manila/test'
+        quota_size = 256
+        self.assertEqual(0, len(m.request_history))
+        m.post(self._mock_url + '/platform/1/quota/quotas', status_code=201)
+
+        self.isilon_api.quota_create(quota_path, 'directory', quota_size)
+
+        self.assertEqual(1, len(m.request_history))
+        expected_request_json = {
+            'path': quota_path,
+            'type': 'directory',
+            'include_snapshots': False,
+            'thresholds_include_overhead': False,
+            'enforced': True,
+            'thresholds': {'hard': quota_size},
+        }
+        call_body = m.request_history[0].body
+        self.assertEqual(expected_request_json, json.loads(call_body))
+
+    @requests_mock.mock()
+    def test_quota_create__path_does_not_exist(self, m):
+        quota_path = '/ifs/test2'
+        self.assertEqual(0, len(m.request_history))
+        m.post(self._mock_url + '/platform/1/quota/quotas', status_code=400)
+
+        self.assertRaises(
+            requests.exceptions.HTTPError,
+            self.isilon_api.quota_create,
+            quota_path, 'directory', 2
+        )
+
+    @requests_mock.mock()
+    def test_quota_get(self, m):
+        self.assertEqual(0, len(m.request_history))
+        response_json = {'quotas': [{}]}
+        m.get(self._mock_url + '/platform/1/quota/quotas', json=response_json,
+              status_code=200)
+        quota_path = "/ifs/manila/test"
+        quota_type = "directory"
+
+        self.isilon_api.quota_get(quota_path, quota_type)
+
+        self.assertEqual(1, len(m.request_history))
+        request_query_string = m.request_history[0].qs
+        expected_query_string = {'path': [quota_path]}
+        self.assertEqual(expected_query_string, request_query_string)
+
+    @requests_mock.mock()
+    def test_quota_get__path_does_not_exist(self, m):
+        self.assertEqual(0, len(m.request_history))
+        m.get(self._mock_url + '/platform/1/quota/quotas', status_code=404)
+
+        response = self.isilon_api.quota_get(
+            '/ifs/does_not_exist', 'directory')
+
+        self.assertIsNone(response)
+
+    @requests_mock.mock()
+    def test_quota_modify(self, m):
+        self.assertEqual(0, len(m.request_history))
+        quota_id = "ADEF1G"
+        new_size = 1024
+        m.put('{0}/platform/1/quota/quotas/{1}'.format(
+            self._mock_url, quota_id), status_code=204)
+
+        self.isilon_api.quota_modify_size(quota_id, new_size)
+
+        self.assertEqual(1, len(m.request_history))
+        expected_request_body = {'thresholds': {'hard': new_size}}
+        request_body = m.request_history[0].body
+        self.assertEqual(expected_request_body, json.loads(request_body))
+
+    @requests_mock.mock()
+    def test_quota_modify__given_id_does_not_exist(self, m):
+        quota_id = 'ADE2F'
+        m.put('{0}/platform/1/quota/quotas/{1}'.format(
+            self._mock_url, quota_id), status_code=404)
+
+        self.assertRaises(
+            requests.exceptions.HTTPError,
+            self.isilon_api.quota_modify_size,
+            quota_id, 1024
+        )
+
+    @requests_mock.mock()
+    def test_quota_set__quota_already_exists(self, m):
+        self.assertEqual(0, len(m.request_history))
+        quota_path = '/ifs/manila/test'
+        quota_type = 'directory'
+        quota_size = 256
+        quota_id = 'AFE2C'
+        m.get('{0}/platform/1/quota/quotas'.format(
+            self._mock_url), json={'quotas': [{'id': quota_id}]},
+            status_code=200)
+        m.put(
+            '{0}/platform/1/quota/quotas/{1}'.format(self._mock_url, quota_id),
+            status_code=204
+        )
+
+        self.isilon_api.quota_set(quota_path, quota_type, quota_size)
+
+        expected_quota_modify_json = {'thresholds': {'hard': quota_size}}
+        quota_put_json = json.loads(m.request_history[1].body)
+        self.assertEqual(expected_quota_modify_json, quota_put_json)
+
+    @requests_mock.mock()
+    def test_quota_set__quota_does_not_already_exist(self, m):
+        self.assertEqual(0, len(m.request_history))
+        m.get('{0}/platform/1/quota/quotas'.format(
+            self._mock_url), status_code=404)
+        m.post('{0}/platform/1/quota/quotas'.format(self._mock_url),
+               status_code=201)
+        quota_path = '/ifs/manila/test'
+        quota_type = 'directory'
+        quota_size = 256
+
+        self.isilon_api.quota_set(quota_path, quota_type, quota_size)
+
+        # verify a call is made to create a quota
+        expected_create_json = {
+            six.text_type('path'): quota_path,
+            six.text_type('type'): 'directory',
+            six.text_type('include_snapshots'): False,
+            six.text_type('thresholds_include_overhead'): False,
+            six.text_type('enforced'): True,
+            six.text_type('thresholds'): {six.text_type('hard'): quota_size},
+        }
+        create_request_json = json.loads(m.request_history[1].body)
+        self.assertEqual(expected_create_json, create_request_json)
+
+    @requests_mock.mock()
+    def test_quota_set__path_does_not_already_exist(self, m):
+        m.get(self._mock_url + '/platform/1/quota/quotas', status_code=400)
+
+        e = self.assertRaises(
+            requests.exceptions.HTTPError,
+            self.isilon_api.quota_set,
+            '/ifs/does_not_exist', 'directory', 2048
+        )
+        self.assertEqual(400, e.response.status_code)
+
+    @ddt.data(
+        ('foouser', isilon_api.SmbPermission.rw),
+        ('testuser', isilon_api.SmbPermission.ro),
+    )
+    def test_smb_permission_add(self, data):
+        user, smb_permission = data
+        share_name = 'testshare'
+
+        with requests_mock.mock() as m:
+            papi_share_url = '{0}/platform/1/protocols/smb/shares/{1}'.format(
+                self._mock_url, share_name)
+            share_data = {
+                'shares': [
+                    {'permissions': []}
+                ]
+            }
+            m.get(papi_share_url, status_code=200, json=share_data)
+
+            auth_url = '{0}/platform/1/auth/mapping/users/lookup?user={1}' \
+                       ''.format(self._mock_url, user)
+            example_sid = 'SID:S-1-5-21'
+            sid_json = {
+                'id': example_sid,
+                'name': user,
+                'type': 'user'
+            }
+            auth_json = {'mapping': [
+                {'user': {'sid': sid_json}}
+            ]}
+            m.get(auth_url, status_code=200, json=auth_json)
+            m.put(papi_share_url)
+
+            self.isilon_api.smb_permissions_add(share_name, user,
+                                                smb_permission)
+
+            perms_put_request = m.request_history[2]
+            expected_perm_request_json = {
+                'permissions': [
+                    {'permission': smb_permission.value,
+                     'permission_type': 'allow',
+                     'trustee': sid_json
+                     }
+                ]
+            }
+            self.assertEqual(expected_perm_request_json,
+                             json.loads(perms_put_request.body))
+
+    @requests_mock.mock()
+    def test_smb_permission_add_with_multiple_users_found(self, m):
+        user = 'foouser'
+        smb_permission = isilon_api.SmbPermission.rw
+        share_name = 'testshare'
+        papi_share_url = '{0}/platform/1/protocols/smb/shares/{1}'.format(
+            self._mock_url, share_name)
+        share_data = {
+            'shares': [
+                {'permissions': []}
+            ]
+        }
+        m.get(papi_share_url, status_code=200, json=share_data)
+
+        auth_url = '{0}/platform/1/auth/mapping/users/lookup?user={1}' \
+                   ''.format(self._mock_url, user)
+        example_sid = 'SID:S-1-5-21'
+        sid_json = {
+            'id': example_sid,
+            'name': user,
+            'type': 'user'
+        }
+        auth_json = {'mapping': [
+            {'user': {'sid': sid_json}},
+            {'user': {'sid': sid_json}},
+        ]}
+        m.get(auth_url, status_code=200, json=auth_json)
+        m.put(papi_share_url)
+
+        self.assertRaises(exception.ShareBackendException,
+                          self.isilon_api.smb_permissions_add,
+                          share_name, user, smb_permission)
+
+    @requests_mock.mock()
+    def test_smb_permission_remove(self, m):
+
+        share_name = 'testshare'
+        user = 'testuser'
+
+        share_data = {
+            'permissions': [{
+                'permission': 'change',
+                'permission_type': 'allow',
+                'trustee': {
+                    'id': 'SID:S-1-5-21',
+                    'name': user,
+                    'type': 'user',
+                }
+            }]
+        }
+        papi_share_url = '{0}/platform/1/protocols/smb/shares/{1}'.format(
+            self._mock_url, share_name)
+        m.get(papi_share_url, status_code=200, json={'shares': [share_data]})
+        num_existing_perms = len(self.isilon_api.lookup_smb_share(share_name))
+        self.assertEqual(1, num_existing_perms)
+
+        m.put(papi_share_url)
+        self.isilon_api.smb_permissions_remove(share_name, user)
+
+        smb_put_request = m.request_history[2]
+        expected_body = {'permissions': []}
+        expected_body = json.dumps(expected_body)
+        self.assertEqual(expected_body, smb_put_request.body)
+
+    @requests_mock.mock()
+    def test_smb_permission_remove_with_multiple_existing_perms(self, m):
+
+        share_name = 'testshare'
+        user = 'testuser'
+
+        foouser_perms = {
+            'permission': 'change',
+            'permission_type': 'allow',
+            'trustee': {
+                'id': 'SID:S-1-5-21',
+                'name': 'foouser',
+                'type': 'user',
+            }
+        }
+        user_perms = {
+            'permission': 'change',
+            'permission_type': 'allow',
+            'trustee': {
+                'id': 'SID:S-1-5-22',
+                'name': user,
+                'type': 'user',
+            }
+        }
+        share_data = {
+            'permissions': [
+                foouser_perms,
+                user_perms,
+            ]
+        }
+        papi_share_url = '{0}/platform/1/protocols/smb/shares/{1}'.format(
+            self._mock_url, share_name)
+        m.get(papi_share_url, status_code=200, json={'shares': [share_data]})
+        num_existing_perms = len(self.isilon_api.lookup_smb_share(
+            share_name)['permissions'])
+        self.assertEqual(2, num_existing_perms)
+        m.put(papi_share_url)
+
+        self.isilon_api.smb_permissions_remove(share_name, user)
+
+        smb_put_request = m.request_history[2]
+        expected_body = {'permissions': [foouser_perms]}
+        expected_body = json.dumps(expected_body)
+        self.assertEqual(json.loads(expected_body),
+                         json.loads(smb_put_request.body))
+
+    @requests_mock.mock()
+    def test_smb_permission_remove_with_empty_perms_list(self, m):
+        share_name = 'testshare'
+        user = 'testuser'
+
+        share_data = {'permissions': []}
+        papi_share_url = '{0}/platform/1/protocols/smb/shares/{1}'.format(
+            self._mock_url, share_name)
+        m.get(papi_share_url, status_code=200, json={'shares': [share_data]})
+        m.put(papi_share_url)
+
+        self.assertRaises(exception.ShareBackendException,
+                          self.isilon_api.smb_permissions_remove,
+                          share_name, user)
+
+    @requests_mock.mock()
+    def test_auth_lookup_user(self, m):
+        user = 'foo'
+        auth_url = '{0}/platform/1/auth/mapping/users/lookup?user={1}'.format(
+            self._mock_url, user)
+        example_sid = 'SID:S-1-5-21'
+        sid_json = {
+            'id': example_sid,
+            'name': user,
+            'type': 'user'
+        }
+        auth_json = {
+            'mapping': [
+                {'user': {'sid': sid_json}}
+            ]
+        }
+        m.get(auth_url, status_code=200, json=auth_json)
+
+        returned_auth_json = self.isilon_api.auth_lookup_user(user)
+        self.assertEqual(auth_json, returned_auth_json)
+
+    @requests_mock.mock()
+    def test_auth_lookup_user_with_nonexistent_user(self, m):
+        user = 'nonexistent'
+        auth_url = '{0}/platform/1/auth/mapping/users/lookup?user={1}'.format(
+            self._mock_url, user)
+        m.get(auth_url, status_code=404)
+        self.assertRaises(exception.ShareBackendException,
+                          self.isilon_api.auth_lookup_user, user)
+
+    @requests_mock.mock()
+    def test_auth_lookup_user_with_backend_error(self, m):
+        user = 'foo'
+        auth_url = '{0}/platform/1/auth/mapping/users/lookup?user={1}'.format(
+            self._mock_url, user)
+        m.get(auth_url, status_code=400)
+        self.assertRaises(requests.exceptions.HTTPError,
+                          self.isilon_api.auth_lookup_user, user)
 
     def _add_create_directory_response(self, m, path, is_recursive):
         url = '{0}/namespace{1}?recursive={2}'.format(

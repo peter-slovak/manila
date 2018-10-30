@@ -105,6 +105,7 @@ class NetAppCmodeSingleSVMFileStorageLibrary(
         """Handle various cleanup activities."""
         vserver_client = self._get_api_client(vserver=self._vserver)
         vserver_client.prune_deleted_nfs_export_policies()
+        vserver_client.prune_deleted_snapshots()
 
         super(NetAppCmodeSingleSVMFileStorageLibrary, self).\
             _handle_housekeeping_tasks()
@@ -121,4 +122,9 @@ class NetAppCmodeSingleSVMFileStorageLibrary(
     @na_utils.trace
     def get_network_allocations_number(self):
         """Get number of network interfaces to be created."""
+        return 0
+
+    @na_utils.trace
+    def get_admin_network_allocations_number(self):
+        """Get number of network allocations for creating admin LIFs."""
         return 0
