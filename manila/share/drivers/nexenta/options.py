@@ -1,4 +1,4 @@
-# Copyright 2016 Nexenta Systems, Inc.
+# Copyright 2018 Nexenta Systems, Inc.
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -23,7 +23,7 @@
 from oslo_config import cfg
 
 nexenta_connection_opts = [
-    cfg.StrOpt('nexenta_host',
+    cfg.StrOpt('nexenta_rest_address',
                help='IP address of Nexenta storage appliance.'),
     cfg.IntOpt('nexenta_rest_port',
                default=8457,
@@ -50,17 +50,22 @@ nexenta_connection_opts = [
     cfg.BoolOpt('nexenta_nfs',
                 default=True,
                 help='On if share over NFS is enabled.'),
+    cfg.BoolOpt('nexenta_ssl_cert_verify',
+                default=False,
+                help='Defines whether the driver should check ssl cert.'),
 ]
 
 nexenta_nfs_opts = [
+    cfg.StrOpt('nexenta_nas_host',
+               help='IP address of Nexenta storage appliance.'),
     cfg.StrOpt('nexenta_mount_point_base',
                default='$state_path/mnt',
                help='Base directory that contains NFS share mount points.'),
 ]
 
 nexenta_dataset_opts = [
-    cfg.StrOpt('nexenta_nfs_share',
-               default='nfs_share',
+    cfg.StrOpt('nexenta_folder',
+               default='folder',
                help='Parent folder on NexentaStor.'),
     cfg.StrOpt('nexenta_dataset_compression',
                default='on',
@@ -68,10 +73,6 @@ nexenta_dataset_opts = [
                         'gzip-4', 'gzip-5', 'gzip-6', 'gzip-7', 'gzip-8',
                         'gzip-9', 'lzjb', 'zle', 'lz4'],
                help='Compression value for new ZFS folders.'),
-    cfg.StrOpt('nexenta_dataset_dedupe',
-               default='off',
-               choices=['on', 'off', 'sha256', 'verify', 'sha256, verify'],
-               help='Deduplication value for new ZFS folders.'),
     cfg.BoolOpt('nexenta_thin_provisioning',
                 default=True,
                 help=('If True shares will not be space guaranteed and '
