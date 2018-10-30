@@ -11,6 +11,8 @@
 .tox
 .venv
 .idea
+.eggs
+list
 AUTHORS
 Authors
 build/*
