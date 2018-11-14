@@ -301,7 +301,7 @@ class NexentaNasDriver(driver.ShareDriver):
             'Shrinking share: %(name)s to %(size)sG.', {
                 'name': share['share_id'], 'size': new_size})
         path = self._get_dataset_name(share['share_id'])
-        url = 'storage/filesystems/%s' % path
+        url = 'storage/filesystems/%s' % urllib.parse.quote_plus(path)
         used = self.nef.get(url)['bytesUsedBySelf'] / units.Gi
         if used > new_size:
             raise exception.ShareShrinkingPossibleDataLoss(
