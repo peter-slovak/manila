@@ -338,8 +338,8 @@ class NexentaNasDriver(driver.ShareDriver):
             urllib.parse.urlencode(params))
         self.nef.delete(url)
 
-    def revert_to_snapshot(self, context, snapshot, share_access_rules,
-                           snapshot_access_rules, share_server=None):
+    def revert_to_snapshot(self, context, snapshot, access_rules,
+                           share_server=None):
         """Reverts a share (in place) to the specified snapshot.
 
         Does not delete the share snapshot.  The share and snapshot must both
