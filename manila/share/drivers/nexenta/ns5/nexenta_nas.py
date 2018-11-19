@@ -190,12 +190,13 @@ class NexentaNasDriver(driver.ShareDriver):
     def create_share_from_snapshot(self, context, share, snapshot,
                                    share_server=None):
         """Is called to create share from snapshot."""
-        snapshot_id = (
-            snapshot['snapshot_id'] or snapshot['share_group_snapshot_id'])
+        snapshot_id = (snapshot.get(
+            'snapshot_id') or snapshot.get('share_group_snapshot_id'))
         LOG.debug('Creating share from snapshot %s.', snapshot_id)
-
+        snapshot_share = snapshot.get(
+            'share_instance') or snapshot.get('share')
         fs_path = urllib.parse.quote_plus(self._get_dataset_name(
-            snapshot['share_instance']['share_id']))
+            snapshot_share['share_id']))
         url = ('storage/snapshots/%s/clone') % (
             '@'.join([fs_path, snapshot_id]))
         path = self._get_dataset_name(share['share_id'])
