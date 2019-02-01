@@ -44,7 +44,7 @@ class NexentaNasDriver(driver.ShareDriver):
     def __init__(self, *args, **kwargs):
         """Do initialization."""
         LOG.debug('Initializing Nexenta driver.')
-        super(NexentaNasDriver, self).__init__(False, *args, **kwargs)
+        super(NexentaNasDriver, self).__init__((True, False), *args, **kwargs)
         self.configuration = kwargs.get('configuration')
         if self.configuration:
             self.configuration.append_config_values(
@@ -74,11 +74,24 @@ class NexentaNasDriver(driver.ShareDriver):
         self.pool_name = self.configuration.nexenta_pool
         self.parent_fs = self.configuration.nexenta_folder
 
-        self.storage_protocol = 'NFS'
         self.nfs_mount_point_base = self.configuration.nexenta_mount_point_base
         self.dataset_compression = (
             self.configuration.nexenta_dataset_compression)
         self.provisioned_capacity = 0
+
+    @property
+    def storage_protocol(self):
+        protocol = ''
+        if self.configuration.nexenta_nfs:
+            protocol = 'NFS'
+            if self.configuration.nexenta_smb:
+                protocol += '_CIFS'
+        elif self.configuration.nexenta_smb:
+            protocol = 'CIFS'
+        else:
+            msg = _('At least 1 storage protocol must be enabled.')
+            raise exception.NexentaException(msg)
+        return protocol
 
     @property
     def share_path(self):
@@ -441,18 +454,32 @@ class NexentaNasDriver(driver.ShareDriver):
         Not used by this driver.
         """
         LOG.debug('Updating access to share %s.', share['share_id'])
+        LOG.warning('Share DICT: %s.', share.__dict__)
+        for rule in access_rules:
+            LOG.warning('Access_rule DICT: %s.', rule.__dict__)
         rw_list = []
         ro_list = []
-        security_contexts = []
-        for rule in access_rules:
-            if rule['access_type'].lower() != 'ip':
-                msg = _('Only IP access type is supported.')
-                raise exception.InvalidShareAccess(reason=msg)
-            else:
+        if share['share_proto'] == 'NFS':
+            for rule in access_rules:
+                if rule['access_type'].lower() != 'ip':
+                    msg = _(
+                        'Only IP access control type is supported for NFS.')
+                    raise exception.InvalidShareAccess(reason=msg)
                 if rule['access_level'] == common.ACCESS_LEVEL_RW:
                     rw_list.append(rule['access_to'])
                 else:
                     ro_list.append(rule['access_to'])
+            self._update_nfs_access(share, rw_list, ro_list)
+        elif share['share_proto'] == 'CIFS':
+            for rule in access_rules:
+                if rule['access_type'].lower() != 'user':
+                    msg = _(
+                        'Only user access control type is supported for CIFS.')
+                    raise exception.InvalidShareAccess(reason=msg)
+            self._update_cifs_access(share, add_rules, delete_rules)
+
+    def _update_nfs_access(self, share, rw_list, ro_list):
+        security_contexts = []
 
         def append_sc(addr_list, sc_type):
             for addr in addr_list:
@@ -486,6 +513,36 @@ class NexentaNasDriver(driver.ShareDriver):
             url = 'nas/nfs'
             data['filesystem'] = fs_path
             self.nef.post(url, data)
+
+    def _update_cifs_access(self, share, add_rules, delete_rules):
+            share_path = self._get_dataset_name(share['share_id'])
+            url = 'storage/filesystems/%s' % urllib.parse.quote_plus(
+                share_path)
+            if not self.nef.get(url)['sharedOverSmb']:
+                url = 'nas/smb'
+                data = {'filesystem': share_path}
+                self.nef.post(url, data)
+            url = 'storage/filesystems/%s/acl' % urllib.parse.quote_plus(
+                share_path)
+            for rule in add_rules:
+                data = {
+                    'flags': ['dir_inherit'],
+                    'permissions': ['win_full'],
+                    'principal': 'user:%s' % rule['access_to'],
+                    'type': 'allow',
+                    'index': -1
+                }
+                self.nef.post(url, data)
+            if delete_rules:
+                acl_list = self.nef.get(
+                    'storage/filesystems/%s/acl' % urllib.parse.quote_plus(
+                        share_path))['data']
+            for rule in delete_rules:
+                for acl in acl_list:
+                    principal = acl['principal']
+                    if 'user:' in principal:
+                        if principal.split('user:')[1] == rule['access_to']:
+                            self.nef.delete('%s/%s' % (url, acl['index']))
 
     def _set_quota(self, share_id, new_size):
         quota = int(new_size * units.Gi * ZFS_MULTIPLIER)
@@ -579,3 +636,22 @@ class NexentaNasDriver(driver.ShareDriver):
         LOG.debug(
             'RW ACE for filesystem <%s> on Nexenta Store has been '
             'successfully created.', share_name)
+
+    def get_network_allocations_number(self):
+        """Returns number of network allocations for creating VIFs.
+
+        Drivers that use Nova for share servers should return zero (0) here
+        same as Generic driver does.
+        Because Nova will handle network resources allocation.
+        Drivers that handle networking itself should calculate it according
+        to their own requirements. It can have 1+ network interfaces.
+        """
+        return 0
+
+    def setup_server(self, network_info, metadata=None):
+        """Set up and configures share server with given network parameters."""
+        LOG.debug('network_info: %s' % network_info)
+
+    def teardown_server(self, server_details, security_services=None):
+        """Teardown share server."""
+        LOG.debug('server_details: %s' % server_details)
