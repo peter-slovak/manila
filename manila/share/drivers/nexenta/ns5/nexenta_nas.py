@@ -454,9 +454,6 @@ class NexentaNasDriver(driver.ShareDriver):
         Not used by this driver.
         """
         LOG.debug('Updating access to share %s.', share['share_id'])
-        LOG.warning('Share DICT: %s.', share.__dict__)
-        for rule in access_rules:
-            LOG.warning('Access_rule DICT: %s.', rule.__dict__)
         rw_list = []
         ro_list = []
         if share['share_proto'] == 'NFS':
