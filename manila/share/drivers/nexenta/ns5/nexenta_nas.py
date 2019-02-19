@@ -490,7 +490,7 @@ class NexentaNasDriver(driver.ShareDriver):
                 if len(address_mask) == 2:
                     try:
                         mask = int(address_mask[1])
-                        if mask != 32:
+                        if mask < 31:
                             ls[0]['mask'] = mask
                     except Exception:
                         raise exception.InvalidInput(
