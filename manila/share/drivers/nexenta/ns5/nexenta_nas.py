@@ -306,6 +306,8 @@ class NexentaNasDriver(driver.ShareDriver):
             'Extending share: %(name)s to %(size)sG.', (
                 {'name': share['share_id'], 'size': new_size}))
         self._set_quota(share['share_id'], new_size)
+        if not self.configuration.nexenta_thin_provisioning:
+            self._set_reservation(share['share_id'], new_size)
         self.provisioned_capacity += (new_size - share['size'])
 
     def shrink_share(self, share, new_size, share_server=None):
@@ -319,6 +321,8 @@ class NexentaNasDriver(driver.ShareDriver):
         if used > new_size:
             raise exception.ShareShrinkingPossibleDataLoss(
                 share_id=share['id'])
+        if not self.configuration.nexenta_thin_provisioning:
+            self._set_reservation(share['share_id'], new_size)
         self._set_quota(share['share_id'], new_size)
         self.provisioned_capacity += (share['size'] - new_size)
 
@@ -505,7 +509,10 @@ class NexentaNasDriver(driver.ShareDriver):
         if self.nef.get(url).get('data'):
             url = 'nas/nfs/' + PATH_DELIMITER.join(
                 [self.pool_name, self.parent_fs, share['share_id']])
-            self.nef.put(url, data)
+            if not security_contexts:
+                self.nef.delete(url)
+            else:
+                self.nef.put(url, data)
         else:
             url = 'nas/nfs'
             data['filesystem'] = fs_path
@@ -543,13 +550,20 @@ class NexentaNasDriver(driver.ShareDriver):
 
     def _set_quota(self, share_id, new_size):
         quota = int(new_size * units.Gi * ZFS_MULTIPLIER)
-        data = {'referencedQuotaSize': quota}
-        if not self.configuration.nexenta_thin_provisioning:
-            data['referencedReservationSize'] = quota
         path = self._get_dataset_name(share_id)
-        LOG.debug('Setting quota for dataset %s.' % path)
         url = 'storage/filesystems/%s' % urllib.parse.quote_plus(path)
+        data = {'referencedQuotaSize': quota}
+        LOG.debug('Setting quota for dataset %s.' % path)
         self.nef.put(url, data)
+
+    def _set_reservation(self, share_id, new_size):
+        res_size = int(new_size * units.Gi * ZFS_MULTIPLIER)
+        path = self._get_dataset_name(share_id)
+        url = 'storage/filesystems/%s' % urllib.parse.quote_plus(path)
+        if not self.configuration.nexenta_thin_provisioning:
+            data = {'referencedReservationSize': res_size}
+            LOG.debug('Setting reservation for dataset %s.' % path)
+            self.nef.put(url, data)
 
     def _update_share_stats(self, data=None):
         super(NexentaNasDriver, self)._update_share_stats()

@@ -51,7 +51,7 @@ nexenta_connection_opts = [
                 default=True,
                 help='On if share over NFS is enabled.'),
     cfg.BoolOpt('nexenta_smb',
-                default=True,
+                default=False,
                 help='On if share over SMB is enabled.'),
     cfg.BoolOpt('nexenta_ssl_cert_verify',
                 default=False,
