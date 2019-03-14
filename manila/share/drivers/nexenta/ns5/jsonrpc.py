@@ -16,16 +16,11 @@
 import hashlib
 import json
 import posixpath
-import six
 
 from eventlet import greenthread
-
-import requests
-from requests.adapters import HTTPAdapter
-from requests.packages.urllib3.util.retry import Retry
-from requests.packages.urllib3.util.timeout import Timeout
-
 from oslo_log import log as logging
+import requests
+import six
 
 from manila.exception import ManilaException
 from manila.i18n import _
@@ -513,11 +508,13 @@ class NefProxy(object):
         self.path = path
         self.backoff_factor = conf.nexenta_rest_backoff_factor
         self.retries = len(self.hosts) * conf.nexenta_rest_retry_count
-        self.timeout = Timeout(connect=conf.nexenta_rest_connect_timeout,
-                               read=conf.nexenta_rest_read_timeout)
-        max_retries = Retry(total=conf.nexenta_rest_retry_count,
-                            backoff_factor=conf.nexenta_rest_backoff_factor)
-        adapter = HTTPAdapter(max_retries=max_retries)
+        self.timeout = requests.packages.urllib3.util.timeout.Timeout(
+            connect=conf.nexenta_rest_connect_timeout,
+            read=conf.nexenta_rest_read_timeout)
+        max_retries = requests.packages.urllib3.util.retry.Retry(
+            total=conf.nexenta_rest_retry_count,
+            backoff_factor=conf.nexenta_rest_backoff_factor)
+        adapter = requests.adapters.HTTPAdapter(max_retries=max_retries)
         self.session.verify = conf.nexenta_ssl_cert_verify
         self.session.headers.update(self.headers)
         self.session.mount('%s://' % self.scheme, adapter)

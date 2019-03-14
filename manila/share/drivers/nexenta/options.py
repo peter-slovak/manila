@@ -107,4 +107,8 @@ nexenta_dataset_opts = [
                 default=True,
                 help=('If True shares will not be space guaranteed and '
                       'overprovisioning will be enabled.')),
+    cfg.IntOpt('nexenta_dataset_record_size',
+               default=4096,
+               help='Specifies a suggested block size for files in a file '
+                    'system.'),
 ]

@@ -23,8 +23,7 @@ from manila.common import constants as common
 from manila import exception
 from manila.i18n import _
 from manila.share import driver
-from manila.share.drivers.nexenta.ns5.jsonrpc import NefException
-from manila.share.drivers.nexenta.ns5.jsonrpc import NefProxy
+from manila.share.drivers.nexenta.ns5 import jsonrpc
 from manila.share.drivers.nexenta import options
 from manila.share.drivers.nexenta import utils
 
@@ -115,9 +114,9 @@ class NexentaNasDriver(driver.ShareDriver):
         return self._share_backend_name
 
     def do_setup(self, context):
-        self.nef = NefProxy(self.storage_protocol,
-                            self.root_path,
-                            self.configuration)
+        self.nef = jsonrpc.NefProxy(self.storage_protocol,
+                                    self.root_path,
+                                    self.configuration)
 
     def check_for_setup_error(self):
         """Check root filesystem, NFS service and NFS share."""
@@ -125,11 +124,11 @@ class NexentaNasDriver(driver.ShareDriver):
         if filesystem['mountPoint'] == 'none':
             message = (_('NFS root filesystem %(path)s is not writable')
                        % {'path': filesystem['mountPoint']})
-            raise NefException(code='ENOENT', message=message)
+            raise jsonrpc.NefException(code='ENOENT', message=message)
         if not filesystem['isMounted']:
             message = (_('NFS root filesystem %(path)s is not mounted')
                        % {'path': filesystem['mountPoint']})
-            raise NefException(code='ENOTDIR', message=message)
+            raise jsonrpc.NefException(code='ENOTDIR', message=message)
         if filesystem['nonBlockingMandatoryMode']:
             payload = {'nonBlockingMandatoryMode': False}
             self.nef.filesystems.set(self.root_path, payload)
@@ -137,7 +136,7 @@ class NexentaNasDriver(driver.ShareDriver):
         if service['state'] != 'online':
             message = (_('NFS server service is not online: %(state)s')
                        % {'state': service['state']})
-            raise NefException(code='ESRCH', message=message)
+            raise jsonrpc.NefException(code='ESRCH', message=message)
         self._get_provisioned_capacity()
 
     def _get_provisioned_capacity(self):
@@ -154,7 +153,7 @@ class NexentaNasDriver(driver.ShareDriver):
         dataset_path = self._get_dataset_path(share)
         size = int(share['size'] * units.Gi * ZFS_MULTIPLIER)
         payload = {
-            'recordSize': 4 * units.Ki,
+            'recordSize': self.configuration.nexenta_dataset_record_size,
             'compressionMode': self.dataset_compression,
             'path': dataset_path,
             'referencedQuotaSize': size,
@@ -166,11 +165,11 @@ class NexentaNasDriver(driver.ShareDriver):
 
         try:
             mount_path = self._mount_filesystem(share)
-        except NefException as create_error:
+        except jsonrpc.NefException as create_error:
             try:
                 payload = {'force': True}
                 self.nef.filesystems.delete(dataset_path, payload)
-            except NefException as delete_error:
+            except jsonrpc.NefException as delete_error:
                 LOG.debug('Failed to delete volume %(path)s: %(error)s',
                           {'path': dataset_path, 'error': delete_error})
             raise create_error
@@ -216,11 +215,11 @@ class NexentaNasDriver(driver.ShareDriver):
         self.provisioned_capacity += share['size']
         try:
             mount_path = self._mount_filesystem(share)
-        except NefException as create_error:
+        except jsonrpc.NefException as create_error:
             try:
                 payload = {'force': True}
                 self.nef.filesystems.delete(clone_path, payload)
-            except NefException as delete_error:
+            except jsonrpc.NefException as delete_error:
                 LOG.debug('Failed to delete volume %(path)s: %(error)s',
                           {'path': clone_path, 'error': delete_error})
             raise create_error
@@ -261,7 +260,7 @@ class NexentaNasDriver(driver.ShareDriver):
         delete_payload = {'force': True, 'snapshots': True}
         try:
             self.nef.filesystems.delete(share_path, delete_payload)
-        except NefException as error:
+        except jsonrpc.NefException as error:
             if error.code != 'EEXIST':
                 raise error
             snapshots_tree = {}
