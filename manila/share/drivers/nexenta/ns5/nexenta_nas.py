@@ -372,8 +372,7 @@ class NexentaNasDriver(driver.ShareDriver):
 
         # check that filesystem with provided export exists.
         fs_path = export_path.split(':/')[1]
-        payload = {'path': fs_path}
-        fs_list = self.nef.filesystems.list(payload).get('data')
+        fs_list = self.nef.filesystems.get(fs_path)
 
         if not fs_list:
             # wrong export path, raise exception.
