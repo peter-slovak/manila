@@ -170,7 +170,7 @@ class NexentaNasDriver(driver.ShareDriver):
                 payload = {'force': True}
                 self.nef.filesystems.delete(dataset_path, payload)
             except jsonrpc.NefException as delete_error:
-                LOG.debug('Failed to delete volume %(path)s: %(error)s',
+                LOG.debug('Failed to delete share %(path)s: %(error)s',
                           {'path': dataset_path, 'error': delete_error})
             raise create_error
 
@@ -204,7 +204,7 @@ class NexentaNasDriver(driver.ShareDriver):
         payload = {
             'targetPath': clone_path,
             'referencedQuotaSize': size,
-            'recordSize': 4 * units.Ki,
+            'recordSize': self.configuration.nexenta_dataset_record_size,
             'compressionMode': self.dataset_compression,
             'nonBlockingMandatoryMode': False
         }
@@ -220,7 +220,7 @@ class NexentaNasDriver(driver.ShareDriver):
                 payload = {'force': True}
                 self.nef.filesystems.delete(clone_path, payload)
             except jsonrpc.NefException as delete_error:
-                LOG.debug('Failed to delete volume %(path)s: %(error)s',
+                LOG.debug('Failed to delete share %(path)s: %(error)s',
                           {'path': clone_path, 'error': delete_error})
             raise create_error
 
@@ -231,7 +231,7 @@ class NexentaNasDriver(driver.ShareDriver):
         return [location]
 
     def _remount_filesystem(self, clone_path):
-        """Workaround for NEF bug: cloned volume has offline NFS status"""
+        """Workaround for NEF bug: cloned share has offline NFS status"""
         self.nef.filesystems.unmount(clone_path)
         self.nef.filesystems.mount(clone_path)
 
@@ -562,9 +562,9 @@ class NexentaNasDriver(driver.ShareDriver):
     def _get_capacity_info(self):
         """Calculate available space on the NFS share."""
         data = self.nef.filesystems.get(self.root_path)
-        total = utils.bytes_to_gb(data['bytesAvailable'])
+        free = utils.bytes_to_gb(data['bytesAvailable'])
         allocated = utils.bytes_to_gb(data['bytesUsed'])
-        free = total - allocated
+        total = free + allocated
         return total, free, allocated
 
     def get_network_allocations_number(self):

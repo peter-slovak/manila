@@ -109,6 +109,6 @@ nexenta_dataset_opts = [
                       'overprovisioning will be enabled.')),
     cfg.IntOpt('nexenta_dataset_record_size',
                default=4096,
-               help='Specifies a suggested block size for files in a file '
-                    'system.'),
+               help='Specifies a suggested block size in for files in a file '
+                    'system. (bytes)'),
 ]
