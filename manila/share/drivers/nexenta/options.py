@@ -35,6 +35,10 @@ nexenta_connection_opts = [
                default='auto',
                choices=['http', 'https', 'auto'],
                help='Use http or https for REST connection (default auto).'),
+    cfg.BoolOpt('nexenta_use_https',
+                default=True,
+                help='Use HTTP secure protocol for NexentaStor '
+                     'management REST API connections'),
     cfg.StrOpt('nexenta_user',
                default='admin',
                help='User name to connect to Nexenta SA.'),
@@ -56,6 +60,26 @@ nexenta_connection_opts = [
     cfg.BoolOpt('nexenta_ssl_cert_verify',
                 default=False,
                 help='Defines whether the driver should check ssl cert.'),
+    cfg.FloatOpt('nexenta_rest_connect_timeout',
+                 default=30,
+                 help='Specifies the time limit (in seconds), within '
+                      'which the connection to NexentaStor management '
+                      'REST API server must be established'),
+    cfg.FloatOpt('nexenta_rest_read_timeout',
+                 default=300,
+                 help='Specifies the time limit (in seconds), '
+                      'within which NexentaStor management '
+                      'REST API server must send a response'),
+    cfg.FloatOpt('nexenta_rest_backoff_factor',
+                 default=1,
+                 help='Specifies the backoff factor to apply '
+                      'between connection attempts to NexentaStor '
+                      'management REST API server'),
+    cfg.IntOpt('nexenta_rest_retry_count',
+               default=5,
+               help='Specifies the number of times to repeat NexentaStor '
+                    'management REST API call in case of connection errors '
+                    'and NexentaStor appliance EBUSY or ENOENT errors'),
 ]
 
 nexenta_nfs_opts = [
@@ -67,6 +91,9 @@ nexenta_nfs_opts = [
 ]
 
 nexenta_dataset_opts = [
+    cfg.StrOpt('nexenta_share_name_template',
+               help='Nexenta share name template.',
+               default='share-%(share_id)s'),
     cfg.StrOpt('nexenta_folder',
                default='folder',
                help='Parent folder on NexentaStor.'),
@@ -80,4 +107,8 @@ nexenta_dataset_opts = [
                 default=True,
                 help=('If True shares will not be space guaranteed and '
                       'overprovisioning will be enabled.')),
+    cfg.IntOpt('nexenta_dataset_record_size',
+               default=4096,
+               help='Specifies a suggested block size in for files in a file '
+                    'system. (bytes)'),
 ]
