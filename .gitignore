@@ -47,6 +47,6 @@ install-guide/build
 # Development environment files
 .project
 .pydevproject
-
+sftp-config.json
 # Lock dirs and files
 manila_locks
