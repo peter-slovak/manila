@@ -341,7 +341,7 @@ class NexentaNasDriver(driver.ShareDriver):
             snapshot
         :param share_server: Optional -- Share server model or None
         """
-        snapshot_path = self._get_snapshot_path(snapshot)
+        snapshot_path = self._get_snapshot_path(snapshot).split('@')[1]
         LOG.debug('Reverting to snapshot: %s.', snapshot_path)
         share_path = self._get_dataset_path(snapshot['share'])
         payload = {'snapshot': snapshot_path}
@@ -519,7 +519,7 @@ class NexentaNasDriver(driver.ShareDriver):
         quota = int(new_size * units.Gi * ZFS_MULTIPLIER)
         share_path = self._get_dataset_path(share)
         payload = {'referencedQuotaSize': quota}
-        LOG.debug('Setting quota for dataset %s.' % share_path)
+        LOG.debug('Setting quota for dataset %s.', share_path)
         self.nef.filesystems.set(share_path, payload)
 
     def _set_reservation(self, share, new_size):
@@ -579,8 +579,8 @@ class NexentaNasDriver(driver.ShareDriver):
 
     def setup_server(self, network_info, metadata=None):
         """Set up and configures share server with given network parameters."""
-        LOG.debug('network_info: %s' % network_info)
+        LOG.debug('network_info: %s', network_info)
 
     def teardown_server(self, server_details, security_services=None):
         """Teardown share server."""
-        LOG.debug('server_details: %s' % server_details)
+        LOG.debug('server_details: %s', server_details)
