@@ -53,7 +53,7 @@ nexenta_connection_opts = [
                help='Pool name on NexentaStor.'),
     cfg.BoolOpt('nexenta_nfs',
                 default=True,
-                help='On if share over NFS is enabled.'),
+                help='Defines whether share over NFS is enabled.'),
     cfg.BoolOpt('nexenta_smb',
                 default=False,
                 help='On if share over SMB is enabled.'),
@@ -93,7 +93,7 @@ nexenta_nfs_opts = [
 nexenta_dataset_opts = [
     cfg.StrOpt('nexenta_share_name_template',
                help='Nexenta share name template.',
-               default='share-%(share_id)s'),
+               default='share-'),
     cfg.StrOpt('nexenta_folder',
                default='folder',
                help='Parent folder on NexentaStor.'),
@@ -108,7 +108,7 @@ nexenta_dataset_opts = [
                 help=('If True shares will not be space guaranteed and '
                       'overprovisioning will be enabled.')),
     cfg.IntOpt('nexenta_dataset_record_size',
-               default=4096,
+               default=131072,
                help='Specifies a suggested block size in for files in a file '
                     'system. (bytes)'),
 ]
