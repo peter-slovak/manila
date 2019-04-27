@@ -23,8 +23,9 @@ from manila import exception
 from manila.share import configuration as conf
 from manila.share.drivers.nexenta.ns5 import nexenta_nas
 from manila import test
+from manila.share.drivers.nexenta.ns5 import jsonrpc
 
-PATH_TO_RPC = 'manila.share.drivers.nexenta.ns5.jsonrpc.NexentaJSONProxy'
+PATH_TO_RPC = 'manila.share.drivers.nexenta.ns5.jsonrpc.NefProxy'
 DRV_PATH = 'manila.share.drivers.nexenta.ns5.nexenta_nas.NexentaNasDriver'
 
 
@@ -34,9 +35,10 @@ class TestNexentaNasDriver(test.TestCase):
     def setUp(self):
         def _safe_get(opt):
             return getattr(self.cfg, opt)
+        super(TestNexentaNasDriver, self).setUp()
         self.cfg = conf.Configuration(None)
-        self.cfg.nexenta_host = '1.1.1.1'
-        super(self.__class__, self).setUp()
+        self.cfg.nexenta_nas_host = '1.1.1.1'
+        self.cfg.nexenta_rest_address = '2.2.2.2'
         self.ctx = context.get_admin_context()
         self.mock_object(
             self.cfg, 'safe_get', mock.Mock(side_effect=_safe_get))
@@ -44,7 +46,7 @@ class TestNexentaNasDriver(test.TestCase):
         self.cfg.nexenta_rest_protocol = 'auto'
         self.cfg.nexenta_pool = 'pool1'
         self.cfg.reserved_share_percentage = 0
-        self.cfg.nexenta_nfs_share = 'nfs_share'
+        self.cfg.nexenta_folder = 'nfs_share'
         self.cfg.nexenta_user = 'user'
         self.cfg.share_backend_name = 'NexentaStor5'
         self.cfg.nexenta_password = 'password'
@@ -57,12 +59,18 @@ class TestNexentaNasDriver(test.TestCase):
         self.cfg.admin_network_config_group = (
             'fake_admin_network_config_group')
         self.cfg.driver_handles_share_servers = False
-
+        self.cfg.safe_get = self.fake_safe_get
+        self.nef_mock = mock.Mock()
+        self.mock_object(jsonrpc, 'NefRequest')
         self.drv = nexenta_nas.NexentaNasDriver(configuration=self.cfg)
         self.drv.do_setup(self.ctx)
-        self.mock_rpc = self.mock_class(PATH_TO_RPC)
-        self.pool_name = self.cfg.nexenta_pool
-        self.fs_prefix = self.cfg.nexenta_nfs_share
+
+    def fake_safe_get(self, key):
+        try:
+            value = getattr(self.cfg, key)
+        except AttributeError:
+            value = None
+        return value
 
     def test_backend_name(self):
         self.assertEqual('NexentaStor5', self.drv.share_backend_name)
