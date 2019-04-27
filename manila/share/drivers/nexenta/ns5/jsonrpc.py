@@ -477,6 +477,8 @@ class NefProxy(object):
         self.hpr = NefHpr(self)
         self.nfs = NefNfs(self)
         self.netaddrs = NefNetAddresses(self)
+        self.proto = proto
+        self.path = path
         self.lock = None
         self.tokens = {}
         self.headers = {
@@ -504,8 +506,6 @@ class NefProxy(object):
                 self.port = 8443
             else:
                 self.port = 8080
-        self.proto = proto
-        self.path = path
         self.backoff_factor = conf.nexenta_rest_backoff_factor
         self.retries = len(self.hosts) * conf.nexenta_rest_retry_count
         self.timeout = requests.packages.urllib3.util.timeout.Timeout(
