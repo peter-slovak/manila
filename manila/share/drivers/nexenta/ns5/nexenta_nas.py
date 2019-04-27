@@ -240,7 +240,7 @@ class NexentaNasDriver(driver.ShareDriver):
 
     def _get_share_name(self, share):
         """Get share name according to share name template."""
-        return ('%(template)s-%(share_id)s' % {
+        return ('%(template)s%(share_id)s' % {
                 'template': self.configuration.nexenta_share_name_template,
                 'share_id': share['share_id']})
 
@@ -479,8 +479,7 @@ class NexentaNasDriver(driver.ShareDriver):
             'flags': ['file_inherit', 'dir_inherit'],
             'permissions': ['full_set'],
             'principal': 'everyone@',
-            'type': 'allow',
-            'index': -1
+            'type': 'allow'
         }
         self.nef.filesystems.acl(share_path, payload)
 
