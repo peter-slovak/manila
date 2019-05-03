@@ -479,12 +479,8 @@ class NexentaNasDriver(driver.ShareDriver):
             'flags': ['file_inherit', 'dir_inherit'],
             'permissions': ['full_set'],
             'principal': 'everyone@',
-<<<<<<< HEAD
-            'type': 'allow'
-=======
             'type': 'allow',
             'index': -1
->>>>>>> 1d24c404023ad041e5da83e691c0717ec0187a83
         }
         self.nef.filesystems.acl(share_path, payload)
 
