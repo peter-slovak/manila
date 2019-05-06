@@ -442,34 +442,45 @@ class NexentaNasDriver(driver.ShareDriver):
             self._update_cifs_access(share, add_rules, delete_rules)
 
     def _update_nfs_access(self, share, rw_list, ro_list):
-        security_contexts = []
+        # Define allowed security context types to be able to tell whether
+        # the 'security_contexts' dict contains any rules at all
+        context_types = {'none', 'root', 'readOnlyList', 'readWriteList'}
 
-        def append_sc(addr_list, sc_type):
+        security_contexts = {'securityModes': ['sys']}
+
+        def add_sc(addr_list, sc_type):
+            if sc_type not in context_types:
+                return
+
+            rule_list = []
+
             for addr in addr_list:
                 address_mask = addr.strip().split('/', 1)
                 address = address_mask[0]
-                ls = [{"allow": True, "etype": "fqdn", "entity": address}]
+                ls = {"allow": True, "etype": "fqdn", "entity": address}
                 if len(address_mask) == 2:
                     try:
                         mask = int(address_mask[1])
                         if 0 <= mask < 31:
-                            ls[0]['mask'] = mask
-                            ls[0]['etype'] = 'network'
+                            ls['mask'] = mask
+                            ls['etype'] = 'network'
                     except Exception:
                         raise exception.InvalidInput(
                             reason=_(
                                 '<{}> is not a valid access parameter').format(
                                     addr))
-                new_sc = {"securityModes": ["sys"]}
-                new_sc[sc_type] = ls
-                security_contexts.append(new_sc)
+                rule_list.append(ls)
 
-        append_sc(rw_list, 'readWriteList')
-        append_sc(ro_list, 'readOnlyList')
-        payload = {"securityContexts": security_contexts}
+            # Prevent setting a context type without any addresses, this results in an API error
+            if rule_list:
+                security_contexts[sc_type] = rule_list
+
+        add_sc(rw_list, 'readWriteList')
+        add_sc(ro_list, 'readOnlyList')
+        payload = {'securityContexts': [security_contexts]}
         share_path = self._get_dataset_path(share)
         if self.nef.nfs.list({'filesystem': share_path}):
-            if not security_contexts:
+            if not set(security_contexts.keys()) & context_types:
                 self.nef.nfs.delete(share_path)
             else:
                 self.nef.nfs.set(share_path, payload)
