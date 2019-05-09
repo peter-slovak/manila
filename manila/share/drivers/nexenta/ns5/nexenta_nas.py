@@ -506,7 +506,7 @@ class NexentaNasDriver(driver.ShareDriver):
             if delete_rules:
                 acl_list = self.nef.get(
                     'storage/filesystems/%s/acl' % urllib.parse.quote_plus(
-                        share_path))['data']
+                        share_path))
             for rule in delete_rules:
                 for acl in acl_list:
                     principal = acl['principal']
